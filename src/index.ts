@@ -57,7 +57,12 @@ const pool = new Pool({
 });
 console.log('Pool de base de dados configurado.');
 
-app.use(cors());
+// Configuração CORS explícita
+app.use(cors({
+  origin: 'https://magical-naiad-97d89c.netlify.app',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(bodyParser.json());
 console.log('Middleware CORS e BodyParser aplicados.');
 
