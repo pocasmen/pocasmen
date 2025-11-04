@@ -301,25 +301,30 @@ app.post('/schedules', async (req, res) => {
 
 // Endpoint de Debug para listar todas as rotas (manual)
 app.get('/debug/routes', (req, res) => {
-  const routes: any[] = [];
-  app._router.stack.forEach((middleware: any) => {
-    if (middleware.route) { // Rotas diretas
-      routes.push({
-        path: middleware.route.path,
-        method: Object.keys(middleware.route.methods)[0].toUpperCase()
-      });
-    } else if (middleware.name === 'router') { // Sub-routers
-      middleware.handle.stack.forEach((handler: any) => {
-        if (handler.route) {
-          routes.push({
-            path: handler.route.path,
-            method: Object.keys(handler.route.methods)[0].toUpperCase()
-          });
-        }
-      });
-    }
-  });
-  res.json(routes);
+  try {
+    const routes: any[] = [];
+    app._router.stack.forEach((middleware: any) => {
+      if (middleware.route) { // Rotas diretas
+        routes.push({
+          path: middleware.route.path,
+          method: Object.keys(middleware.route.methods)[0].toUpperCase()
+        });
+      } else if (middleware.name === 'router') { // Sub-routers
+        middleware.handle.stack.forEach((handler: any) => {
+          if (handler.route) {
+            routes.push({
+              path: handler.route.path,
+              method: Object.keys(handler.route.methods)[0].toUpperCase()
+            });
+          }
+        });
+      }
+    });
+    res.json(routes);
+  } catch (error) {
+    console.error("Erro ao listar rotas:", error);
+    res.status(500).json({ error: "Internal Server Error ao listar rotas" });
+  }
 });
 
 
