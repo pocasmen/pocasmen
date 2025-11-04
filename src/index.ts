@@ -59,7 +59,7 @@ console.log('Pool de base de dados configurado.');
 
 // Configuração CORS explícita
 app.use(cors({
-  origin: 'https://statuesque-basbousa-e85493.netlify.app',
+  origin: 'https://microatomo.netlify.app',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
