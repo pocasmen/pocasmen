@@ -1,0 +1,7 @@
+-- Adiciona a coluna de cliente ao equipamento e torna-a obrigatória
+ALTER TABLE public.equipments
+ADD COLUMN "clientId" INTEGER REFERENCES clients(id) NOT NULL;
+
+-- Adiciona o tipo de serviço aos relatórios com uma verificação
+ALTER TABLE public.reports
+ADD COLUMN "serviceType" TEXT CHECK ("serviceType" IN ('manutencao', 'reparacao', 'assistencia', 'instalacao'));

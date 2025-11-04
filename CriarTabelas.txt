@@ -1,0 +1,43 @@
+-- Tabela de Clientes
+CREATE TABLE clients (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    address TEXT,
+    nif VARCHAR(20)
+);
+
+-- Tabela de Equipamentos
+CREATE TABLE equipments (
+    id SERIAL PRIMARY KEY,
+    brand TEXT NOT NULL,
+    model TEXT,
+    "serialNumber" TEXT
+);
+
+-- Tabela de Técnicos
+CREATE TABLE technicians (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+-- Tabela de Relatórios de Intervenção
+CREATE TABLE reports (
+    id SERIAL PRIMARY KEY,
+    "clientId" INTEGER REFERENCES clients(id),
+    "equipmentId" INTEGER REFERENCES equipments(id),
+    "serviceDate" DATE,
+    hours NUMERIC,
+    parts TEXT,
+    description TEXT
+);
+
+-- Tabela de Agendamentos (Calendário)
+CREATE TABLE schedules (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    "startDate" TIMESTAMPTZ NOT NULL,
+    "endDate" TIMESTAMPTZ NOT NULL,
+    "clientId" INTEGER REFERENCES clients(id),
+    "equipmentId" INTEGER REFERENCES equipments(id),
+    "technicianId" INTEGER REFERENCES technicians(id)
+);
