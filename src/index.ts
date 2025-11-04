@@ -359,6 +359,19 @@ app.delete('/schedules/:id', async (req, res) => {
 
 
 // --- INICIAR SERVIDOR ---
+console.log('Rotas finais registadas antes de iniciar o servidor:');
+app._router.stack.forEach((middleware: any) => {
+  if (middleware.route) {
+    console.log(`  ${Object.keys(middleware.route.methods)[0].toUpperCase()} ${middleware.route.path}`);
+  } else if (middleware.name === 'router') {
+    middleware.handle.stack.forEach((handler: any) => {
+      if (handler.route) {
+        console.log(`  ${Object.keys(handler.route.methods)[0].toUpperCase()} ${handler.route.path}`);
+      }
+    });
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
