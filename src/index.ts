@@ -299,38 +299,10 @@ app.post('/schedules', async (req, res) => {
   }
 });
 
-// Endpoint para ATUALIZAR um agendamento
-app.put('/schedules/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { title, startDate, endDate, clientId, equipmentId, technicianId } = req.body as Schedule;
-    const result = await pool.query(
-      'UPDATE schedules SET title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, "technicianId" = $6 WHERE id = $7 RETURNING *',
-      [title, startDate, endDate, clientId, equipmentId, technicianId, id]
-    );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Schedule not found' });
-    }
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Endpoint para ELIMINAR um agendamento
-app.delete('/schedules/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await pool.query('DELETE FROM schedules WHERE id = $1', [id]);
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Schedule not found' });
-    }
-    res.status(204).send(); // 204 No Content para sucesso na eliminação
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+// Endpoint de Debug para listar todas as rotas
+import listEndpoints from 'express-list-endpoints';
+app.get('/debug/routes', (req, res) => {
+  res.json(listEndpoints(app));
 });
 
 
