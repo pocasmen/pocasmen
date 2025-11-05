@@ -35,6 +35,7 @@ interface Report {
 interface Technician {
   id: number;
   name: string;
+  color: string;
 }
 
 interface Schedule {
@@ -50,19 +51,14 @@ interface Schedule {
 // --- CONFIGURAÇÃO DA APP E BASE DE DADOS ---
 const app = express();
 console.log('Express app inicializada.');
-const port = 5000;
+const port = 5001;
 
 const pool = new Pool({
   connectionString: 'postgresql://postgres.uygvqanyuigpvsoekxpw:sofia123ramos@aws-1-eu-north-1.pooler.supabase.com:6543/postgres',
 });
 console.log('Pool de base de dados configurado.');
 
-// Configuração CORS explícita
-app.use(cors({
-  origin: 'https://microatomo.netlify.app',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+app.use(cors());
 app.use(bodyParser.json());
 console.log('Middleware CORS e BodyParser aplicados.');
 
@@ -230,12 +226,49 @@ console.log('Rotas de Técnicos registadas.');
 
 app.post('/technicians', async (req, res) => {
   try {
-    const { name } = req.body as Technician;
+    const { name, color } = req.body as Technician;
     const result = await pool.query(
-      'INSERT INTO technicians (name) VALUES ($1) RETURNING *',
-      [name]
+      'INSERT INTO technicians (name, color) VALUES ($1, $2) RETURNING *',
+      [name, color || '#3174ad'] // Usar cor padrão se não for fornecida
     );
     res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/technicians/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, color } = req.body as Technician;
+    const result = await pool.query(
+      'UPDATE technicians SET name = $1, color = $2 WHERE id = $3 RETURNING *',
+      [name, color, id]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Technician not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/technicians/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Adicionar lógica para verificar se o técnico está a ser usado em agendamentos
+    const schedules = await pool.query('SELECT id FROM schedules WHERE "technicianId" = $1', [id]);
+    if (schedules.rowCount && schedules.rowCount > 0) {
+      return res.status(400).json({ error: 'Não é possível eliminar o técnico porque ele está associado a agendamentos existentes.' });
+    }
+    const result = await pool.query('DELETE FROM technicians WHERE id = $1', [id]);
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Technician not found' });
+    }
+    res.status(204).send();
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
@@ -300,7 +333,12 @@ app.get('/report/:id', async (req, res) => {
 // Endpoints de Agendamentos
 app.get('/schedules', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM schedules');
+    const query = `
+      SELECT s.*, t.color
+      FROM schedules s
+      LEFT JOIN technicians t ON s."technicianId" = t.id
+    `;
+    const result = await pool.query(query);
     res.json(result.rows);
   } catch (err) {
     console.error(err);

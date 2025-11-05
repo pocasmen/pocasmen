@@ -17,7 +17,8 @@ CREATE TABLE equipments (
 -- Tabela de Técnicos
 CREATE TABLE technicians (
     id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL
+    name VARCHAR(255) NOT NULL,
+    color VARCHAR(7) DEFAULT '#3174ad' -- Cor em formato hexadecimal
 );
 
 -- Tabela de Relatórios de Intervenção
