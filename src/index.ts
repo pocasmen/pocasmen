@@ -472,7 +472,7 @@ app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin']), asy
   if (!email || !role) return res.status(400).json({ error: 'Email and role are required.' });
   if (role === 'client' && !client_id) return res.status(400).json({ error: 'Client ID is required for client role.' });
 
-  const inviteData: any = { role: role, ...meta };
+  const inviteData: any = { role: role, must_set_password: true, ...meta };
   if (client_id) {
     const { data: client, error: clientError } = await supabase.from('clients').select('id').eq('id', client_id).single();
     if (clientError || !client) return res.status(404).json({ error: 'Client not found.' });
