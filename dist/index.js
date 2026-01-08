@@ -56,6 +56,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.supabase = exports.app = void 0;
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const body_parser_1 = __importDefault(require("body-parser"));
@@ -64,6 +65,7 @@ const axios_1 = __importDefault(require("axios"));
 const cron = __importStar(require("node-cron"));
 const multer_1 = __importDefault(require("multer"));
 const supabase_js_1 = require("@supabase/supabase-js");
+const inventoryService = __importStar(require("./services/inventoryService"));
 dotenv_1.default.config();
 // --- SUPABASE CLIENT INITIALIZATION ---
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -73,6 +75,7 @@ if (!supabaseUrl || !supabaseServiceKey) {
     process.exit(1);
 }
 const supabase = (0, supabase_js_1.createClient)(supabaseUrl, supabaseServiceKey);
+exports.supabase = supabase;
 console.log('Server initialization with Supabase client.');
 const ATTACHMENTS_BUCKET = process.env.SUPABASE_TICKET_ATTACHMENTS_BUCKET || 'ticket-attachments';
 // --- TELEGRAM NOTIFICATION FUNCTION ---
@@ -90,6 +93,215 @@ const sendTelegramNotification = (message, chatId, replyMarkup) => __awaiter(voi
         console.error('Error sending Telegram notification:', ((_a = error.response) === null || _a === void 0 ? void 0 : _a.data) || error.message);
     }
 });
+// --- REALTIME BROADCAST HELPER ---
+const broadcastCalendarUpdate = (scheduleId) => {
+    const channel = supabase.channel('calendar_updates');
+    channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            channel.send({
+                type: 'broadcast',
+                event: 'schedule_changed',
+                payload: { scheduleId, timestamp: new Date().toISOString() }
+            }).then(() => {
+                console.log(`[DEBUG:BROADCAST] Calendar update broadcasted for scheduleId: ${scheduleId}`);
+                // Pequeno delay antes de remover o canal para garantir o envio
+                setTimeout(() => supabase.removeChannel(channel), 1000);
+            });
+        }
+    });
+};
+// --- TELEGRAM BOT POLLING LOGIC ---
+let lastUpdateId = 0;
+let botUsername = '';
+function handleTelegramUpdate(update) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const token = process.env.TELEGRAM_BOT_TOKEN;
+        if (!token)
+            return;
+        // 1. Lógica de Associação (/start [UUID])
+        if (update.message && update.message.text) {
+            const text = update.message.text;
+            const chatId = update.message.chat.id;
+            if (text.startsWith('/start ')) {
+                const profileId = text.split(' ')[1];
+                if (profileId) {
+                    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                    if (uuidRegex.test(profileId)) {
+                        const { error } = yield supabase
+                            .from('profiles')
+                            .update({ telegramchatid: chatId.toString() })
+                            .eq('id', profileId);
+                        if (!error) {
+                            yield sendTelegramNotification('✅ Conta associada com sucesso! Agora irá receber notificações neste chat.', chatId.toString());
+                            return { type: 'association', success: true };
+                        }
+                    }
+                }
+            }
+        }
+        // 2. Lógica de Botões (Callback Query)
+        if (update.callback_query) {
+            const callbackData = update.callback_query.data;
+            const chatId = update.callback_query.message.chat.id;
+            const messageId = update.callback_query.message.message_id;
+            const originalText = update.callback_query.message.text;
+            console.log(`[TELEGRAM DEBUG] Button clicked: data=${callbackData}, chatId=${chatId}`);
+            if (callbackData.startsWith('sch_acc_') || callbackData.startsWith('sch_rej_')) {
+                const isAccept = callbackData.startsWith('sch_acc_');
+                const scheduleId = isAccept ? callbackData.replace('sch_acc_', '') : callbackData.replace('sch_rej_', '');
+                const newState = isAccept ? 'accepted' : 'rejected';
+                console.log(`[TELEGRAM DEBUG] Updating schedule ${scheduleId} to state: ${newState}`);
+                const { error } = yield supabase
+                    .from('schedules')
+                    .update({ acknowledgementState: newState })
+                    .eq('id', scheduleId);
+                if (error) {
+                    console.error(`[TELEGRAM DEBUG] Supabase error updating schedule ${scheduleId}:`, error);
+                }
+                else {
+                    console.log(`[TELEGRAM DEBUG] Successfully updated schedule ${scheduleId} to ${newState}`);
+                    broadcastCalendarUpdate(scheduleId);
+                    // Obter o ticketId associado para atualizar o seu estado se necessário
+                    const { data: schedule } = yield supabase
+                        .from('schedules')
+                        .select('ticketId')
+                        .eq('id', scheduleId)
+                        .single();
+                    if (schedule && schedule.ticketId) {
+                        if (!isAccept) {
+                            console.log(`[TELEGRAM DEBUG] Reverting ticket ${schedule.ticketId} to open because schedule was rejected`);
+                            yield supabase.from('tickets').update({ status: 'open' }).eq('id', schedule.ticketId);
+                        }
+                    }
+                    yield axios_1.default.post(`https://api.telegram.org/bot${token}/editMessageText`, {
+                        chat_id: chatId,
+                        message_id: messageId,
+                        text: `${originalText}\n\n${isAccept ? '✅ *Aceite pelo Técnico*' : '❌ *Rejeitado pelo Técnico*'}`,
+                        parse_mode: 'Markdown'
+                    });
+                    return { type: 'button', success: true };
+                }
+            }
+        }
+    });
+}
+function getBotInfo() {
+    return __awaiter(this, void 0, void 0, function* () {
+        const token = process.env.TELEGRAM_BOT_TOKEN;
+        const webhookBaseUrl = process.env.TELEGRAM_WEBHOOK_URL;
+        if (!token)
+            return;
+        try {
+            if (webhookBaseUrl) {
+                const webhookUrl = `${webhookBaseUrl}/api/telegram/webhook`;
+                yield axios_1.default.post(`https://api.telegram.org/bot${token}/setWebhook`, { url: webhookUrl });
+                console.log(`Telegram Webhook set to: ${webhookUrl}`);
+            }
+            else {
+                // Clear webhook if no URL is provided to allow manual sycn (getUpdates)
+                yield axios_1.default.get(`https://api.telegram.org/bot${token}/deleteWebhook`);
+                console.log('Telegram Webhook cleared (using manual sync).');
+            }
+            const response = yield axios_1.default.get(`https://api.telegram.org/bot${token}/getMe`);
+            botUsername = response.data.result.username;
+            console.log(`Telegram Bot identified as: @${botUsername}`);
+        }
+        catch (error) {
+            console.error('Error during Telegram bot initialization:', error.message);
+        }
+    });
+}
+function syncTelegramUpdates() {
+    return __awaiter(this, void 0, void 0, function* () {
+        const token = process.env.TELEGRAM_BOT_TOKEN;
+        if (!token)
+            return { success: false, error: 'Token não configurado' };
+        try {
+            const response = yield axios_1.default.get(`https://api.telegram.org/bot${token}/getUpdates`, {
+                params: { offset: lastUpdateId + 1, timeout: 1 }
+            });
+            const updates = response.data.result;
+            let processedCount = 0;
+            for (const update of updates) {
+                lastUpdateId = update.update_id;
+                const result = yield handleTelegramUpdate(update);
+                if (result)
+                    processedCount++;
+            }
+            return { success: true, count: processedCount };
+        }
+        catch (error) {
+            console.error('Error syncing Telegram updates:', error.message);
+            return { success: false, error: error.message };
+        }
+    });
+}
+function sendScheduleNotificationToTechnicians(scheduleId_1, technicianIds_1) {
+    return __awaiter(this, arguments, void 0, function* (scheduleId, technicianIds, isUpdate = false) {
+        var _a, _b;
+        try {
+            const { data: schedule, error: sError } = yield supabase
+                .from('schedules')
+                .select('title, startDate, endDate, serviceType, additionalInfo, clients(name)')
+                .eq('id', scheduleId)
+                .single();
+            if (sError || !schedule) {
+                console.error('Error fetching schedule for notification:', sError);
+                return;
+            }
+            const { data: scheduleParts, error: partsError } = yield supabase
+                .from('schedule_parts')
+                .select('quantity, parts(reference, designation)')
+                .eq('scheduleId', scheduleId);
+            const clientName = Array.isArray(schedule.clients) ? (_a = schedule.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = schedule.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido';
+            const startDate = new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
+            const endDate = new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
+            const serviceType = schedule.serviceType || 'Não especificado';
+            const { data: profiles, error: pError } = yield supabase
+                .from('profiles')
+                .select('id, telegramchatid')
+                .in('id', technicianIds);
+            if (pError || !profiles) {
+                console.error('Error fetching profiles for notification:', pError);
+                return;
+            }
+            const notificationTitle = isUpdate ? '🔄 *Re-Agendamento*' : '📅 *Novo Agendamento*';
+            let message = `${notificationTitle}\n\n`;
+            message += `*Título:* ${schedule.title}\n`;
+            message += `*Cliente:* ${clientName}\n`;
+            message += `*Tipo de Serviço:* ${serviceType}\n`;
+            message += `*Início:* ${startDate}\n`;
+            message += `*Final:* ${endDate}\n`;
+            if (schedule.additionalInfo) {
+                message += `*Notas:* ${schedule.additionalInfo}\n`;
+            }
+            if (scheduleParts && scheduleParts.length > 0) {
+                message += `\n*Peças necessárias:*\n`;
+                scheduleParts.forEach((sp) => {
+                    const p = sp.parts;
+                    message += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
+                });
+            }
+            message += `\nPor favor, confirme a sua disponibilidade.`;
+            const replyMarkup = {
+                inline_keyboard: [
+                    [
+                        { text: '✅ Aceitar', callback_data: `sch_acc_${scheduleId}` },
+                        { text: '❌ Rejeitar', callback_data: `sch_rej_${scheduleId}` }
+                    ]
+                ]
+            };
+            for (const profile of profiles) {
+                if (profile.telegramchatid) {
+                    yield sendTelegramNotification(message, profile.telegramchatid, replyMarkup);
+                }
+            }
+        }
+        catch (err) {
+            console.error('Unexpected error in sendScheduleNotificationToTechnicians:', err);
+        }
+    });
+}
 // --- CRON JOB FOR TICKET CHECKS ---
 let scheduledTask;
 function runTicketCheck() {
@@ -143,6 +355,7 @@ function scheduleTicketCheck() {
 }
 // --- EXPRESS APP SETUP ---
 const app = (0, express_1.default)();
+exports.app = app;
 const port = 5001;
 app.use((0, cors_1.default)());
 app.use(body_parser_1.default.json());
@@ -178,11 +391,12 @@ function markLastClientMessageAsRead(ticketId) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
             // Find the last message from the client that is marked as new
+            // We join with profiles to identify messages where the user has the 'client' role
             const { data: lastClientMessage, error: fetchError } = yield supabase
                 .from('ticket_responses')
-                .select('id')
+                .select('id, profiles!inner(role)')
                 .eq('ticket_id', ticketId)
-                .eq('role', 'client')
+                .eq('profiles.role', 'client')
                 .eq('isNew', true)
                 .order('created_at', { ascending: false })
                 .limit(1)
@@ -251,6 +465,39 @@ app.post('/auth/self-register', (req, res) => __awaiter(void 0, void 0, void 0, 
         console.error('Fatal error during self-register:', err);
         res.status(500).json({ error: 'Ocorreu um erro inesperado no servidor.' });
     }
+}));
+app.get('/api/telegram/bot-info', authenticateToken, (req, res) => {
+    res.json({ username: botUsername });
+});
+app.post('/api/telegram/webhook', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    // O Telegram espera um status 200 rápido
+    res.sendStatus(200);
+    try {
+        const update = req.body;
+        console.log('[TELEGRAM DEBUG] Webhook received update:', JSON.stringify(update, null, 2));
+        yield handleTelegramUpdate(update);
+    }
+    catch (err) {
+        console.error('[TELEGRAM DEBUG] Error processing webhook update:', err);
+    }
+}));
+app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { url } = req.body;
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!url || !token)
+        return res.status(400).json({ error: 'URL is required' });
+    try {
+        const webhookUrl = `${url}/api/telegram/webhook`;
+        yield axios_1.default.post(`https://api.telegram.org/bot${token}/setWebhook`, { url: webhookUrl });
+        res.json({ message: `Webhook set to ${webhookUrl}` });
+    }
+    catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+}));
+app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const result = yield syncTelegramUpdates();
+    res.json(result);
 }));
 app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const _a = req.body, { email, client_id, role } = _a, meta = __rest(_a, ["email", "client_id", "role"]);
@@ -474,7 +721,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
     try {
         const { data, error } = yield supabase
             .from('profiles')
-            .select('id, email, role, first_name, last_name, color')
+            .select('id, email, role, first_name, last_name, color, telegramchatid')
             .in('role', ['technician', 'admin'])
             .order('first_name', { ascending: true });
         if (error)
@@ -486,6 +733,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
             first_name: p.first_name || '',
             last_name: p.last_name || '',
             color: p.color || '#3174ad',
+            telegramchatid: p.telegramchatid || '',
             name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
         }));
         res.json(result);
@@ -498,15 +746,15 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
 app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const userId = req.params.id;
-        const { first_name, last_name, color, role } = req.body;
+        const { first_name, last_name, color, role, telegramchatid } = req.body;
         if (!userId) {
             return res.status(400).json({ error: 'User ID is required.' });
         }
         const { data, error } = yield supabase
             .from('profiles')
-            .update({ first_name, last_name, color, role })
+            .update({ first_name, last_name, color, role, telegramchatid })
             .eq('id', userId)
-            .select('id, email, role, first_name, last_name, color')
+            .select('id, email, role, first_name, last_name, color, telegramchatid')
             .single();
         if (error) {
             console.error('Error updating user:', error);
@@ -586,7 +834,7 @@ app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin'
         });
         const result = reports.map(r => {
             const eq = equipmentMap.get(r.equipmentId);
-            return Object.assign(Object.assign({}, r), { clientName: clientMap.get(r.clientId) || 'Cliente Desconhecido', equipmentBrand: (eq === null || eq === void 0 ? void 0 : eq.brand) || '', equipmentModel: (eq === null || eq === void 0 ? void 0 : eq.model) || '', technicians: techMap.get(r.id) || [] });
+            return Object.assign(Object.assign({}, r), { clientName: clientMap.get(r.clientId) || 'Cliente Desconhecido', equipmentBrand: (eq === null || eq === void 0 ? void 0 : eq.brand) || '', equipmentModel: (eq === null || eq === void 0 ? void 0 : eq.model) || '', technicians: techMap.get(r.id) || [], internalNotes: r.internal_notes });
         });
         console.log('[DEBUG] GET /reports - Successfully returning results');
         res.json(result);
@@ -635,7 +883,7 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
             }
         }
         // Map to the format expected by ReportPrintPage
-        const detailedReport = Object.assign(Object.assign({}, report), { clientName: (client === null || client === void 0 ? void 0 : client.name) || 'Cliente Desconhecido', clientAddress: (client === null || client === void 0 ? void 0 : client.address) || '', clientNif: (client === null || client === void 0 ? void 0 : client.nif) || '', equipmentBrand: (equipment === null || equipment === void 0 ? void 0 : equipment.brand) || '', equipmentModel: (equipment === null || equipment === void 0 ? void 0 : equipment.model) || '', equipmentSerialNumber: (equipment === null || equipment === void 0 ? void 0 : equipment.serialNumber) || '', technicianName: technicianNames, technicians: technicians });
+        const detailedReport = Object.assign(Object.assign({}, report), { clientName: (client === null || client === void 0 ? void 0 : client.name) || 'Cliente Desconhecido', clientAddress: (client === null || client === void 0 ? void 0 : client.address) || '', clientNif: (client === null || client === void 0 ? void 0 : client.nif) || '', equipmentBrand: (equipment === null || equipment === void 0 ? void 0 : equipment.brand) || '', equipmentModel: (equipment === null || equipment === void 0 ? void 0 : equipment.model) || '', equipmentSerialNumber: (equipment === null || equipment === void 0 ? void 0 : equipment.serialNumber) || '', technicianName: technicianNames, technicians: technicians, internalNotes: report.internal_notes });
         res.json(detailedReport);
     }
     catch (err) {
@@ -684,7 +932,7 @@ app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:schedule
             }
         }
         console.log(`[DEBUG] GET /reports/by-schedule - Returning report with ${technicians.length} technicians`);
-        res.json(Object.assign(Object.assign({}, report), { technicians }));
+        res.json(Object.assign(Object.assign({}, report), { technicians, internalNotes: report.internal_notes }));
     }
     catch (err) {
         console.error('[FATAL ERROR] GET /reports/by-schedule:', err);
@@ -694,7 +942,7 @@ app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:schedule
 app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     console.log('[DEBUG] POST /api/reports hit. Request body:', req.body);
     try {
-        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType } = req.body;
+        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
         if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
             console.error('[ERROR] POST /api/reports: Missing required fields.', { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, description });
             return res.status(400).json({ error: 'Campos obrigatórios em falta para criar o relatório.' });
@@ -702,7 +950,7 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
         console.log('[DEBUG] Attempting to insert report into Supabase...');
         const { data: report, error: reportError } = yield supabase
             .from('reports')
-            .insert({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [] })
+            .insert({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '' })
             .select('id')
             .single();
         if (reportError) {
@@ -725,6 +973,27 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
             // Decide if this should be a blocking error or just log it. For now, logging.
         }
         console.log('[DEBUG] Schedule hasReport status updated.');
+        // --- INVENTORY MANAGEMENT: Automatic Abate ---
+        if (Array.isArray(parts) && parts.length > 0) {
+            console.log(`[DEBUG_INV] Processing automatic abate for ${parts.length} parts.`);
+            for (const p of parts) {
+                if (p.id && p.quantity > 0) {
+                    const { data: currentPart, error: fetchError } = yield supabase
+                        .from('parts')
+                        .select('stock_quantity, reserved_quantity, designation')
+                        .eq('id', p.id)
+                        .single();
+                    if (!fetchError && currentPart) {
+                        const { newStock, newReserved } = inventoryService.processReportAbate(currentPart.stock_quantity || 0, currentPart.reserved_quantity || 0, Number(p.quantity));
+                        console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${p.id}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
+                        yield supabase
+                            .from('parts')
+                            .update({ stock_quantity: newStock, reserved_quantity: newReserved })
+                            .eq('id', p.id);
+                    }
+                }
+            }
+        }
         res.status(201).json({ message: 'Relatório criado com sucesso!', reportId: report.id });
     }
     catch (err) {
@@ -736,7 +1005,7 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
     console.log('[DEBUG] PUT /api/reports/:id hit. Report ID:', req.params.id, 'Request body:', req.body);
     try {
         const reportId = req.params.id;
-        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType } = req.body;
+        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
         if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
             console.error('[ERROR] PUT /api/reports/:id: Missing required fields.', { reportId, clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, description });
             return res.status(400).json({ error: 'Campos obrigatórios em falta para atualizar o relatório.' });
@@ -744,7 +1013,7 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
         console.log('[DEBUG] Attempting to update report in Supabase. Report ID:', reportId);
         const { data: updatedReport, error: reportError } = yield supabase
             .from('reports')
-            .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [] })
+            .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '' })
             .eq('id', reportId)
             .select('id')
             .single();
@@ -864,10 +1133,10 @@ app.get('/api/my-tickets', authenticateToken, authorizeRoles(['client']), (req, 
         if (scheduleIds.length > 0) {
             const { data: schedules, error: schedulesError } = yield supabase
                 .from('schedules')
-                .select('id, startDate, endDate, additionalInfo, hasReport')
+                .select('id, startDate, endDate, hasReport')
                 .in('id', scheduleIds);
             if (!schedulesError && schedules) {
-                scheduleMap = new Map(schedules.map(s => [s.id, { startDate: s.startDate, endDate: s.endDate, additionalInfo: s.additionalInfo, hasReport: s.hasReport }]));
+                scheduleMap = new Map(schedules.map(s => [s.id, { startDate: s.startDate, endDate: s.endDate, hasReport: s.hasReport }]));
             }
         }
         const result = (tickets || []).map(t => {
@@ -886,7 +1155,6 @@ app.get('/api/my-tickets', authenticateToken, authorizeRoles(['client']), (req, 
                 equipmentInfo,
                 startDate: s === null || s === void 0 ? void 0 : s.startDate,
                 endDate: s === null || s === void 0 ? void 0 : s.endDate,
-                additionalInfo: s === null || s === void 0 ? void 0 : s.additionalInfo,
                 hasReport: s === null || s === void 0 ? void 0 : s.hasReport,
             };
         });
@@ -1249,23 +1517,6 @@ app.post('/api/my-tickets/:id/reply', authenticateToken, authorizeRoles(['client
     var _a, _b;
     try {
         const ticketId = Number(req.params.id);
-        app.put('/api/tickets/:id/mark-as-read', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-            var _a;
-            try {
-                const ticketId = Number(req.params.id);
-                yield supabase
-                    .from('ticket_responses')
-                    .update({ isNew: false })
-                    .eq('ticket_id', ticketId)
-                    .neq('user_id', ((_a = req.user) === null || _a === void 0 ? void 0 : _a.id) || '')
-                    .eq('isNew', true);
-                res.status(200).send('Messages marked as read');
-            }
-            catch (error) {
-                console.error('Error marking messages as read:', error);
-                res.status(500).send('Failed to mark messages as read');
-            }
-        }));
         const { message } = req.body;
         if (!ticketId || Number.isNaN(ticketId))
             return res.status(400).json({ error: 'Invalid ticket id' });
@@ -1309,7 +1560,7 @@ app.post('/api/my-tickets/:id/reply', authenticateToken, authorizeRoles(['client
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.put('/api/my-tickets/:id/mark-as-read', authenticateToken, authorizeRoles(['client', 'technician', 'admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put(['/api/tickets/:id/mark-as-read', '/api/my-tickets/:id/mark-as-read'], authenticateToken, authorizeRoles(['client', 'technician', 'admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     try {
         const ticketId = Number(req.params.id);
@@ -1317,7 +1568,7 @@ app.put('/api/my-tickets/:id/mark-as-read', authenticateToken, authorizeRoles(['
             .from('ticket_responses')
             .update({ isNew: false })
             .eq('ticket_id', ticketId)
-            .eq('user_id', ((_a = req.user) === null || _a === void 0 ? void 0 : _a.id) || '')
+            .neq('user_id', ((_a = req.user) === null || _a === void 0 ? void 0 : _a.id) || '')
             .eq('isNew', true);
         res.status(200).send('Messages marked as read');
     }
@@ -1351,7 +1602,7 @@ app.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['clie
     }
 }));
 app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician']), upload.single('file'), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
+    var _a;
     try {
         const ticketId = Number(req.params.id);
         const file = req.file;
@@ -1359,21 +1610,51 @@ app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['cli
             return res.status(400).json({ error: 'Invalid ticket id' });
         if (!file)
             return res.status(400).json({ error: 'No file uploaded.' });
-        const bucket = ATTACHMENTS_BUCKET;
-        const safeName = file.originalname.replace(/[^a-zA-Z0-9_.-]/g, '_');
-        const path = `ticket_${ticketId}/${Date.now()}_${safeName}`;
-        const { data: uploadData, error: uploadError } = yield supabase.storage.from(bucket).upload(path, file.buffer, { contentType: file.mimetype });
-        if (uploadError)
-            return res.status(500).json({ error: 'Failed to upload file', details: uploadError.message });
+        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+        if (file.size > MAX_FILE_SIZE) {
+            return res.status(400).json({ error: 'O ficheiro é demasiado grande. Máximo 10MB.' });
+        }
+        const ALLOWED_TYPES = [
+            'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+            'application/pdf',
+            'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'text/plain', 'text/csv',
+            'application/zip', 'application/x-zip-compressed',
+            'application/x-rar-compressed', 'application/vnd.rar',
+            'application/x-7z-compressed'
+        ];
+        if (!ALLOWED_TYPES.includes(file.mimetype)) {
+            return res.status(400).json({ error: 'Tipo de ficheiro não permitido.' });
+        }
+        const fileExt = file.originalname.split('.').pop();
+        const fileName = `${Date.now()}-${Math.round(Math.random() * 1E9)}.${fileExt}`;
+        const filePath = `tickets/${ticketId}/${fileName}`;
+        const { error: uploadError } = yield supabase.storage
+            .from(ATTACHMENTS_BUCKET)
+            .upload(filePath, file.buffer, {
+            contentType: file.mimetype,
+        });
+        if (uploadError) {
+            console.error('Error uploading file to Supabase Storage:', uploadError);
+            return res.status(500).json({ error: 'Failed to upload file to storage', details: uploadError.message });
+        }
         const { data, error } = yield supabase
             .from('ticket_attachments')
-            .insert({ ticket_id: ticketId, file_name: file.originalname, mime_type: file.mimetype, storage_path: (uploadData === null || uploadData === void 0 ? void 0 : uploadData.path) || path, uploaded_by_user_id: (_a = req.user) === null || _a === void 0 ? void 0 : _a.id })
-            .select('id, ticket_id, file_name, mime_type, storage_path, uploaded_by_user_id, created_at');
-        if (error)
-            return res.status(500).json({ error: 'Failed to save attachment record', details: error.message });
-        const { data: signed } = yield supabase.storage.from(bucket).createSignedUrl(((_b = data === null || data === void 0 ? void 0 : data[0]) === null || _b === void 0 ? void 0 : _b.storage_path) || path, 3600);
-        const result = Object.assign(Object.assign({}, ((data === null || data === void 0 ? void 0 : data[0]) || {})), { url: (signed === null || signed === void 0 ? void 0 : signed.signedUrl) || '' });
-        res.status(201).json(result);
+            .insert({
+            ticket_id: ticketId,
+            file_name: file.originalname,
+            mime_type: file.mimetype,
+            storage_path: filePath,
+            uploaded_by_user_id: (_a = req.user) === null || _a === void 0 ? void 0 : _a.id,
+        })
+            .select()
+            .single();
+        if (error) {
+            console.error('Error saving attachment metadata to database:', error);
+            return res.status(500).json({ error: 'Failed to save attachment metadata', details: error.message });
+        }
+        res.status(201).json(data);
     }
     catch (err) {
         console.error('Error uploading attachment:', err);
@@ -1416,11 +1697,11 @@ app.delete('/api/tickets/:ticketId/attachments/:attachmentId', authenticateToken
     }
 }));
 // SCHEDULES for calendar
-app.get('/schedules', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { data: schedules, error: schedulesError } = yield supabase
             .from('schedules')
-            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, schedule_technicians(technicianId), clients(name)')
+            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, schedule_technicians(technicianId), clients(name)')
             .order('startDate', { ascending: true });
         if (schedulesError)
             return res.status(500).json({ error: 'Failed to fetch schedules', details: schedulesError.message });
@@ -1467,7 +1748,7 @@ app.get('/schedules', authenticateToken, authorizeRoles(['admin', 'technician'])
                 endDate: s.endDate,
                 isCompleted: s.isCompleted,
                 hasReport: s.hasReport,
-                additionalInfo: s.additionalInfo,
+                internalNotes: s.additionalInfo,
                 serviceType: s.serviceType,
                 ticketId: s.ticketId,
                 clientId: s.clientId,
@@ -1475,6 +1756,7 @@ app.get('/schedules', authenticateToken, authorizeRoles(['admin', 'technician'])
                 technicians: (s.schedule_technicians || []).map((st) => techMap.get(st.technicianId)).filter(Boolean),
                 clientName: Array.isArray(s.clients) ? (_a = s.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = s.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido',
                 parts: partsMap.get(s.id) || [],
+                acknowledgementState: s.acknowledgementState,
             });
         });
         res.json(result);
@@ -1484,9 +1766,75 @@ app.get('/schedules', authenticateToken, authorizeRoles(['admin', 'technician'])
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
+app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b;
+    try {
+        const { id } = req.params;
+        const { data: schedule, error: scheduleError } = yield supabase
+            .from('schedules')
+            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, schedule_technicians(technicianId), clients(name)')
+            .eq('id', id)
+            .single();
+        if (scheduleError || !schedule) {
+            return res.status(404).json({ error: 'Schedule not found' });
+        }
+        // Fetch technicians
+        const technicianIds = (schedule.schedule_technicians || []).map((st) => st.technicianId);
+        let technicians = [];
+        if (technicianIds.length > 0) {
+            const { data: profiles, error: profilesError } = yield supabase
+                .from('profiles')
+                .select('id, first_name, last_name, color')
+                .in('id', technicianIds);
+            if (!profilesError && profiles) {
+                technicians = profiles.map((p) => ({
+                    id: p.id,
+                    name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+                    color: p.color
+                }));
+            }
+        }
+        // Fetch parts
+        const { data: scheduleParts, error: partsError } = yield supabase
+            .from('schedule_parts')
+            .select('partId, quantity, parts(id, reference, designation)')
+            .eq('scheduleId', id);
+        const parts = (scheduleParts || []).map((sp) => ({
+            id: sp.parts.id,
+            reference: sp.parts.reference,
+            designation: sp.parts.designation,
+            quantity: sp.quantity,
+            isDesignationLocked: true
+        }));
+        const result = {
+            id: schedule.id,
+            title: schedule.title,
+            startDate: schedule.startDate,
+            endDate: schedule.endDate,
+            isCompleted: schedule.isCompleted,
+            hasReport: schedule.hasReport,
+            internalNotes: schedule.additionalInfo,
+            serviceType: schedule.serviceType,
+            ticketId: schedule.ticketId,
+            clientId: schedule.clientId,
+            equipmentId: schedule.equipmentId,
+            technicians,
+            clientName: Array.isArray(schedule.clients) ? (_a = schedule.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = schedule.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido',
+            parts,
+            acknowledgementState: schedule.acknowledgementState,
+        };
+        res.json(result);
+    }
+    catch (err) {
+        console.error('Error fetching schedule by ID:', err);
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
 app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, additionalInfo, serviceType, parts, } = req.body;
+        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, internalNotes, serviceType, parts, } = req.body;
+        console.log('[DEBUG_SCHEDULES] POST /api/schedules. Body:', JSON.stringify(req.body));
+        console.log('[DEBUG_SCHEDULES] POST /api/schedules. internalNotes extracted:', internalNotes);
         if (!title || !startDate || !endDate || !clientId || !equipmentId) {
             return res.status(400).json({ error: 'title, startDate, endDate, clientId and equipmentId are required.' });
         }
@@ -1495,11 +1843,14 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
         }
         const { data: inserted, error: insertError } = yield supabase
             .from('schedules')
-            .insert({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo, serviceType, ticketId })
-            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId')
+            .insert({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId })
+            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
             .single();
-        if (insertError)
+        if (insertError) {
+            console.error('[DEBUG_SCHEDULES] POST /api/schedules. Insert error:', insertError);
             return res.status(500).json({ error: 'Failed to create schedule', details: insertError.message });
+        }
+        console.log('[DEBUG_SCHEDULES] POST /api/schedules. Insert success. saved additionalInfo:', inserted.additionalInfo);
         const scheduleId = inserted.id;
         if (Array.isArray(technicianIds) && technicianIds.length > 0) {
             const techRows = technicianIds.map((tid) => ({ scheduleId, technicianId: String(tid) }));
@@ -1569,10 +1920,8 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
                         console.error(`[DEBUG_INV] ERROR fetching part ${partRow.partId}:`, fetchError);
                         continue; // Continue with other parts
                     }
-                    const currentReserved = currentPart.reserved_quantity || 0;
-                    const qtyToAdd = Number(partRow.quantity);
-                    const newReservedQuantity = currentReserved + qtyToAdd;
-                    console.log(`[DEBUG_INV] Part "${currentPart.designation}" (ID: ${partRow.partId}): Current Reserved=${currentReserved} + Adding=${qtyToAdd} = New Reserved=${newReservedQuantity}`);
+                    const newReservedQuantity = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, Number(partRow.quantity));
+                    console.log(`[DEBUG_INV] Part "${currentPart.designation}" (ID: ${partRow.partId}): Current Reserved=${currentPart.reserved_quantity || 0} + Adding=${Number(partRow.quantity)} = New Reserved=${newReservedQuantity}`);
                     const { error: updateError } = yield supabase
                         .from('parts')
                         .update({ reserved_quantity: newReservedQuantity })
@@ -1589,7 +1938,13 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
         if (ticketId) {
             yield supabase.from('tickets').update({ scheduleId, status: 'scheduled' }).eq('id', ticketId);
         }
-        res.status(201).json(inserted);
+        // Notificar técnicos via Telegram
+        if (technicianIds && technicianIds.length > 0) {
+            yield sendScheduleNotificationToTechnicians(scheduleId, technicianIds);
+        }
+        broadcastCalendarUpdate(scheduleId);
+        const result = Object.assign(Object.assign({}, inserted), { internalNotes: inserted.additionalInfo, acknowledgementState: inserted.acknowledgementState, technicians: [], parts: [] });
+        res.status(201).json(result);
     }
     catch (err) {
         console.error('Error creating schedule:', err);
@@ -1599,7 +1954,10 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
 app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const scheduleId = Number(req.params.id);
-        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, additionalInfo, serviceType, parts, } = req.body;
+        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, internalNotes, serviceType, parts, } = req.body;
+        console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. ID:', scheduleId);
+        console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Body:', JSON.stringify(req.body));
+        console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. internalNotes extracted:', internalNotes);
         if (!scheduleId || Number.isNaN(scheduleId))
             return res.status(400).json({ error: 'Invalid schedule id' });
         if (!title || !startDate || !endDate || !clientId || !equipmentId) {
@@ -1610,12 +1968,15 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         }
         const { data: updated, error: updateError } = yield supabase
             .from('schedules')
-            .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo, serviceType, ticketId })
+            .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId, acknowledgementState: 'pending' })
             .eq('id', scheduleId)
-            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId')
+            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
             .single();
-        if (updateError)
+        if (updateError) {
+            console.error('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Update error:', updateError);
             return res.status(500).json({ error: 'Failed to update schedule', details: updateError.message });
+        }
+        console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Update success. saved additionalInfo:', updated.additionalInfo);
         yield supabase.from('schedule_technicians').delete().eq('scheduleId', scheduleId);
         if (Array.isArray(technicianIds) && technicianIds.length > 0) {
             const techRows = technicianIds.map((tid) => ({ scheduleId, technicianId: String(tid) }));
@@ -1707,10 +2068,8 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
                         console.error(`[DEBUG_INV] ERROR fetching part ${partRow.partId}:`, fetchError);
                         continue;
                     }
-                    const currentReserved = currentPart.reserved_quantity || 0;
-                    const qtyToAdd = Number(partRow.quantity);
-                    const newReservedQuantity = currentReserved + qtyToAdd;
-                    console.log(`[DEBUG_INV] PUT: Part "${currentPart.designation}" (ID: ${partRow.partId}): Current Reserved=${currentReserved} + Adding=${qtyToAdd} = New Reserved=${newReservedQuantity}`);
+                    const newReservedQuantity = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, Number(partRow.quantity));
+                    console.log(`[DEBUG_INV] PUT: Part "${currentPart.designation}" (ID: ${partRow.partId}): Current Reserved=${currentPart.reserved_quantity || 0} + Adding=${Number(partRow.quantity)} = New Reserved=${newReservedQuantity}`);
                     const { error: updateError } = yield supabase
                         .from('parts')
                         .update({ reserved_quantity: newReservedQuantity })
@@ -1739,7 +2098,13 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
                 .update({ scheduleId, status: isCompleted ? 'closed' : 'scheduled', scheduled_at: startDate })
                 .eq('id', ticketId);
         }
-        res.json(updated);
+        // Notificar técnicos sobre atualização (opcional, mas recomendado)
+        if (technicianIds && technicianIds.length > 0 && !isCompleted) {
+            yield sendScheduleNotificationToTechnicians(scheduleId, technicianIds, true);
+        }
+        const finalObject = Object.assign(Object.assign({}, updated), { internalNotes: updated.additionalInfo, acknowledgementState: updated.acknowledgementState || 'pending' });
+        broadcastCalendarUpdate(scheduleId);
+        res.json(finalObject);
     }
     catch (err) {
         console.error('Error updating schedule:', err);
@@ -1749,7 +2114,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
 app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const scheduleId = Number(req.params.id);
-        const { title, startDate, endDate, clientId, equipmentId, technicianIds, ticketId, additionalInfo, serviceType, parts, } = req.body;
+        const { title, startDate, endDate, clientId, equipmentId, technicianIds, ticketId, internalNotes, serviceType, parts, } = req.body;
         if (!scheduleId || Number.isNaN(scheduleId))
             return res.status(400).json({ error: 'Invalid schedule id' });
         if (!Array.isArray(technicianIds) || technicianIds.length === 0) {
@@ -1757,7 +2122,7 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
         }
         const { data: updated, error: updateError } = yield supabase
             .from('schedules')
-            .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo, serviceType })
+            .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo: internalNotes, serviceType })
             .eq('id', scheduleId)
             .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId')
             .single();
@@ -1779,7 +2144,7 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
             for (const op of oldParts) {
                 const { data: currentPart } = yield supabase.from('parts').select('reserved_quantity').eq('id', op.partId).single();
                 if (currentPart) {
-                    const newReserved = Math.max(0, (currentPart.reserved_quantity || 0) - op.quantity);
+                    const newReserved = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, -op.quantity);
                     yield supabase.from('parts').update({ reserved_quantity: newReserved }).eq('id', op.partId);
                 }
             }
@@ -1846,7 +2211,7 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
                         console.error('[ERROR] Failed to fetch part for reservation:', fetchError);
                         continue;
                     }
-                    const newReservedQuantity = (currentPart.reserved_quantity || 0) + Number(partRow.quantity);
+                    const newReservedQuantity = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, Number(partRow.quantity));
                     const { error: updateError } = yield supabase
                         .from('parts')
                         .update({ reserved_quantity: newReservedQuantity })
@@ -1872,7 +2237,8 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
                 .update({ scheduleId, status: 'closed', scheduled_at: startDate })
                 .eq('id', ticketId);
         }
-        res.json(updated);
+        broadcastCalendarUpdate(scheduleId);
+        res.json(Object.assign(Object.assign({}, updated), { internalNotes: updated.additionalInfo }));
     }
     catch (err) {
         console.error('Error completing schedule:', err);
@@ -1905,7 +2271,7 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
             for (const op of oldParts) {
                 const { data: currentPart } = yield supabase.from('parts').select('reserved_quantity').eq('id', op.partId).single();
                 if (currentPart) {
-                    const newReserved = Math.max(0, (currentPart.reserved_quantity || 0) - op.quantity);
+                    const newReserved = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, -op.quantity);
                     yield supabase.from('parts').update({ reserved_quantity: newReserved }).eq('id', op.partId);
                     console.log(`[DEBUG] Released reservation of ${op.quantity} for part ${op.partId}`);
                 }
@@ -1923,6 +2289,7 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
         const { error: scheduleDelError } = yield supabase.from('schedules').delete().eq('id', scheduleId);
         if (scheduleDelError)
             return res.status(500).json({ error: 'Failed to delete schedule', details: scheduleDelError.message });
+        broadcastCalendarUpdate(scheduleId);
         res.status(204).send();
     }
     catch (err) {
@@ -2074,12 +2441,7 @@ app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 
             console.error('Error fetching current part for stock update:', fetchError);
             return res.status(404).json({ error: 'Part not found.' });
         }
-        let newStockQuantity = currentPart.stock_quantity + quantity;
-        let newOrderedQuantity = currentPart.ordered_quantity;
-        if (fromOrder) {
-            // If receiving an order, decrease ordered_quantity
-            newOrderedQuantity = Math.max(0, currentPart.ordered_quantity - quantity);
-        }
+        const { newStock: newStockQuantity, newOrdered: newOrderedQuantity } = inventoryService.processStockUpdate(currentPart.stock_quantity, currentPart.ordered_quantity, quantity, !!fromOrder);
         const { data, error } = yield supabase
             .from('parts')
             .update({ stock_quantity: newStockQuantity, ordered_quantity: newOrderedQuantity })
@@ -2113,7 +2475,7 @@ app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 
             console.error('Error fetching current part for order update:', fetchError);
             return res.status(404).json({ error: 'Part not found.' });
         }
-        const newOrderedQuantity = currentPart.ordered_quantity + quantity;
+        const newOrderedQuantity = inventoryService.calculateNewQuantity(currentPart.ordered_quantity, quantity);
         const { data, error } = yield supabase
             .from('parts')
             .update({ ordered_quantity: newOrderedQuantity })
@@ -2128,6 +2490,38 @@ app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 
     }
     catch (err) {
         console.error('Error updating ordered quantity:', err);
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const partId = req.params.id;
+        const { data, error } = yield supabase
+            .from('schedule_parts')
+            .select('quantity, schedules(id, title, startDate, isCompleted, clients(name))')
+            .eq('partId', partId)
+            .eq('schedules.isCompleted', false);
+        if (error) {
+            console.error('Error fetching part reservations:', error);
+            return res.status(500).json({ error: 'Failed to fetch reservations', details: error.message });
+        }
+        // Filter out null schedules 
+        const reservations = (data || [])
+            .filter((item) => item.schedules)
+            .map((item) => {
+            var _a;
+            return ({
+                scheduleId: item.schedules.id,
+                title: item.schedules.title,
+                startDate: item.schedules.startDate,
+                clientName: ((_a = item.schedules.clients) === null || _a === void 0 ? void 0 : _a.name) || 'Cliente Desconhecido',
+                quantityReserved: item.quantity
+            });
+        });
+        res.json(reservations);
+    }
+    catch (err) {
+        console.error('Error fetching part reservations:', err);
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
@@ -2512,7 +2906,10 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Internal server error', details: err.message });
 });
 // --- INICIAR SERVIDOR ---
-app.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
-    scheduleTicketCheck();
-});
+if (process.env.NODE_ENV !== 'test') {
+    app.listen(port, () => __awaiter(void 0, void 0, void 0, function* () {
+        console.log(`Server is running on http://localhost:${port}`);
+        scheduleTicketCheck();
+        yield getBotInfo();
+    }));
+}
