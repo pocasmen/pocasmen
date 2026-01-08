@@ -262,7 +262,9 @@ async function sendScheduleNotificationToTechnicians(scheduleId: number, technic
         adminMessage += `\n*Técnicos Atribuídos:* ${assignedTechNames}\n`;
         adminMessage += `\n_Aviso informativo para administração._`;
         await sendTelegramNotification(adminMessage, profile.telegramchatid);
-      } else if (technicianIds.includes(profile.id)) {
+      }
+
+      if (technicianIds.includes(profile.id)) {
         // Mensagem para Técnico: SEM lista de técnicos (para ser curta) e COM botões
         let techMessage = baseMessage;
         techMessage += `\nPor favor, confirme a sua disponibilidade.`;
@@ -2599,13 +2601,20 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
     const scheduleId = Number(req.params.id);
     if (!scheduleId || Number.isNaN(scheduleId)) return res.status(400).json({ error: 'Invalid schedule id' });
 
+    // 1. Fetch details necessary for notification BEFORE deletion
     const { data: schedule, error: scheduleError } = await supabase
       .from('schedules')
-      .select('id')
+      .select('title, startDate, endDate, clients(name), schedule_technicians(technicianId)')
       .eq('id', scheduleId)
       .single();
+
     if (scheduleError) return res.status(500).json({ error: 'Failed to fetch schedule', details: scheduleError.message });
     if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
+
+    const techIds = (schedule.schedule_technicians || []).map((st: any) => st.technicianId);
+    const clientName = Array.isArray(schedule.clients) ? schedule.clients[0]?.name : (schedule.clients as any)?.name || 'Cliente Desconhecido';
+    const startDate = new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
+    const endDate = new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
 
     const { error: stDelError } = await supabase.from('schedule_technicians').delete().eq('scheduleId', scheduleId);
     if (stDelError) return res.status(500).json({ error: 'Failed to delete schedule technicians', details: stDelError.message });
@@ -2640,6 +2649,31 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
     if (scheduleDelError) return res.status(500).json({ error: 'Failed to delete schedule', details: scheduleDelError.message });
 
     broadcastCalendarUpdate(scheduleId);
+
+    // --- NOTIFICATION OF DELETION ---
+    try {
+      let query = supabase.from('profiles').select('id, telegramchatid, role');
+      if (techIds.length > 0) {
+        query = query.or(`id.in.(${techIds.map((t: any) => `"${t}"`).join(',')}),role.eq.admin`);
+      } else {
+        query = query.eq('role', 'admin');
+      }
+
+      const { data: profiles } = await query;
+
+      if (profiles && profiles.length > 0) {
+        const message = `❌ *Agendamento Cancelado*\n\n*Título:* ${schedule.title}\n*Cliente:* ${clientName}\n*Início:* ${startDate}\n*Fim:* ${endDate}\n\n_Este agendamento foi removido do sistema._`;
+
+        for (const p of profiles) {
+          if (p.telegramchatid) {
+            await sendTelegramNotification(message, p.telegramchatid);
+          }
+        }
+      }
+    } catch (notifErr) {
+      console.error('Error sending deletion notifications:', notifErr);
+      // Suppress error so it doesn't fail the deletion response
+    }
 
     res.status(204).send();
   } catch (err: any) {
@@ -2676,6 +2710,34 @@ app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technici
     res.json(result);
   } catch (err: any) {
     console.error('Error fetching equipments:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+  const clientIdParam = Number(req.params.id);
+  if (!clientIdParam || Number.isNaN(clientIdParam)) {
+    return res.status(400).json({ error: 'Invalid client id' });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('equipments')
+      .select('id, brand, model, serialNumber, clients(name)')
+      .eq('clientId', clientIdParam)
+      .order('id', { ascending: true });
+    if (error) return res.status(500).json({ error: 'Failed to fetch client equipments', details: error.message });
+
+    const result = (data || []).map((e: any) => ({
+      id: e.id,
+      brand: e.brand,
+      model: e.model,
+      serialNumber: e.serialNumber,
+      clientName: Array.isArray(e.clients) ? e.clients[0]?.name : (e.clients as any)?.name || 'Cliente Desconhecido',
+    }));
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Error fetching client equipments:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
