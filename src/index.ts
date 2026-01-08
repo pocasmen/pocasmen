@@ -462,7 +462,7 @@ app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['
   }
 });
 
-app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin']), async (req, res) => {
+app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin', 'technician']), async (req, res) => {
   const result = await syncTelegramUpdates();
   res.json(result);
 });
@@ -725,25 +725,43 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
   }
 });
 
-app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.params.id;
     const { first_name, last_name, color, role, telegramchatid } = req.body;
+    const requestingUser = req.user;
 
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required.' });
     }
 
+    // Se for técnico, só pode editar o seu próprio perfil
+    // E não pode alterar a sua própria role
+    if (requestingUser.user_metadata.role === 'technician') {
+      if (userId !== requestingUser.id) {
+        return res.status(403).json({ error: 'Você só pode editar o seu próprio perfil.' });
+      }
+      // Impede técnico de mudar a sua própria role para admin (embora o middleware já devesse proteger se mudasse para admin, aqui garantimos a integridade dos dados)
+      // Se o técnico tentar enviar uma role diferente, removemos do update
+    }
+
+    const updateData: any = { first_name, last_name, color, telegramchatid };
+
+    // Apenas admin pode mudar roles
+    if (requestingUser.user_metadata.role === 'admin' && role) {
+      updateData.role = role;
+    }
+
     const { data, error } = await supabase
       .from('profiles')
-      .update({ first_name, last_name, color, role, telegramchatid })
+      .update(updateData)
       .eq('id', userId)
       .select('id, email, role, first_name, last_name, color, telegramchatid')
       .single();
 
     if (error) {
-      console.error('Error updating user:', error);
-      return res.status(500).json({ error: 'Failed to update user', details: error.message });
+      console.error('Error updating profile:', error);
+      return res.status(500).json({ error: 'Failed to update user', details: (error as any).message });
     }
 
     res.json(data);
