@@ -206,36 +206,43 @@ async function sendScheduleNotificationToTechnicians(scheduleId: number, technic
     const endDate = new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
     const serviceType = schedule.serviceType || 'Não especificado';
 
+    // Procurar os perfis dos técnicos atribuídos + todos os administradores para obter nomes e Chat IDs
     const { data: profiles, error: pError } = await supabase
       .from('profiles')
-      .select('id, telegramchatid')
-      .in('id', technicianIds);
+      .select('id, telegramchatid, role, first_name, last_name')
+      .or(`id.in.(${technicianIds.map(id => `"${id}"`).join(',')}),role.eq.admin`);
 
     if (pError || !profiles) {
-      console.error('Error fetching profiles for notification:', pError);
+      console.error('Error fetching admin and technician profiles for notification:', pError);
       return;
     }
 
+    // Criar lista de nomes dos técnicos atribuídos para a mensagem dos admins
+    const assignedTechNames = profiles
+      .filter(p => technicianIds.includes(p.id))
+      .map(p => `${p.first_name || ''} ${p.last_name || ''}`.trim())
+      .join(', ');
+
     const notificationTitle = isUpdate ? '🔄 *Re-Agendamento*' : '📅 *Novo Agendamento*';
-    let message = `${notificationTitle}\n\n`;
-    message += `*Título:* ${schedule.title}\n`;
-    message += `*Cliente:* ${clientName}\n`;
-    message += `*Tipo de Serviço:* ${serviceType}\n`;
-    message += `*Início:* ${startDate}\n`;
-    message += `*Final:* ${endDate}\n`;
+
+    // Construir a parte comum da mensagem
+    let baseMessage = `${notificationTitle}\n\n`;
+    baseMessage += `*Título:* ${schedule.title}\n`;
+    baseMessage += `*Cliente:* ${clientName}\n`;
+    baseMessage += `*Tipo de Serviço:* ${serviceType}\n`;
+    baseMessage += `*Início:* ${startDate}\n`;
+    baseMessage += `*Final:* ${endDate}\n`;
     if (schedule.additionalInfo) {
-      message += `*Notas:* ${schedule.additionalInfo}\n`;
+      baseMessage += `*Notas:* ${schedule.additionalInfo}\n`;
     }
 
     if (scheduleParts && scheduleParts.length > 0) {
-      message += `\n*Peças necessárias:*\n`;
+      baseMessage += `\n*Peças necessárias:*\n`;
       scheduleParts.forEach((sp: any) => {
         const p = sp.parts;
-        message += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
+        baseMessage += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
       });
     }
-
-    message += `\nPor favor, confirme a sua disponibilidade.`;
 
     const replyMarkup = {
       inline_keyboard: [
@@ -247,8 +254,19 @@ async function sendScheduleNotificationToTechnicians(scheduleId: number, technic
     };
 
     for (const profile of profiles) {
-      if (profile.telegramchatid) {
-        await sendTelegramNotification(message, profile.telegramchatid, replyMarkup);
+      if (!profile.telegramchatid) continue;
+
+      if (profile.role === 'admin') {
+        // Mensagem para Admin: Com lista de técnicos e SEM botões
+        let adminMessage = baseMessage;
+        adminMessage += `\n*Técnicos Atribuídos:* ${assignedTechNames}\n`;
+        adminMessage += `\n_Aviso informativo para administração._`;
+        await sendTelegramNotification(adminMessage, profile.telegramchatid);
+      } else if (technicianIds.includes(profile.id)) {
+        // Mensagem para Técnico: SEM lista de técnicos (para ser curta) e COM botões
+        let techMessage = baseMessage;
+        techMessage += `\nPor favor, confirme a sua disponibilidade.`;
+        await sendTelegramNotification(techMessage, profile.telegramchatid, replyMarkup);
       }
     }
   } catch (err) {
@@ -671,12 +689,55 @@ app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['ad
 
 app.get('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { data, error } = await supabase
+    const search = req.query.search as string;
+    let query = supabase
       .from('clients')
       .select('id, name, address, nif')
       .order('name', { ascending: true });
+
+    if (search) {
+      query = query.ilike('name', `%${search}%`);
+    }
+
+    const { data, error } = await query;
+
     if (error) return res.status(500).json({ error: 'Failed to fetch clients', details: error.message });
     res.json(data ?? []);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.put('/api/clients/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { name, address, nif } = req.body;
+  if (!name) return res.status(400).json({ error: 'Name is required.' });
+
+  try {
+    const { data, error } = await supabase
+      .from('clients')
+      .update({ name, address, nif })
+      .eq('id', id)
+      .select();
+
+    if (error) return res.status(500).json({ error: 'Failed to update client', details: error.message });
+    res.json(data?.[0]);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.delete('/api/clients/:id', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+
+  try {
+    const { error } = await supabase
+      .from('clients')
+      .delete()
+      .eq('id', id);
+
+    if (error) return res.status(500).json({ error: 'Failed to delete client', details: error.message });
+    res.sendStatus(204);
   } catch (err: any) {
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
@@ -1333,7 +1394,26 @@ app.post('/api/my-tickets', authenticateToken, authorizeRoles(['client']), async
       .select('id, createdAt, updatedAt, title, faultDescription, status, scheduleId, client_id, equipmentId');
     if (error) return res.status(500).json({ error: 'Failed to create ticket', details: error.message });
 
-    res.status(201).json(data?.[0] ?? null);
+    const newTicket = data?.[0];
+    if (newTicket) {
+      // Enviar notificação imediata para o grupo de técnicos
+      const { data: clientData } = await supabase.from('clients').select('name').eq('id', profile.client_id).single();
+      const { data: equipData } = await supabase.from('equipments').select('brand, model').eq('id', equipmentId).single();
+
+      const clientName = clientData?.name || 'Cliente Desconhecido';
+      const equipmentInfo = equipData ? `${equipData.brand} ${equipData.model}` : 'Equipamento Desconhecido';
+
+      const telegramMessage = `🆕 *Novo Ticket Aberto*\n\n` +
+        `*Título:* ${title}\n` +
+        `*Cliente:* ${clientName}\n` +
+        `*Equipamento:* ${equipmentInfo}\n` +
+        `*Descrição:* ${faultDescription}\n\n` +
+        `_Aceda ao portal para gerir este pedido._`;
+
+      sendTelegramNotification(telegramMessage);
+    }
+
+    res.status(201).json(newTicket ?? null);
   } catch (err: any) {
     console.error('Error creating ticket:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
@@ -1768,7 +1848,7 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
   try {
     const { data: schedules, error: schedulesError } = await supabase
       .from('schedules')
-      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, schedule_technicians(technicianId), clients(name)')
+      .select('*, schedule_technicians(technicianId)')
       .order('startDate', { ascending: true });
     if (schedulesError) return res.status(500).json({ error: 'Failed to fetch schedules', details: schedulesError.message });
 
@@ -1780,8 +1860,22 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
         .select('id, first_name, last_name, color')
         .in('id', technicianIds);
       if (!profilesError && profiles) {
-        techMap = new Map(profiles.map((p: any) => [p.id, { id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), color: p.color }]));
+        techMap = new Map(profiles.map((p: any) => [String(p.id), { id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), color: p.color }]));
       }
+    }
+
+    const clientIds = [...new Set((schedules || []).map(s => s.clientId || s.client_id || s.clientid).filter(Boolean))];
+    const clientMap = new Map<string, string>();
+    if (clientIds.length > 0) {
+      const { data: cData } = await supabase.from('clients').select('id, name').in('id', clientIds);
+      if (cData) cData.forEach(c => clientMap.set(String(c.id), c.name));
+    }
+
+    const equipmentIds = [...new Set((schedules || []).map(s => s.equipmentId || s.equipment_id || s.equipmentid).filter(Boolean))];
+    const equipMap = new Map<string, { model: string }>();
+    if (equipmentIds.length > 0) {
+      const { data: eData, error: eErr } = await supabase.from('equipments').select('id, model').in('id', equipmentIds);
+      if (eData) eData.forEach(e => equipMap.set(String(e.id), { model: e.model }));
     }
 
     // Buscar peças para todos os agendamentos
@@ -1810,23 +1904,30 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
       }
     }
 
-    const result = (schedules || []).map((s: any) => ({
-      id: s.id,
-      title: s.title,
-      startDate: s.startDate,
-      endDate: s.endDate,
-      isCompleted: s.isCompleted,
-      hasReport: s.hasReport,
-      internalNotes: s.additionalInfo,
-      serviceType: s.serviceType,
-      ticketId: s.ticketId,
-      clientId: s.clientId,
-      equipmentId: s.equipmentId,
-      technicians: (s.schedule_technicians || []).map((st: any) => techMap.get(st.technicianId)).filter(Boolean),
-      clientName: Array.isArray(s.clients) ? s.clients[0]?.name : (s.clients as any)?.name || 'Cliente Desconhecido',
-      parts: partsMap.get(s.id) || [],
-      acknowledgementState: s.acknowledgementState,
-    }));
+    const result = (schedules || []).map((s: any) => {
+      const cId = s.clientId || s.client_id || s.clientid;
+      const eId = s.equipmentId || s.equipment_id || s.equipmentid;
+
+      return {
+        id: s.id,
+        title: s.title,
+        startDate: s.startDate,
+        endDate: s.endDate,
+        isCompleted: s.isCompleted,
+        hasReport: s.hasReport,
+        internalNotes: s.additionalInfo,
+        serviceType: s.serviceType,
+        ticketId: s.ticketId,
+        clientId: cId,
+        equipmentId: eId,
+        technicians: (s.schedule_technicians || []).map((st: any) => techMap.get(String(st.technicianId))).filter(Boolean),
+        clientName: clientMap.get(String(cId)) || 'Cliente Desconhecido',
+        equipmentInfo: equipMap.get(String(eId))?.model || 'Modelo Desconhecido',
+        parts: partsMap.get(s.id) || [],
+        acknowledgementState: s.acknowledgementState,
+      };
+    });
+
 
     res.json(result);
   } catch (err: any) {
@@ -1840,7 +1941,7 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
     const { id } = req.params;
     const { data: schedule, error: scheduleError } = await supabase
       .from('schedules')
-      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, schedule_technicians(technicianId), clients(name)')
+      .select('*, schedule_technicians(technicianId)')
       .eq('id', id)
       .single();
 
@@ -1879,6 +1980,23 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       isDesignationLocked: true
     }));
 
+    const cId = schedule.clientId || (schedule as any).client_id || (schedule as any).clientid;
+    const eId = schedule.equipmentId || (schedule as any).equipment_id || (schedule as any).equipmentid;
+
+    // Fetch Client Name
+    let clientName = 'Cliente Desconhecido';
+    if (cId) {
+      const { data: cData } = await supabase.from('clients').select('name').eq('id', cId).single();
+      if (cData) clientName = cData.name;
+    }
+
+    // Fetch Equipment Model
+    let equipmentInfo = 'Modelo Desconhecido';
+    if (eId) {
+      const { data: eData } = await supabase.from('equipments').select('model').eq('id', eId).single();
+      if (eData) equipmentInfo = eData.model;
+    }
+
     const result = {
       id: schedule.id,
       title: schedule.title,
@@ -1889,10 +2007,11 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       internalNotes: schedule.additionalInfo,
       serviceType: schedule.serviceType,
       ticketId: schedule.ticketId,
-      clientId: schedule.clientId,
-      equipmentId: schedule.equipmentId,
+      clientId: cId,
+      equipmentId: eId,
       technicians,
-      clientName: Array.isArray(schedule.clients) ? schedule.clients[0]?.name : (schedule.clients as any)?.name || 'Cliente Desconhecido',
+      clientName,
+      equipmentInfo,
       parts,
       acknowledgementState: schedule.acknowledgementState,
     };
@@ -1924,8 +2043,8 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
     console.log('[DEBUG_SCHEDULES] POST /api/schedules. Body:', JSON.stringify(req.body));
     console.log('[DEBUG_SCHEDULES] POST /api/schedules. internalNotes extracted:', internalNotes);
 
-    if (!title || !startDate || !endDate || !clientId || !equipmentId) {
-      return res.status(400).json({ error: 'title, startDate, endDate, clientId and equipmentId are required.' });
+    if (!startDate || !endDate || !clientId || !equipmentId) {
+      return res.status(400).json({ error: 'startDate, endDate, clientId and equipmentId are required.' });
     }
     if (!Array.isArray(technicianIds) || technicianIds.length === 0) {
       return res.status(400).json({ error: 'At least one technician is required.' });
@@ -1933,7 +2052,7 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
 
     const { data: inserted, error: insertError } = await supabase
       .from('schedules')
-      .insert({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId })
+      .insert({ title: title || 'Agendamento', startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId })
       .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
       .single();
 
@@ -2056,12 +2175,32 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
 
     broadcastCalendarUpdate(scheduleId);
 
+    const finalClientId = clientId || inserted.clientId || (inserted as any).client_id || (inserted as any).clientid;
+    const finalEquipId = equipmentId || inserted.equipmentId || (inserted as any).equipment_id || (inserted as any).equipmentid;
+
+    // Fetch additional info for the response
+    let clientName = 'Cliente Desconhecido';
+    if (finalClientId) {
+      const { data: cData } = await supabase.from('clients').select('name').eq('id', finalClientId).single();
+      if (cData) clientName = cData.name;
+    }
+
+    let equipmentInfo = 'Modelo Desconhecido';
+    if (finalEquipId) {
+      const { data: eData } = await supabase.from('equipments').select('model').eq('id', finalEquipId).single();
+      if (eData) equipmentInfo = eData.model;
+    }
+
     const result = {
       ...inserted,
+      clientId: finalClientId,
+      equipmentId: finalEquipId,
       internalNotes: inserted.additionalInfo,
       acknowledgementState: inserted.acknowledgementState,
-      technicians: [], // Will be updated if assigned
+      technicians: [], // Initial state, will be refreshed
       parts: [],
+      clientName,
+      equipmentInfo,
     };
 
     res.status(201).json(result);
@@ -2093,8 +2232,8 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
     console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. internalNotes extracted:', internalNotes);
 
     if (!scheduleId || Number.isNaN(scheduleId)) return res.status(400).json({ error: 'Invalid schedule id' });
-    if (!title || !startDate || !endDate || !clientId || !equipmentId) {
-      return res.status(400).json({ error: 'title, startDate, endDate, clientId and equipmentId are required.' });
+    if (!startDate || !endDate || !clientId || !equipmentId) {
+      return res.status(400).json({ error: 'startDate, endDate, clientId and equipmentId are required.' });
     }
     if (!Array.isArray(technicianIds) || technicianIds.length === 0) {
       return res.status(400).json({ error: 'At least one technician is required.' });
@@ -2102,7 +2241,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
 
     const { data: updated, error: updateError } = await supabase
       .from('schedules')
-      .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId, acknowledgementState: 'pending' })
+      .update({ title: title || 'Agendamento', startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId, acknowledgementState: 'pending' })
       .eq('id', scheduleId)
       .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
       .single();
@@ -2260,10 +2399,27 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       await sendScheduleNotificationToTechnicians(scheduleId, technicianIds, true);
     }
 
+    // Fetch additional info for the response
+    const cIdToFetch = clientId || updated.clientId || (updated as any).client_id || (updated as any).clientid;
+    let clientName = 'Cliente Desconhecido';
+    if (cIdToFetch) {
+      const { data: cData } = await supabase.from('clients').select('name').eq('id', cIdToFetch).single();
+      if (cData) clientName = cData.name;
+    }
+
+    const eIdToFetch = equipmentId || updated.equipmentId || (updated as any).equipment_id || (updated as any).equipmentid;
+    let equipmentInfo = 'Modelo Desconhecido';
+    if (eIdToFetch) {
+      const { data: eData } = await supabase.from('equipments').select('model').eq('id', eIdToFetch).single();
+      if (eData) equipmentInfo = eData.model;
+    }
+
     const finalObject = {
       ...updated,
       internalNotes: updated.additionalInfo,
       acknowledgementState: updated.acknowledgementState || 'pending',
+      clientName,
+      equipmentInfo,
     };
 
     broadcastCalendarUpdate(scheduleId);
@@ -2494,10 +2650,19 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
 
 app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { data, error } = await supabase
+    const search = req.query.search as string;
+    let query = supabase
       .from('equipments')
       .select('id, brand, model, serialNumber, clients(name)')
       .order('id', { ascending: true });
+
+    if (search) {
+      // Using 'or' to search across multiple columns
+      query = query.or(`brand.ilike.%${search}%,model.ilike.%${search}%,serialNumber.ilike.%${search}%`);
+    }
+
+    const { data, error } = await query;
+
     if (error) return res.status(500).json({ error: 'Failed to fetch equipments', details: error.message });
 
     const result = (data || []).map((e: any) => ({
@@ -2515,30 +2680,49 @@ app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technici
   }
 });
 
-app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
-  const clientIdParam = Number(req.params.id);
-  if (!clientIdParam || Number.isNaN(clientIdParam)) {
-    return res.status(400).json({ error: 'Invalid client id' });
+app.put('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { brand, model, serialNumber, clientId } = req.body;
+  if (!brand || !model || !serialNumber || !clientId) {
+    return res.status(400).json({ error: 'brand, model, serialNumber and clientId are required.' });
   }
+
   try {
     const { data, error } = await supabase
       .from('equipments')
-      .select('id, brand, model, serialNumber, clients(name)')
-      .eq('clientId', clientIdParam)
-      .order('id', { ascending: true });
-    if (error) return res.status(500).json({ error: 'Failed to fetch client equipments', details: error.message });
+      .update({ brand, model, serialNumber, clientId })
+      .eq('id', id)
+      .select('id, brand, model, serialNumber, clients(name)');
 
-    const result = (data || []).map((e: any) => ({
-      id: e.id,
-      brand: e.brand,
-      model: e.model,
-      serialNumber: e.serialNumber,
-      clientName: Array.isArray(e.clients) ? e.clients[0]?.name : (e.clients as any)?.name || 'Cliente Desconhecido',
-    }));
+    if (error) return res.status(500).json({ error: 'Failed to update equipment', details: error.message });
 
-    res.json(result);
+    const updated = data?.[0];
+    const responseBody = updated ? {
+      id: updated.id,
+      brand: updated.brand,
+      model: updated.model,
+      serialNumber: updated.serialNumber,
+      clientName: Array.isArray(updated.clients) ? updated.clients[0]?.name : (updated.clients as any)?.name || 'Cliente Desconhecido',
+    } : null;
+
+    res.json(responseBody);
   } catch (err: any) {
-    console.error('Error fetching client equipments:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.delete('/api/equipments/:id', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+
+  try {
+    const { error } = await supabase
+      .from('equipments')
+      .delete()
+      .eq('id', id);
+
+    if (error) return res.status(500).json({ error: 'Failed to delete equipment', details: error.message });
+    res.sendStatus(204);
+  } catch (err: any) {
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
