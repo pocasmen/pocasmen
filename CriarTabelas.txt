@@ -1,44 +1,80 @@
--- Tabela de Clientes
 CREATE TABLE clients (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     address TEXT,
-    nif VARCHAR(20)
+    nif VARCHAR(50),
+    "contactName" TEXT,
+    "contactEmail" TEXT,
+    "contactPhone" TEXT
 );
 
--- Tabela de Equipamentos
 CREATE TABLE equipments (
     id SERIAL PRIMARY KEY,
-    brand TEXT NOT NULL,
+    brand TEXT,
     model TEXT,
-    "serialNumber" TEXT
+    "serialNumber" TEXT,
+    "clientId" INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE
 );
 
--- Tabela de Técnicos
 CREATE TABLE technicians (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    color VARCHAR(7) DEFAULT '#3174ad' -- Cor em formato hexadecimal
+    name TEXT NOT NULL,
+    color VARCHAR(50) DEFAULT '#3174ad'
 );
 
--- Tabela de Relatórios de Intervenção
-CREATE TABLE reports (
-    id SERIAL PRIMARY KEY,
-    "clientId" INTEGER REFERENCES clients(id),
-    "equipmentId" INTEGER REFERENCES equipments(id),
-    "serviceDate" DATE,
-    hours NUMERIC,
-    parts TEXT,
-    description TEXT
-);
-
--- Tabela de Agendamentos (Calendário)
 CREATE TABLE schedules (
     id SERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    "startDate" TIMESTAMPTZ NOT NULL,
-    "endDate" TIMESTAMPTZ NOT NULL,
-    "clientId" INTEGER REFERENCES clients(id),
-    "equipmentId" INTEGER REFERENCES equipments(id),
-    "technicianId" INTEGER REFERENCES technicians(id)
+    "clientId" INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+    "equipmentId" INTEGER REFERENCES equipments(id) ON DELETE CASCADE,
+    "technicianId" INTEGER REFERENCES technicians(id) ON DELETE SET NULL,
+    "startDate" TIMESTAMP WITH TIME ZONE NOT NULL,
+    "endDate" TIMESTAMP WITH TIME ZONE NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    "isCompleted" BOOLEAN DEFAULT FALSE,
+    "hasReport" BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE parts (
+    id SERIAL PRIMARY KEY,
+    reference VARCHAR(255) UNIQUE NOT NULL,
+    designation TEXT NOT NULL
+);
+
+CREATE TABLE reports (
+    id SERIAL PRIMARY KEY,
+    "clientId" INTEGER REFERENCES clients(id) ON DELETE CASCADE,
+    "equipmentId" INTEGER REFERENCES equipments(id) ON DELETE CASCADE,
+    "scheduleId" INTEGER UNIQUE REFERENCES schedules(id) ON DELETE SET NULL,
+    "technicianId" INTEGER REFERENCES technicians(id) ON DELETE SET NULL,
+    "serviceDate" TIMESTAMP WITH TIME ZONE NOT NULL,
+    hours INTEGER NOT NULL,
+    parts JSONB,
+    description TEXT NOT NULL,
+    "serviceType" JSONB, -- Alterado para JSONB para suportar múltiplos tipos
+    "faultDescription" TEXT,
+    "legacyReportNumber" VARCHAR(255),
+    "isRemote" BOOLEAN DEFAULT FALSE,
+    "observations" TEXT,
+    "fossObservations" TEXT,
+    avaria TEXT
+);
+
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    "clientId" INTEGER UNIQUE NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE TABLE tickets (
+    id SERIAL PRIMARY KEY,
+    "clientId" INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    "equipmentId" INTEGER NOT NULL REFERENCES equipments(id) ON DELETE CASCADE,
+    "faultDescription" TEXT,
+    status VARCHAR(50) NOT NULL DEFAULT 'open', -- open, acknowledged, scheduled, closed
+    "scheduleId" INTEGER REFERENCES schedules(id) ON DELETE SET NULL,
+    "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
