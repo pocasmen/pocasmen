@@ -66,6 +66,7 @@ const cron = __importStar(require("node-cron"));
 const multer_1 = __importDefault(require("multer"));
 const supabase_js_1 = require("@supabase/supabase-js");
 const inventoryService = __importStar(require("./services/inventoryService"));
+const emailService = __importStar(require("./services/emailService"));
 dotenv_1.default.config();
 // --- SUPABASE CLIENT INITIALIZATION ---
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -257,32 +258,38 @@ function sendScheduleNotificationToTechnicians(scheduleId_1, technicianIds_1) {
             const startDate = new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
             const endDate = new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
             const serviceType = schedule.serviceType || 'Não especificado';
+            // Procurar os perfis dos técnicos atribuídos + todos os administradores (admin e super_admin) para obter nomes e Chat IDs
             const { data: profiles, error: pError } = yield supabase
                 .from('profiles')
-                .select('id, telegramchatid')
-                .in('id', technicianIds);
+                .select('id, telegramchatid, role, first_name, last_name')
+                .or(`id.in.(${technicianIds.map(id => `"${id}"`).join(',')}),role.eq.admin,role.eq.super_admin`);
             if (pError || !profiles) {
-                console.error('Error fetching profiles for notification:', pError);
+                console.error('Error fetching admin and technician profiles for notification:', pError);
                 return;
             }
+            // Criar lista de nomes dos técnicos atribuídos para a mensagem dos admins
+            const assignedTechNames = profiles
+                .filter(p => technicianIds.includes(p.id))
+                .map(p => `${p.first_name || ''} ${p.last_name || ''}`.trim())
+                .join(', ');
             const notificationTitle = isUpdate ? '🔄 *Re-Agendamento*' : '📅 *Novo Agendamento*';
-            let message = `${notificationTitle}\n\n`;
-            message += `*Título:* ${schedule.title}\n`;
-            message += `*Cliente:* ${clientName}\n`;
-            message += `*Tipo de Serviço:* ${serviceType}\n`;
-            message += `*Início:* ${startDate}\n`;
-            message += `*Final:* ${endDate}\n`;
+            // Construir a parte comum da mensagem
+            let baseMessage = `${notificationTitle}\n\n`;
+            baseMessage += `*Título:* ${schedule.title}\n`;
+            baseMessage += `*Cliente:* ${clientName}\n`;
+            baseMessage += `*Tipo de Serviço:* ${serviceType}\n`;
+            baseMessage += `*Início:* ${startDate}\n`;
+            baseMessage += `*Final:* ${endDate}\n`;
             if (schedule.additionalInfo) {
-                message += `*Notas:* ${schedule.additionalInfo}\n`;
+                baseMessage += `*Notas:* ${schedule.additionalInfo}\n`;
             }
             if (scheduleParts && scheduleParts.length > 0) {
-                message += `\n*Peças necessárias:*\n`;
+                baseMessage += `\n*Peças necessárias:*\n`;
                 scheduleParts.forEach((sp) => {
                     const p = sp.parts;
-                    message += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
+                    baseMessage += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
                 });
             }
-            message += `\nPor favor, confirme a sua disponibilidade.`;
             const replyMarkup = {
                 inline_keyboard: [
                     [
@@ -292,8 +299,20 @@ function sendScheduleNotificationToTechnicians(scheduleId_1, technicianIds_1) {
                 ]
             };
             for (const profile of profiles) {
-                if (profile.telegramchatid) {
-                    yield sendTelegramNotification(message, profile.telegramchatid, replyMarkup);
+                if (!profile.telegramchatid)
+                    continue;
+                if (profile.role === 'admin' || profile.role === 'super_admin') {
+                    // Mensagem para Admin/SuperAdmin: Com lista de técnicos e SEM botões
+                    let adminMessage = baseMessage;
+                    adminMessage += `\n*Técnicos Atribuídos:* ${assignedTechNames}\n`;
+                    adminMessage += `\n_Aviso informativo para administração._`;
+                    yield sendTelegramNotification(adminMessage, profile.telegramchatid);
+                }
+                if (technicianIds.includes(profile.id)) {
+                    // Mensagem para Técnico/Office Staff: SEM lista de técnicos (para ser curta) e COM botões
+                    let techMessage = baseMessage;
+                    techMessage += `\nPor favor, confirme a sua disponibilidade.`;
+                    yield sendTelegramNotification(techMessage, profile.telegramchatid, replyMarkup);
                 }
             }
         }
@@ -356,7 +375,8 @@ function scheduleTicketCheck() {
 // --- EXPRESS APP SETUP ---
 const app = (0, express_1.default)();
 exports.app = app;
-const port = 5001;
+const port = process.env.PORT || 5001;
+//const port = 5001;
 app.use((0, cors_1.default)());
 app.use(body_parser_1.default.json());
 // Multer setup for file uploads (stores files in memory)
@@ -481,7 +501,7 @@ app.post('/api/telegram/webhook', (req, res) => __awaiter(void 0, void 0, void 0
         console.error('[TELEGRAM DEBUG] Error processing webhook update:', err);
     }
 }));
-app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { url } = req.body;
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!url || !token)
@@ -495,17 +515,23 @@ app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['
         res.status(500).json({ error: error.message });
     }
 }));
-app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const result = yield syncTelegramUpdates();
     res.json(result);
 }));
-app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const _a = req.body, { email, client_id, role } = _a, meta = __rest(_a, ["email", "client_id", "role"]);
+app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b;
+    const _c = req.body, { email, client_id, role } = _c, meta = __rest(_c, ["email", "client_id", "role"]);
     if (!email || !role)
         return res.status(400).json({ error: 'Email and role are required.' });
     if (role === 'client' && !client_id)
         return res.status(400).json({ error: 'Client ID is required for client role.' });
-    const inviteData = Object.assign({ role: role }, meta);
+    // Only super_admin can create super_admin users
+    const requestingUserRole = (_b = (_a = req.user) === null || _a === void 0 ? void 0 : _a.user_metadata) === null || _b === void 0 ? void 0 : _b.role;
+    if (role === 'super_admin' && requestingUserRole !== 'super_admin') {
+        return res.status(403).json({ error: 'Only Super Admin can create Super Admin users.' });
+    }
+    const inviteData = Object.assign({ role: role, must_set_password: true }, meta);
     if (client_id) {
         const { data: client, error: clientError } = yield supabase.from('clients').select('id').eq('id', client_id).single();
         if (clientError || !client)
@@ -517,7 +543,7 @@ app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin']), (re
         return res.status(500).json({ error: error.message });
     res.status(200).json({ message: `Invite sent to ${email}.` });
 }));
-app.get('/admin/pending-users', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/admin/pending-users', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { data: { users }, error } = yield supabase.auth.admin.listUsers();
         if (error)
@@ -530,34 +556,148 @@ app.get('/admin/pending-users', authenticateToken, authorizeRoles(['admin']), (r
         res.status(500).json({ error: 'Failed to fetch pending users', details: err.message });
     }
 }));
-app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { userId, client_id } = req.body;
     if (!userId || !client_id) {
         return res.status(400).json({ error: 'User ID and Client ID are required.' });
     }
     try {
+        // Update profile: set client_id AND role to 'client'
         const { error: profileError } = yield supabase
             .from('profiles')
-            .update({ client_id: client_id })
+            .update({
+            client_id: client_id,
+            role: 'client' // ← FIX: Sync role in profiles table
+        })
             .eq('id', userId);
         if (profileError) {
             console.error(`Error updating profile for user ${userId}:`, profileError);
             throw new Error(`Failed to associate user with client: ${profileError.message}`);
         }
+        // Update auth.users metadata
         const { data: updatedUser, error: userError } = yield supabase.auth.admin.updateUserById(userId, { user_metadata: { role: 'client' } });
         if (userError) {
             console.error(`Error updating auth role for user ${userId}:`, userError);
             throw new Error(`Failed to update user role: ${userError.message}`);
         }
         res.status(200).json({ message: 'User approved and associated successfully.', user: updatedUser });
+        // Send confirmation email
+        if (updatedUser.user && updatedUser.user.email) {
+            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+            const loginUrl = `${frontendUrl}/login`;
+            let emailSubject = 'Aprovação de Conta - Project1';
+            let emailHtml = `
+        <div style="font-family: Arial, sans-serif; color: #333;">
+          <h2>Bem-vindo ao Project1!</h2>
+          <p>A sua conta foi aprovada pelo administrador.</p>
+          <p>Já pode aceder à plataforma e gerir os seus pedidos de assistência.</p>
+          <p>
+            <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">
+              Aceder à Plataforma
+            </a>
+          </p>
+          <p style="font-size: 0.9em; color: #777; margin-top: 20px;">
+            Se o botão acima não funcionar, copie e cole este link no seu browser:<br>
+            ${loginUrl}
+          </p>
+        </div>
+      `;
+            // Try to fetch custom template
+            try {
+                const { data: settingsData } = yield supabase.from('settings').select('value').eq('key', 'email_templates').single();
+                if (settingsData && settingsData.value) {
+                    const templates = JSON.parse(settingsData.value);
+                    if (templates.approval) {
+                        emailSubject = templates.approval.subject || emailSubject;
+                        if (templates.approval.body) {
+                            emailHtml = templates.approval.body.replace(/{{login_url}}/g, loginUrl);
+                        }
+                    }
+                }
+            }
+            catch (e) {
+                console.error("Error loading email template, using default:", e);
+            }
+            emailService.sendEmail(updatedUser.user.email, emailSubject, emailHtml).catch(err => {
+                console.error("Failed to send approval email async:", err);
+            });
+        }
     }
     catch (err) {
         console.error('Error in approval process:', err);
         res.status(500).json({ error: 'Failed to approve user', details: err.message });
     }
 }));
+// EMAIL TEMPLATES ENDPOINTS
+app.get('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { data, error } = yield supabase
+            .from('settings')
+            .select('value')
+            .eq('key', 'email_templates')
+            .single();
+        if (error && error.code !== 'PGRST116') {
+            return res.status(500).json({ error: 'Failed to fetch email templates', details: error.message });
+        }
+        const defaultTemplates = {
+            approval: {
+                name: 'Aprovação Cliente',
+                subject: 'Aprovação de Conta - Project1',
+                body: `<div style="font-family: Arial, sans-serif; color: #333;">
+<h2>Bem-vindo ao Project1!</h2>
+<p>A sua conta foi aprovada pelo administrador.</p>
+<p>Já pode aceder à plataforma e gerir os seus pedidos de assistência.</p>
+<p>
+  <a href="{{login_url}}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">
+    Aceder à Plataforma
+  </a>
+</p>
+<p style="font-size: 0.9em; color: #777; margin-top: 20px;">
+  Se o botão acima não funcionar, copie e cole este link no seu browser:<br>
+  {{login_url}}
+</p>
+</div>`
+            }
+        };
+        let templates = defaultTemplates;
+        if (data && data.value) {
+            try {
+                const parsed = JSON.parse(data.value);
+                templates = Object.assign(Object.assign({}, defaultTemplates), parsed);
+            }
+            catch (e) {
+                console.error("Error parsing email templates setting:", e);
+            }
+        }
+        res.json(templates);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.put('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const templates = req.body;
+    try {
+        const { data: existing } = yield supabase.from('settings').select('id').eq('key', 'email_templates').single();
+        let error;
+        if (existing) {
+            const result = yield supabase.from('settings').update({ value: JSON.stringify(templates) }).eq('key', 'email_templates');
+            error = result.error;
+        }
+        else {
+            const result = yield supabase.from('settings').insert({ key: 'email_templates', value: JSON.stringify(templates) });
+            error = result.error;
+        }
+        if (error)
+            return res.status(500).json({ error: 'Failed to update email templates', details: error.message });
+        res.json({ success: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
 // DASHBOARD
-app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     console.log('[DEBUG] /api/dashboard/stats endpoint hit.');
     try {
         const { count: openTickets, error: ticketsError } = yield supabase.from('tickets').select('*', { count: 'exact', head: true }).in('status', ['open', 'acknowledged']);
@@ -578,7 +718,7 @@ app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'tec
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     console.log('[DEBUG] /api/dashboard/weekly-schedules endpoint hit.');
     try {
         const today = new Date();
@@ -630,7 +770,7 @@ app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['a
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     console.log('[DEBUG] /api/dashboard/pending-reports endpoint hit.');
     try {
         const { data: schedules, error: schedulesError } = yield supabase
@@ -685,12 +825,17 @@ app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['ad
 // with all 'clientId' references changed to 'client_id' and all route handlers
 // correctly typed as async (req: AuthenticatedRequest, res: Response)
 // ...
-app.get('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { data, error } = yield supabase
+        const search = req.query.search;
+        let query = supabase
             .from('clients')
-            .select('id, name, address, nif')
+            .select('id, name, address, city, postCode, nif')
             .order('name', { ascending: true });
+        if (search) {
+            query = query.ilike('name', `%${search}%`);
+        }
+        const { data, error } = yield query;
         if (error)
             return res.status(500).json({ error: 'Failed to fetch clients', details: error.message });
         res.json(data !== null && data !== void 0 ? data : []);
@@ -699,14 +844,48 @@ app.get('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician'
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const { name, address, nif } = req.body;
+app.put('/api/clients/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { id } = req.params;
+    const { name, address, city, postCode, nif } = req.body;
     if (!name)
         return res.status(400).json({ error: 'Name is required.' });
     try {
         const { data, error } = yield supabase
             .from('clients')
-            .insert({ name, address, nif })
+            .update({ name, address, city, postCode, nif })
+            .eq('id', id)
+            .select();
+        if (error)
+            return res.status(500).json({ error: 'Failed to update client', details: error.message });
+        res.json(data === null || data === void 0 ? void 0 : data[0]);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.delete('/api/clients/:id', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { id } = req.params;
+    try {
+        const { error } = yield supabase
+            .from('clients')
+            .delete()
+            .eq('id', id);
+        if (error)
+            return res.status(500).json({ error: 'Failed to delete client', details: error.message });
+        res.sendStatus(204);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.post('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { name, address, city, postCode, nif } = req.body;
+    if (!name)
+        return res.status(400).json({ error: 'Name is required.' });
+    try {
+        const { data, error } = yield supabase
+            .from('clients')
+            .insert({ name, address, city, postCode, nif })
             .select();
         if (error)
             return res.status(500).json({ error: 'Failed to create client', details: error.message });
@@ -717,12 +896,12 @@ app.post('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician
     }
 }));
 // TECHNICIANS (profiles)
-app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { data, error } = yield supabase
             .from('profiles')
             .select('id, email, role, first_name, last_name, color, telegramchatid')
-            .in('role', ['technician', 'admin'])
+            .in('role', ['technician', 'admin', 'office_staff', 'super_admin'])
             .order('first_name', { ascending: true });
         if (error)
             return res.status(500).json({ error: 'Failed to fetch users', details: error.message });
@@ -743,21 +922,43 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const userId = req.params.id;
         const { first_name, last_name, color, role, telegramchatid } = req.body;
+        const requestingUser = req.user;
+        const requestingUserRole = requestingUser.user_metadata.role;
         if (!userId) {
             return res.status(400).json({ error: 'User ID is required.' });
         }
+        // Se for técnico ou office_staff, só pode editar o seu próprio perfil
+        // E não pode alterar a sua própria role
+        if (requestingUserRole === 'technician' || requestingUserRole === 'office_staff') {
+            if (userId !== requestingUser.id) {
+                return res.status(403).json({ error: 'Você só pode editar o seu próprio perfil.' });
+            }
+            // Impede técnico/office_staff de mudar a sua própria role
+        }
+        const updateData = { first_name, last_name, color, telegramchatid };
+        // Role change logic:
+        // - super_admin can change any role to any role
+        // - admin can change roles but NOT to super_admin
+        // - technician/office_staff cannot change roles
+        if (role && (requestingUserRole === 'admin' || requestingUserRole === 'super_admin')) {
+            // Only super_admin can set or change to super_admin role
+            if (role === 'super_admin' && requestingUserRole !== 'super_admin') {
+                return res.status(403).json({ error: 'Only Super Admin can assign Super Admin role.' });
+            }
+            updateData.role = role;
+        }
         const { data, error } = yield supabase
             .from('profiles')
-            .update({ first_name, last_name, color, role, telegramchatid })
+            .update(updateData)
             .eq('id', userId)
             .select('id, email, role, first_name, last_name, color, telegramchatid')
             .single();
         if (error) {
-            console.error('Error updating user:', error);
+            console.error('Error updating profile:', error);
             return res.status(500).json({ error: 'Failed to update user', details: error.message });
         }
         res.json(data);
@@ -768,7 +969,7 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin']), (r
     }
 }));
 // SETTINGS
-app.get('/api/settings', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/settings', authenticateToken, authorizeRoles(['super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { data, error } = yield supabase
             .from('settings')
@@ -788,7 +989,7 @@ app.get('/api/settings', authenticateToken, authorizeRoles(['admin']), (req, res
     }
 }));
 // REPORTS
-app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c, _d;
     console.log('[DEBUG] GET /reports - Request received');
     try {
@@ -844,7 +1045,7 @@ app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin'
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { id } = req.params;
     console.log(`[DEBUG] GET /report/:id - id: ${id}`);
     try {
@@ -891,7 +1092,7 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:scheduleId'], authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:scheduleId'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const scheduleId = Number(req.params.scheduleId);
     console.log(`[DEBUG] GET /reports/by-schedule - Received for scheduleId: ${scheduleId}`);
     try {
@@ -939,18 +1140,74 @@ app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:schedule
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     console.log('[DEBUG] POST /api/reports hit. Request body:', req.body);
     try {
         const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
+        // Validations
         if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
             console.error('[ERROR] POST /api/reports: Missing required fields.', { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, description });
             return res.status(400).json({ error: 'Campos obrigatórios em falta para criar o relatório.' });
         }
+        if (!Array.isArray(technicianIds)) {
+            return res.status(400).json({ error: 'technicianIds deve ser uma lista de IDs.' });
+        }
+        if (parts && !Array.isArray(parts)) {
+            return res.status(400).json({ error: 'parts deve ser uma lista válida.' });
+        }
+        // 1. Fetch Schedule Year
+        const { data: scheduleData, error: scheduleError } = yield supabase
+            .from('schedules')
+            .select('startDate')
+            .eq('id', scheduleId)
+            .single();
+        if (scheduleError || !scheduleData) {
+            console.error('[ERROR] POST /api/reports: Failed to fetch schedule date.', scheduleError);
+            return res.status(500).json({ error: 'Erro ao obter dados do agendamento.' });
+        }
+        const scheduleYear = new Date(scheduleData.startDate).getFullYear();
+        const yearPrefix = `${scheduleYear}`;
+        // 2. Find max report_number for this year
+        // Assuming report_number format: "AAAABBBB" (e.g., 20260001) as specificied
+        const { data: maxReport, error: maxReportError } = yield supabase
+            .from('reports')
+            .select('report_number')
+            .ilike('report_number', `${yearPrefix}%`) // Filter by year prefix
+            .order('report_number', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+        if (maxReportError) {
+            console.error('[ERROR] POST /api/reports: Failed to fetch max report number.', maxReportError);
+            // Fail safe or error? Let's error to ensure sequence/uniqueness
+            return res.status(500).json({ error: 'Erro ao gerar número do relatório.' });
+        }
+        let nextSequence = 1;
+        if (maxReport && maxReport.report_number) {
+            const currentSequenceStr = String(maxReport.report_number).slice(4); // Remove AAAA
+            const currentSequence = parseInt(currentSequenceStr, 10);
+            if (!isNaN(currentSequence)) {
+                nextSequence = currentSequence + 1;
+            }
+        }
+        const nextSequenceStr = String(nextSequence).padStart(4, '0');
+        const newReportNumber = `${yearPrefix}${nextSequenceStr}`;
+        console.log(`[DEBUG] Generated report_number: ${newReportNumber} for Year: ${scheduleYear}`);
         console.log('[DEBUG] Attempting to insert report into Supabase...');
         const { data: report, error: reportError } = yield supabase
             .from('reports')
-            .insert({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '' })
+            .insert({
+            clientId,
+            equipmentId,
+            scheduleId,
+            serviceDate,
+            hours,
+            parts: parts || [],
+            description,
+            damage: damage || '',
+            serviceType: serviceType || [],
+            internal_notes: internalNotes || '',
+            report_number: newReportNumber
+        })
             .select('id')
             .single();
         if (reportError) {
@@ -958,19 +1215,26 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
             return res.status(500).json({ error: 'Erro ao criar relatório.', details: reportError.message });
         }
         console.log('[DEBUG] Report inserted successfully. Report ID:', report.id);
-        const reportTechnicians = technicianIds.map((techId) => ({ reportId: report.id, technicianId: techId }));
-        console.log('[DEBUG] Attempting to associate technicians:', reportTechnicians);
-        const { error: techError } = yield supabase.from('report_technicians').insert(reportTechnicians);
-        if (techError) {
-            console.error('[ERROR] Supabase associate technicians error:', techError);
-            return res.status(500).json({ error: 'Erro ao associar técnicos ao relatório.', details: techError.message });
+        if (technicianIds.length > 0) {
+            const reportTechnicians = technicianIds.map((techId) => ({ reportId: report.id, technicianId: techId }));
+            console.log('[DEBUG] Attempting to associate technicians:', reportTechnicians);
+            const { error: techError } = yield supabase.from('report_technicians').insert(reportTechnicians);
+            if (techError) {
+                console.error('[ERROR] Supabase associate technicians error:', techError);
+                // Not fatal, but good to know
+                // return res.status(500).json({ error: 'Erro ao associar técnicos ao relatório.', details: techError.message });
+            }
+            else {
+                console.log('[DEBUG] Technicians associated successfully.');
+            }
         }
-        console.log('[DEBUG] Technicians associated successfully.');
+        else {
+            console.log('[DEBUG] No technicians to associate.');
+        }
         console.log('[DEBUG] Attempting to update schedule hasReport status for scheduleId:', scheduleId);
         const { error: scheduleUpdateError } = yield supabase.from('schedules').update({ hasReport: true }).eq('id', scheduleId);
         if (scheduleUpdateError) {
             console.error('[ERROR] Supabase update schedule hasReport error:', scheduleUpdateError);
-            // Decide if this should be a blocking error or just log it. For now, logging.
         }
         console.log('[DEBUG] Schedule hasReport status updated.');
         // --- INVENTORY MANAGEMENT: Automatic Abate ---
@@ -978,18 +1242,23 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
             console.log(`[DEBUG_INV] Processing automatic abate for ${parts.length} parts.`);
             for (const p of parts) {
                 if (p.id && p.quantity > 0) {
-                    const { data: currentPart, error: fetchError } = yield supabase
-                        .from('parts')
-                        .select('stock_quantity, reserved_quantity, designation')
-                        .eq('id', p.id)
-                        .single();
-                    if (!fetchError && currentPart) {
-                        const { newStock, newReserved } = inventoryService.processReportAbate(currentPart.stock_quantity || 0, currentPart.reserved_quantity || 0, Number(p.quantity));
-                        console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${p.id}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
-                        yield supabase
+                    try {
+                        const { data: currentPart, error: fetchError } = yield supabase
                             .from('parts')
-                            .update({ stock_quantity: newStock, reserved_quantity: newReserved })
-                            .eq('id', p.id);
+                            .select('stock_quantity, reserved_quantity, designation')
+                            .eq('id', p.id)
+                            .single();
+                        if (!fetchError && currentPart) {
+                            const { newStock, newReserved } = inventoryService.processReportAbate(currentPart.stock_quantity || 0, currentPart.reserved_quantity || 0, Number(p.quantity));
+                            console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${p.id}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
+                            yield supabase
+                                .from('parts')
+                                .update({ stock_quantity: newStock, reserved_quantity: newReserved })
+                                .eq('id', p.id);
+                        }
+                    }
+                    catch (invErr) {
+                        console.error(`[ERROR_INV] Error processing part abate for part ${p.id}:`, invErr);
                     }
                 }
             }
@@ -998,10 +1267,10 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
     }
     catch (err) {
         console.error('[FATAL ERROR] POST /api/reports:', err);
-        res.status(500).json({ error: 'Erro interno do servidor.', details: err.message });
+        res.status(500).json({ error: 'Erro interno do servidor ao criar relatório.', details: err.message || 'Erro desconhecido' });
     }
 }));
-app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     console.log('[DEBUG] PUT /api/reports/:id hit. Report ID:', req.params.id, 'Request body:', req.body);
     try {
         const reportId = req.params.id;
@@ -1044,7 +1313,7 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
         res.status(500).json({ error: 'Erro interno do servidor.', details: err.message });
     }
 }));
-app.put('/api/settings', authenticateToken, authorizeRoles(['admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put('/api/settings', authenticateToken, authorizeRoles(['super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const entries = Object.entries(req.body || {});
         const rows = entries.map(([key, value]) => ({ key, value }));
@@ -1233,7 +1502,7 @@ app.get('/api/my-schedules', authenticateToken, authorizeRoles(['client']), (req
     }
 }));
 app.post('/api/my-tickets', authenticateToken, authorizeRoles(['client']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
+    var _a;
     try {
         const { equipmentId, title, faultDescription } = req.body;
         if (!equipmentId || !title || !faultDescription)
@@ -1262,7 +1531,22 @@ app.post('/api/my-tickets', authenticateToken, authorizeRoles(['client']), (req,
             .select('id, createdAt, updatedAt, title, faultDescription, status, scheduleId, client_id, equipmentId');
         if (error)
             return res.status(500).json({ error: 'Failed to create ticket', details: error.message });
-        res.status(201).json((_b = data === null || data === void 0 ? void 0 : data[0]) !== null && _b !== void 0 ? _b : null);
+        const newTicket = data === null || data === void 0 ? void 0 : data[0];
+        if (newTicket) {
+            // Enviar notificação imediata para o grupo de técnicos
+            const { data: clientData } = yield supabase.from('clients').select('name').eq('id', profile.client_id).single();
+            const { data: equipData } = yield supabase.from('equipments').select('brand, model').eq('id', equipmentId).single();
+            const clientName = (clientData === null || clientData === void 0 ? void 0 : clientData.name) || 'Cliente Desconhecido';
+            const equipmentInfo = equipData ? `${equipData.brand} ${equipData.model}` : 'Equipamento Desconhecido';
+            const telegramMessage = `🆕 *Novo Ticket Aberto*\n\n` +
+                `*Título:* ${title}\n` +
+                `*Cliente:* ${clientName}\n` +
+                `*Equipamento:* ${equipmentInfo}\n` +
+                `*Descrição:* ${faultDescription}\n\n` +
+                `_Aceda ao portal para gerir este pedido._`;
+            sendTelegramNotification(telegramMessage);
+        }
+        res.status(201).json(newTicket !== null && newTicket !== void 0 ? newTicket : null);
     }
     catch (err) {
         console.error('Error creating ticket:', err);
@@ -1560,7 +1844,7 @@ app.post('/api/my-tickets/:id/reply', authenticateToken, authorizeRoles(['client
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.put(['/api/tickets/:id/mark-as-read', '/api/my-tickets/:id/mark-as-read'], authenticateToken, authorizeRoles(['client', 'technician', 'admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put(['/api/tickets/:id/mark-as-read', '/api/my-tickets/:id/mark-as-read'], authenticateToken, authorizeRoles(['client', 'technician', 'office_staff', 'admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     try {
         const ticketId = Number(req.params.id);
@@ -1577,7 +1861,7 @@ app.put(['/api/tickets/:id/mark-as-read', '/api/my-tickets/:id/mark-as-read'], a
         res.status(500).send('Failed to mark messages as read');
     }
 }));
-app.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const ticketId = Number(req.params.id);
         if (!ticketId || Number.isNaN(ticketId))
@@ -1601,7 +1885,7 @@ app.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['clie
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician']), upload.single('file'), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician', 'office_staff', 'super_admin']), upload.single('file'), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     try {
         const ticketId = Number(req.params.id);
@@ -1661,7 +1945,7 @@ app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['cli
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.delete('/api/tickets/:ticketId/attachments/:attachmentId', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.delete('/api/tickets/:ticketId/attachments/:attachmentId', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const ticketId = Number(req.params.ticketId);
         const attachmentId = String(req.params.attachmentId);
@@ -1697,14 +1981,17 @@ app.delete('/api/tickets/:ticketId/attachments/:attachmentId', authenticateToken
     }
 }));
 // SCHEDULES for calendar
-app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { data: schedules, error: schedulesError } = yield supabase
             .from('schedules')
-            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, schedule_technicians(technicianId), clients(name)')
+            .select('*, schedule_technicians(technicianId), schedule_blocks:schedule_time_blocks(*)')
             .order('startDate', { ascending: true });
         if (schedulesError)
             return res.status(500).json({ error: 'Failed to fetch schedules', details: schedulesError.message });
+        // Debug logging
+        const totalBlocks = (schedules || []).reduce((acc, s) => { var _a; return acc + (((_a = s.schedule_blocks) === null || _a === void 0 ? void 0 : _a.length) || 0); }, 0);
+        console.log(`[DEBUG_GET_SCHEDULES] Fetched ${schedules === null || schedules === void 0 ? void 0 : schedules.length} schedules with ${totalBlocks} total time blocks.`);
         const technicianIds = [...new Set((schedules || []).flatMap(s => (s.schedule_technicians || []).map((st) => st.technicianId)))];
         let techMap = new Map();
         if (technicianIds.length > 0) {
@@ -1713,8 +2000,22 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
                 .select('id, first_name, last_name, color')
                 .in('id', technicianIds);
             if (!profilesError && profiles) {
-                techMap = new Map(profiles.map((p) => [p.id, { id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), color: p.color }]));
+                techMap = new Map(profiles.map((p) => [String(p.id), { id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), color: p.color }]));
             }
+        }
+        const clientIds = [...new Set((schedules || []).map(s => s.clientId || s.client_id || s.clientid).filter(Boolean))];
+        const clientMap = new Map();
+        if (clientIds.length > 0) {
+            const { data: cData } = yield supabase.from('clients').select('id, name').in('id', clientIds);
+            if (cData)
+                cData.forEach(c => clientMap.set(String(c.id), c.name));
+        }
+        const equipmentIds = [...new Set((schedules || []).map(s => s.equipmentId || s.equipment_id || s.equipmentid).filter(Boolean))];
+        const equipMap = new Map();
+        if (equipmentIds.length > 0) {
+            const { data: eData, error: eErr } = yield supabase.from('equipments').select('id, model').in('id', equipmentIds);
+            if (eData)
+                eData.forEach(e => equipMap.set(String(e.id), { model: e.model }));
         }
         // Buscar peças para todos os agendamentos
         const scheduleIds = (schedules || []).map(s => s.id);
@@ -1740,8 +2041,10 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
             }
         }
         const result = (schedules || []).map((s) => {
-            var _a, _b;
-            return ({
+            var _a;
+            const cId = s.clientId || s.client_id || s.clientid;
+            const eId = s.equipmentId || s.equipment_id || s.equipmentid;
+            return {
                 id: s.id,
                 title: s.title,
                 startDate: s.startDate,
@@ -1751,13 +2054,19 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
                 internalNotes: s.additionalInfo,
                 serviceType: s.serviceType,
                 ticketId: s.ticketId,
-                clientId: s.clientId,
-                equipmentId: s.equipmentId,
-                technicians: (s.schedule_technicians || []).map((st) => techMap.get(st.technicianId)).filter(Boolean),
-                clientName: Array.isArray(s.clients) ? (_a = s.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = s.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido',
+                clientId: cId,
+                equipmentId: eId,
+                technicians: (s.schedule_technicians || []).map((st) => techMap.get(String(st.technicianId))).filter(Boolean),
+                clientName: clientMap.get(String(cId)) || 'Cliente Desconhecido',
+                equipmentInfo: ((_a = equipMap.get(String(eId))) === null || _a === void 0 ? void 0 : _a.model) || 'Modelo Desconhecido',
                 parts: partsMap.get(s.id) || [],
                 acknowledgementState: s.acknowledgementState,
-            });
+                timeBlocks: (s.schedule_blocks || []).map((tb) => ({
+                    id: tb.id,
+                    start: tb.start_time,
+                    end: tb.end_time
+                })),
+            };
         });
         res.json(result);
     }
@@ -1766,13 +2075,12 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
+app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { id } = req.params;
         const { data: schedule, error: scheduleError } = yield supabase
             .from('schedules')
-            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, schedule_technicians(technicianId), clients(name)')
+            .select('*, schedule_technicians(technicianId), schedule_time_blocks(*)')
             .eq('id', id)
             .single();
         if (scheduleError || !schedule) {
@@ -1806,6 +2114,22 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
             quantity: sp.quantity,
             isDesignationLocked: true
         }));
+        const cId = schedule.clientId || schedule.client_id || schedule.clientid;
+        const eId = schedule.equipmentId || schedule.equipment_id || schedule.equipmentid;
+        // Fetch Client Name
+        let clientName = 'Cliente Desconhecido';
+        if (cId) {
+            const { data: cData } = yield supabase.from('clients').select('name').eq('id', cId).single();
+            if (cData)
+                clientName = cData.name;
+        }
+        // Fetch Equipment Model
+        let equipmentInfo = 'Modelo Desconhecido';
+        if (eId) {
+            const { data: eData } = yield supabase.from('equipments').select('model').eq('id', eId).single();
+            if (eData)
+                equipmentInfo = eData.model;
+        }
         const result = {
             id: schedule.id,
             title: schedule.title,
@@ -1816,12 +2140,18 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
             internalNotes: schedule.additionalInfo,
             serviceType: schedule.serviceType,
             ticketId: schedule.ticketId,
-            clientId: schedule.clientId,
-            equipmentId: schedule.equipmentId,
+            clientId: cId,
+            equipmentId: eId,
             technicians,
-            clientName: Array.isArray(schedule.clients) ? (_a = schedule.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = schedule.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido',
+            clientName,
+            equipmentInfo,
             parts,
             acknowledgementState: schedule.acknowledgementState,
+            timeBlocks: (schedule.schedule_time_blocks || []).map((tb) => ({
+                id: tb.id,
+                start: tb.start_time,
+                end: tb.end_time
+            })),
         };
         res.json(result);
     }
@@ -1830,20 +2160,20 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, internalNotes, serviceType, parts, } = req.body;
+        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, internalNotes, serviceType, parts, timeBlocks, } = req.body;
         console.log('[DEBUG_SCHEDULES] POST /api/schedules. Body:', JSON.stringify(req.body));
         console.log('[DEBUG_SCHEDULES] POST /api/schedules. internalNotes extracted:', internalNotes);
-        if (!title || !startDate || !endDate || !clientId || !equipmentId) {
-            return res.status(400).json({ error: 'title, startDate, endDate, clientId and equipmentId are required.' });
+        if (!startDate || !endDate || !clientId || !equipmentId) {
+            return res.status(400).json({ error: 'startDate, endDate, clientId and equipmentId are required.' });
         }
         if (!Array.isArray(technicianIds) || technicianIds.length === 0) {
             return res.status(400).json({ error: 'At least one technician is required.' });
         }
         const { data: inserted, error: insertError } = yield supabase
             .from('schedules')
-            .insert({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId })
+            .insert({ title: title || 'Agendamento', startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId })
             .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
             .single();
         if (insertError) {
@@ -1852,6 +2182,27 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
         }
         console.log('[DEBUG_SCHEDULES] POST /api/schedules. Insert success. saved additionalInfo:', inserted.additionalInfo);
         const scheduleId = inserted.id;
+        // Insert Time Blocks
+        if (Array.isArray(timeBlocks) && timeBlocks.length > 0) {
+            const blockRows = timeBlocks.map((tb) => ({
+                schedule_id: scheduleId,
+                start_time: tb.start,
+                end_time: tb.end
+            }));
+            const { error: tbError } = yield supabase.from('schedule_time_blocks').insert(blockRows);
+            if (tbError)
+                console.error('Error inserting time blocks:', tbError);
+        }
+        else {
+            // Fallback
+            const { error: tbError } = yield supabase.from('schedule_time_blocks').insert({
+                schedule_id: scheduleId,
+                start_time: startDate,
+                end_time: endDate
+            });
+            if (tbError)
+                console.error('Error inserting default time block:', tbError);
+        }
         if (Array.isArray(technicianIds) && technicianIds.length > 0) {
             const techRows = technicianIds.map((tid) => ({ scheduleId, technicianId: String(tid) }));
             const { error: stError } = yield supabase.from('schedule_technicians').insert(techRows);
@@ -1943,7 +2294,23 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
             yield sendScheduleNotificationToTechnicians(scheduleId, technicianIds);
         }
         broadcastCalendarUpdate(scheduleId);
-        const result = Object.assign(Object.assign({}, inserted), { internalNotes: inserted.additionalInfo, acknowledgementState: inserted.acknowledgementState, technicians: [], parts: [] });
+        const finalClientId = clientId || inserted.clientId || inserted.client_id || inserted.clientid;
+        const finalEquipId = equipmentId || inserted.equipmentId || inserted.equipment_id || inserted.equipmentid;
+        // Fetch additional info for the response
+        let clientName = 'Cliente Desconhecido';
+        if (finalClientId) {
+            const { data: cData } = yield supabase.from('clients').select('name').eq('id', finalClientId).single();
+            if (cData)
+                clientName = cData.name;
+        }
+        let equipmentInfo = 'Modelo Desconhecido';
+        if (finalEquipId) {
+            const { data: eData } = yield supabase.from('equipments').select('model').eq('id', finalEquipId).single();
+            if (eData)
+                equipmentInfo = eData.model;
+        }
+        const result = Object.assign(Object.assign({}, inserted), { clientId: finalClientId, equipmentId: finalEquipId, internalNotes: inserted.additionalInfo, acknowledgementState: inserted.acknowledgementState, technicians: [], parts: [], clientName,
+            equipmentInfo, timeBlocks: timeBlocks && timeBlocks.length > 0 ? timeBlocks.map((t) => ({ start: t.start, end: t.end })) : [{ start: startDate, end: endDate }] });
         res.status(201).json(result);
     }
     catch (err) {
@@ -1951,24 +2318,24 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const scheduleId = Number(req.params.id);
-        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, internalNotes, serviceType, parts, } = req.body;
+        const { title, startDate, endDate, clientId, equipmentId, technicianIds, isCompleted, ticketId, internalNotes, serviceType, parts, timeBlocks, } = req.body;
         console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. ID:', scheduleId);
         console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Body:', JSON.stringify(req.body));
         console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. internalNotes extracted:', internalNotes);
         if (!scheduleId || Number.isNaN(scheduleId))
             return res.status(400).json({ error: 'Invalid schedule id' });
-        if (!title || !startDate || !endDate || !clientId || !equipmentId) {
-            return res.status(400).json({ error: 'title, startDate, endDate, clientId and equipmentId are required.' });
+        if (!startDate || !endDate || !clientId || !equipmentId) {
+            return res.status(400).json({ error: 'startDate, endDate, clientId and equipmentId are required.' });
         }
         if (!Array.isArray(technicianIds) || technicianIds.length === 0) {
             return res.status(400).json({ error: 'At least one technician is required.' });
         }
         const { data: updated, error: updateError } = yield supabase
             .from('schedules')
-            .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId, acknowledgementState: 'pending' })
+            .update({ title: title || 'Agendamento', startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId, acknowledgementState: 'pending' })
             .eq('id', scheduleId)
             .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
             .single();
@@ -1977,6 +2344,29 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
             return res.status(500).json({ error: 'Failed to update schedule', details: updateError.message });
         }
         console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Update success. saved additionalInfo:', updated.additionalInfo);
+        // Update Time Blocks
+        // Remove old blocks
+        yield supabase.from('schedule_time_blocks').delete().eq('schedule_id', scheduleId);
+        if (Array.isArray(timeBlocks) && timeBlocks.length > 0) {
+            const blockRows = timeBlocks.map((tb) => ({
+                schedule_id: scheduleId,
+                start_time: tb.start,
+                end_time: tb.end
+            }));
+            const { error: tbError } = yield supabase.from('schedule_time_blocks').insert(blockRows);
+            if (tbError)
+                console.error('Error inserting updated time blocks:', tbError);
+        }
+        else {
+            // Fallback
+            const { error: tbError } = yield supabase.from('schedule_time_blocks').insert({
+                schedule_id: scheduleId,
+                start_time: startDate,
+                end_time: endDate
+            });
+            if (tbError)
+                console.error('Error inserting default time block on update:', tbError);
+        }
         yield supabase.from('schedule_technicians').delete().eq('scheduleId', scheduleId);
         if (Array.isArray(technicianIds) && technicianIds.length > 0) {
             const techRows = technicianIds.map((tid) => ({ scheduleId, technicianId: String(tid) }));
@@ -2102,7 +2492,23 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         if (technicianIds && technicianIds.length > 0 && !isCompleted) {
             yield sendScheduleNotificationToTechnicians(scheduleId, technicianIds, true);
         }
-        const finalObject = Object.assign(Object.assign({}, updated), { internalNotes: updated.additionalInfo, acknowledgementState: updated.acknowledgementState || 'pending' });
+        // Fetch additional info for the response
+        const cIdToFetch = clientId || updated.clientId || updated.client_id || updated.clientid;
+        let clientName = 'Cliente Desconhecido';
+        if (cIdToFetch) {
+            const { data: cData } = yield supabase.from('clients').select('name').eq('id', cIdToFetch).single();
+            if (cData)
+                clientName = cData.name;
+        }
+        const eIdToFetch = equipmentId || updated.equipmentId || updated.equipment_id || updated.equipmentid;
+        let equipmentInfo = 'Modelo Desconhecido';
+        if (eIdToFetch) {
+            const { data: eData } = yield supabase.from('equipments').select('model').eq('id', eIdToFetch).single();
+            if (eData)
+                equipmentInfo = eData.model;
+        }
+        const finalObject = Object.assign(Object.assign({}, updated), { internalNotes: updated.additionalInfo, acknowledgementState: updated.acknowledgementState || 'pending', clientName,
+            equipmentInfo, timeBlocks: timeBlocks && timeBlocks.length > 0 ? timeBlocks.map((t) => ({ start: t.start, end: t.end })) : [{ start: startDate, end: endDate }] });
         broadcastCalendarUpdate(scheduleId);
         res.json(finalObject);
     }
@@ -2111,7 +2517,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const scheduleId = Number(req.params.id);
         const { title, startDate, endDate, clientId, equipmentId, technicianIds, ticketId, internalNotes, serviceType, parts, } = req.body;
@@ -2245,20 +2651,26 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b;
     try {
         const scheduleId = Number(req.params.id);
         if (!scheduleId || Number.isNaN(scheduleId))
             return res.status(400).json({ error: 'Invalid schedule id' });
+        // 1. Fetch details necessary for notification BEFORE deletion
         const { data: schedule, error: scheduleError } = yield supabase
             .from('schedules')
-            .select('id')
+            .select('title, startDate, endDate, clients(name), schedule_technicians(technicianId)')
             .eq('id', scheduleId)
             .single();
         if (scheduleError)
             return res.status(500).json({ error: 'Failed to fetch schedule', details: scheduleError.message });
         if (!schedule)
             return res.status(404).json({ error: 'Schedule not found' });
+        const techIds = (schedule.schedule_technicians || []).map((st) => st.technicianId);
+        const clientName = Array.isArray(schedule.clients) ? (_a = schedule.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = schedule.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido';
+        const startDate = new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
+        const endDate = new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
         const { error: stDelError } = yield supabase.from('schedule_technicians').delete().eq('scheduleId', scheduleId);
         if (stDelError)
             return res.status(500).json({ error: 'Failed to delete schedule technicians', details: stDelError.message });
@@ -2290,6 +2702,29 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
         if (scheduleDelError)
             return res.status(500).json({ error: 'Failed to delete schedule', details: scheduleDelError.message });
         broadcastCalendarUpdate(scheduleId);
+        // --- NOTIFICATION OF DELETION ---
+        try {
+            let query = supabase.from('profiles').select('id, telegramchatid, role');
+            if (techIds.length > 0) {
+                query = query.or(`id.in.(${techIds.map((t) => `"${t}"`).join(',')}),role.eq.admin`);
+            }
+            else {
+                query = query.eq('role', 'admin');
+            }
+            const { data: profiles } = yield query;
+            if (profiles && profiles.length > 0) {
+                const message = `❌ *Agendamento Cancelado*\n\n*Título:* ${schedule.title}\n*Cliente:* ${clientName}\n*Início:* ${startDate}\n*Fim:* ${endDate}\n\n_Este agendamento foi removido do sistema._`;
+                for (const p of profiles) {
+                    if (p.telegramchatid) {
+                        yield sendTelegramNotification(message, p.telegramchatid);
+                    }
+                }
+            }
+        }
+        catch (notifErr) {
+            console.error('Error sending deletion notifications:', notifErr);
+            // Suppress error so it doesn't fail the deletion response
+        }
         res.status(204).send();
     }
     catch (err) {
@@ -2297,12 +2732,18 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { data, error } = yield supabase
+        const search = req.query.search;
+        let query = supabase
             .from('equipments')
             .select('id, brand, model, serialNumber, clients(name)')
             .order('id', { ascending: true });
+        if (search) {
+            // Using 'or' to search across multiple columns
+            query = query.or(`brand.ilike.%${search}%,model.ilike.%${search}%,serialNumber.ilike.%${search}%`);
+        }
+        const { data, error } = yield query;
         if (error)
             return res.status(500).json({ error: 'Failed to fetch equipments', details: error.message });
         const result = (data || []).map((e) => {
@@ -2322,7 +2763,7 @@ app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technici
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const clientIdParam = Number(req.params.id);
     if (!clientIdParam || Number.isNaN(clientIdParam)) {
         return res.status(400).json({ error: 'Invalid client id' });
@@ -2352,7 +2793,51 @@ app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b;
+    const { id } = req.params;
+    const { brand, model, serialNumber, clientId } = req.body;
+    if (!brand || !model || !serialNumber || !clientId) {
+        return res.status(400).json({ error: 'brand, model, serialNumber and clientId are required.' });
+    }
+    try {
+        const { data, error } = yield supabase
+            .from('equipments')
+            .update({ brand, model, serialNumber, clientId })
+            .eq('id', id)
+            .select('id, brand, model, serialNumber, clients(name)');
+        if (error)
+            return res.status(500).json({ error: 'Failed to update equipment', details: error.message });
+        const updated = data === null || data === void 0 ? void 0 : data[0];
+        const responseBody = updated ? {
+            id: updated.id,
+            brand: updated.brand,
+            model: updated.model,
+            serialNumber: updated.serialNumber,
+            clientName: Array.isArray(updated.clients) ? (_a = updated.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = updated.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido',
+        } : null;
+        res.json(responseBody);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.delete('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const { id } = req.params;
+    try {
+        const { error } = yield supabase
+            .from('equipments')
+            .delete()
+            .eq('id', id);
+        if (error)
+            return res.status(500).json({ error: 'Failed to delete equipment', details: error.message });
+        res.sendStatus(204);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b;
     const { brand, model, serialNumber, clientId } = req.body;
     if (!brand || !model || !serialNumber || !clientId) {
@@ -2388,7 +2873,7 @@ app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technic
     }
 }));
 // INVENTORY
-app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { data, error } = yield supabase
             .from('parts')
@@ -2403,7 +2888,7 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { reference, designation, stock_quantity, reserved_quantity, ordered_quantity } = req.body;
         if (!reference || !designation) {
@@ -2425,7 +2910,7 @@ app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technici
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const partId = req.params.id;
         const { quantity, fromOrder } = req.body; // quantity can be positive (add) or negative (remove)
@@ -2459,7 +2944,7 @@ app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const partId = req.params.id;
         const { quantity } = req.body;
@@ -2493,7 +2978,7 @@ app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const partId = req.params.id;
         const { data, error } = yield supabase
@@ -2526,7 +3011,7 @@ app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['a
     }
 }));
 // GET PART BY REFERENCE - usado no modal de agendamento para autocompletar designação
-app.get('/api/parts/:reference', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/parts/:reference', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const reference = req.params.reference;
         if (!reference) {
@@ -2553,7 +3038,7 @@ app.get('/api/parts/:reference', authenticateToken, authorizeRoles(['admin', 'te
     }
 }));
 // TICKETS LIST BY STATUS
-app.get('/api/tickets', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/tickets', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const status = req.query.status || 'open';
     try {
         const { data: tickets, error: ticketsError } = yield supabase
@@ -2609,7 +3094,7 @@ app.get('/api/tickets', authenticateToken, authorizeRoles(['admin', 'technician'
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const ticketId = Number(req.params.id);
         if (!ticketId || Number.isNaN(ticketId))
@@ -2741,7 +3226,7 @@ app.get('/api/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technic
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.post('/api/tickets/:id/reply', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.post('/api/tickets/:id/reply', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b;
     try {
         const ticketId = Number(req.params.id);

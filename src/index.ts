@@ -7,6 +7,7 @@ import * as cron from 'node-cron';
 import multer from 'multer';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import * as inventoryService from './services/inventoryService';
+import * as emailService from './services/emailService';
 
 dotenv.config();
 
@@ -206,11 +207,11 @@ async function sendScheduleNotificationToTechnicians(scheduleId: number, technic
     const endDate = new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
     const serviceType = schedule.serviceType || 'Não especificado';
 
-    // Procurar os perfis dos técnicos atribuídos + todos os administradores para obter nomes e Chat IDs
+    // Procurar os perfis dos técnicos atribuídos + todos os administradores (admin e super_admin) para obter nomes e Chat IDs
     const { data: profiles, error: pError } = await supabase
       .from('profiles')
       .select('id, telegramchatid, role, first_name, last_name')
-      .or(`id.in.(${technicianIds.map(id => `"${id}"`).join(',')}),role.eq.admin`);
+      .or(`id.in.(${technicianIds.map(id => `"${id}"`).join(',')}),role.eq.admin,role.eq.super_admin`);
 
     if (pError || !profiles) {
       console.error('Error fetching admin and technician profiles for notification:', pError);
@@ -256,8 +257,8 @@ async function sendScheduleNotificationToTechnicians(scheduleId: number, technic
     for (const profile of profiles) {
       if (!profile.telegramchatid) continue;
 
-      if (profile.role === 'admin') {
-        // Mensagem para Admin: Com lista de técnicos e SEM botões
+      if (profile.role === 'admin' || profile.role === 'super_admin') {
+        // Mensagem para Admin/SuperAdmin: Com lista de técnicos e SEM botões
         let adminMessage = baseMessage;
         adminMessage += `\n*Técnicos Atribuídos:* ${assignedTechNames}\n`;
         adminMessage += `\n_Aviso informativo para administração._`;
@@ -265,7 +266,7 @@ async function sendScheduleNotificationToTechnicians(scheduleId: number, technic
       }
 
       if (technicianIds.includes(profile.id)) {
-        // Mensagem para Técnico: SEM lista de técnicos (para ser curta) e COM botões
+        // Mensagem para Técnico/Office Staff: SEM lista de técnicos (para ser curta) e COM botões
         let techMessage = baseMessage;
         techMessage += `\nPor favor, confirme a sua disponibilidade.`;
         await sendTelegramNotification(techMessage, profile.telegramchatid, replyMarkup);
@@ -354,7 +355,7 @@ const authenticateToken = async (req: AuthenticatedRequest, res: Response, next:
   }
 };
 
-const authorizeRoles = (roles: Array<'client' | 'technician' | 'admin'>) => {
+const authorizeRoles = (roles: Array<'client' | 'technician' | 'office_staff' | 'admin' | 'super_admin'>) => {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const userRole = req.user?.user_metadata?.role;
     if (!req.user || !userRole || !roles.includes(userRole)) {
@@ -467,7 +468,7 @@ app.post('/api/telegram/webhook', async (req, res) => {
   }
 });
 
-app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['admin']), async (req, res) => {
+app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['super_admin']), async (req, res) => {
   const { url } = req.body;
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -482,15 +483,21 @@ app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['
   }
 });
 
-app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin', 'technician']), async (req, res) => {
+app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req, res) => {
   const result = await syncTelegramUpdates();
   res.json(result);
 });
 
-app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res) => {
+app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   const { email, client_id, role, ...meta } = req.body;
   if (!email || !role) return res.status(400).json({ error: 'Email and role are required.' });
   if (role === 'client' && !client_id) return res.status(400).json({ error: 'Client ID is required for client role.' });
+
+  // Only super_admin can create super_admin users
+  const requestingUserRole = req.user?.user_metadata?.role;
+  if (role === 'super_admin' && requestingUserRole !== 'super_admin') {
+    return res.status(403).json({ error: 'Only Super Admin can create Super Admin users.' });
+  }
 
   const inviteData: any = { role: role, must_set_password: true, ...meta };
   if (client_id) {
@@ -505,7 +512,7 @@ app.post('/admin/invite-user', authenticateToken, authorizeRoles(['admin']), asy
   res.status(200).json({ message: `Invite sent to ${email}.` });
 });
 
-app.get('/admin/pending-users', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res) => {
+app.get('/admin/pending-users', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   try {
     const { data: { users }, error } = await supabase.auth.admin.listUsers();
     if (error) throw error;
@@ -520,16 +527,20 @@ app.get('/admin/pending-users', authenticateToken, authorizeRoles(['admin']), as
   }
 });
 
-app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res) => {
+app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   const { userId, client_id } = req.body;
   if (!userId || !client_id) {
     return res.status(400).json({ error: 'User ID and Client ID are required.' });
   }
 
   try {
+    // Update profile: set client_id AND role to 'client'
     const { error: profileError } = await supabase
       .from('profiles')
-      .update({ client_id: client_id })
+      .update({
+        client_id: client_id,
+        role: 'client' // ← FIX: Sync role in profiles table
+      })
       .eq('id', userId);
 
     if (profileError) {
@@ -537,6 +548,7 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin']), as
       throw new Error(`Failed to associate user with client: ${profileError.message}`);
     }
 
+    // Update auth.users metadata
     const { data: updatedUser, error: userError } = await supabase.auth.admin.updateUserById(
       userId,
       { user_metadata: { role: 'client' } }
@@ -549,14 +561,129 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin']), as
 
     res.status(200).json({ message: 'User approved and associated successfully.', user: updatedUser });
 
+    // Send confirmation email
+    if (updatedUser.user && updatedUser.user.email) {
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const loginUrl = `${frontendUrl}/login`;
+
+      let emailSubject = 'Aprovação de Conta - Project1';
+      let emailHtml = `
+        <div style="font-family: Arial, sans-serif; color: #333;">
+          <h2>Bem-vindo ao Project1!</h2>
+          <p>A sua conta foi aprovada pelo administrador.</p>
+          <p>Já pode aceder à plataforma e gerir os seus pedidos de assistência.</p>
+          <p>
+            <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">
+              Aceder à Plataforma
+            </a>
+          </p>
+          <p style="font-size: 0.9em; color: #777; margin-top: 20px;">
+            Se o botão acima não funcionar, copie e cole este link no seu browser:<br>
+            ${loginUrl}
+          </p>
+        </div>
+      `;
+
+      // Try to fetch custom template
+      try {
+        const { data: settingsData } = await supabase.from('settings').select('value').eq('key', 'email_templates').single();
+        if (settingsData && settingsData.value) {
+          const templates = JSON.parse(settingsData.value);
+          if (templates.approval) {
+            emailSubject = templates.approval.subject || emailSubject;
+            if (templates.approval.body) {
+              emailHtml = templates.approval.body.replace(/{{login_url}}/g, loginUrl);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error loading email template, using default:", e);
+      }
+
+      emailService.sendEmail(updatedUser.user.email, emailSubject, emailHtml).catch(err => {
+        console.error("Failed to send approval email async:", err);
+      });
+    }
+
   } catch (err: any) {
     console.error('Error in approval process:', err);
     res.status(500).json({ error: 'Failed to approve user', details: err.message });
   }
 });
 
+// EMAIL TEMPLATES ENDPOINTS
+app.get('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { data, error } = await supabase
+      .from('settings')
+      .select('value')
+      .eq('key', 'email_templates')
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      return res.status(500).json({ error: 'Failed to fetch email templates', details: error.message });
+    }
+
+    const defaultTemplates = {
+      approval: {
+        name: 'Aprovação Cliente',
+        subject: 'Aprovação de Conta - Project1',
+        body: `<div style="font-family: Arial, sans-serif; color: #333;">
+<h2>Bem-vindo ao Project1!</h2>
+<p>A sua conta foi aprovada pelo administrador.</p>
+<p>Já pode aceder à plataforma e gerir os seus pedidos de assistência.</p>
+<p>
+  <a href="{{login_url}}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">
+    Aceder à Plataforma
+  </a>
+</p>
+<p style="font-size: 0.9em; color: #777; margin-top: 20px;">
+  Se o botão acima não funcionar, copie e cole este link no seu browser:<br>
+  {{login_url}}
+</p>
+</div>`
+      }
+    };
+
+    let templates = defaultTemplates;
+    if (data && data.value) {
+      try {
+        const parsed = JSON.parse(data.value);
+        templates = { ...defaultTemplates, ...parsed };
+      } catch (e) {
+        console.error("Error parsing email templates setting:", e);
+      }
+    }
+
+    res.json(templates);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.put('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+  const templates = req.body;
+  try {
+    const { data: existing } = await supabase.from('settings').select('id').eq('key', 'email_templates').single();
+
+    let error;
+    if (existing) {
+      const result = await supabase.from('settings').update({ value: JSON.stringify(templates) }).eq('key', 'email_templates');
+      error = result.error;
+    } else {
+      const result = await supabase.from('settings').insert({ key: 'email_templates', value: JSON.stringify(templates) });
+      error = result.error;
+    }
+
+    if (error) return res.status(500).json({ error: 'Failed to update email templates', details: error.message });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
 // DASHBOARD
-app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res) => {
+app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   console.log('[DEBUG] /api/dashboard/stats endpoint hit.');
   try {
     const { count: openTickets, error: ticketsError } = await supabase.from('tickets').select('*', { count: 'exact', head: true }).in('status', ['open', 'acknowledged']);
@@ -578,7 +705,7 @@ app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'tec
   }
 });
 
-app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res) => {
+app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   console.log('[DEBUG] /api/dashboard/weekly-schedules endpoint hit.');
   try {
     const today = new Date();
@@ -631,7 +758,7 @@ app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['a
   }
 });
 
-app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res) => {
+app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   console.log('[DEBUG] /api/dashboard/pending-reports endpoint hit.');
   try {
     const { data: schedules, error: schedulesError } = await supabase
@@ -689,12 +816,12 @@ app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['ad
 
 // ...
 
-app.get('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const search = req.query.search as string;
     let query = supabase
       .from('clients')
-      .select('id, name, address, nif')
+      .select('id, name, address, city, postCode, nif')
       .order('name', { ascending: true });
 
     if (search) {
@@ -710,15 +837,15 @@ app.get('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician'
   }
 });
 
-app.put('/api/clients/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/clients/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const { name, address, nif } = req.body;
+  const { name, address, city, postCode, nif } = req.body;
   if (!name) return res.status(400).json({ error: 'Name is required.' });
 
   try {
     const { data, error } = await supabase
       .from('clients')
-      .update({ name, address, nif })
+      .update({ name, address, city, postCode, nif })
       .eq('id', id)
       .select();
 
@@ -729,7 +856,7 @@ app.put('/api/clients/:id', authenticateToken, authorizeRoles(['admin', 'technic
   }
 });
 
-app.delete('/api/clients/:id', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/clients/:id', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
 
   try {
@@ -745,13 +872,13 @@ app.delete('/api/clients/:id', authenticateToken, authorizeRoles(['admin']), asy
   }
 });
 
-app.post('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
-  const { name, address, nif } = req.body;
+app.post('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+  const { name, address, city, postCode, nif } = req.body;
   if (!name) return res.status(400).json({ error: 'Name is required.' });
   try {
     const { data, error } = await supabase
       .from('clients')
-      .insert({ name, address, nif })
+      .insert({ name, address, city, postCode, nif })
       .select();
     if (error) return res.status(500).json({ error: 'Failed to create client', details: error.message });
     res.status(201).json(data?.[0]);
@@ -761,12 +888,12 @@ app.post('/api/clients', authenticateToken, authorizeRoles(['admin', 'technician
 });
 
 // TECHNICIANS (profiles)
-app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { data, error } = await supabase
       .from('profiles')
       .select('id, email, role, first_name, last_name, color, telegramchatid')
-      .in('role', ['technician', 'admin'])
+      .in('role', ['technician', 'admin', 'office_staff', 'super_admin'])
       .order('first_name', { ascending: true });
     if (error) return res.status(500).json({ error: 'Failed to fetch users', details: error.message });
 
@@ -788,30 +915,37 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
   }
 });
 
-app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.params.id;
     const { first_name, last_name, color, role, telegramchatid } = req.body;
     const requestingUser = req.user;
+    const requestingUserRole = requestingUser.user_metadata.role;
 
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required.' });
     }
 
-    // Se for técnico, só pode editar o seu próprio perfil
+    // Se for técnico ou office_staff, só pode editar o seu próprio perfil
     // E não pode alterar a sua própria role
-    if (requestingUser.user_metadata.role === 'technician') {
+    if (requestingUserRole === 'technician' || requestingUserRole === 'office_staff') {
       if (userId !== requestingUser.id) {
         return res.status(403).json({ error: 'Você só pode editar o seu próprio perfil.' });
       }
-      // Impede técnico de mudar a sua própria role para admin (embora o middleware já devesse proteger se mudasse para admin, aqui garantimos a integridade dos dados)
-      // Se o técnico tentar enviar uma role diferente, removemos do update
+      // Impede técnico/office_staff de mudar a sua própria role
     }
 
     const updateData: any = { first_name, last_name, color, telegramchatid };
 
-    // Apenas admin pode mudar roles
-    if (requestingUser.user_metadata.role === 'admin' && role) {
+    // Role change logic:
+    // - super_admin can change any role to any role
+    // - admin can change roles but NOT to super_admin
+    // - technician/office_staff cannot change roles
+    if (role && (requestingUserRole === 'admin' || requestingUserRole === 'super_admin')) {
+      // Only super_admin can set or change to super_admin role
+      if (role === 'super_admin' && requestingUserRole !== 'super_admin') {
+        return res.status(403).json({ error: 'Only Super Admin can assign Super Admin role.' });
+      }
       updateData.role = role;
     }
 
@@ -835,7 +969,7 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
 });
 
 // SETTINGS
-app.get('/api/settings', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/settings', authenticateToken, authorizeRoles(['super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { data, error } = await supabase
       .from('settings')
@@ -855,7 +989,7 @@ app.get('/api/settings', authenticateToken, authorizeRoles(['admin']), async (re
 });
 
 // REPORTS
-app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   console.log('[DEBUG] GET /reports - Request received');
   try {
     const { data: reports, error: reportsError } = await supabase
@@ -926,7 +1060,7 @@ app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin'
   }
 });
 
-app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
   console.log(`[DEBUG] GET /report/:id - id: ${id}`);
   try {
@@ -991,7 +1125,7 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
   }
 });
 
-app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:scheduleId'], authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:scheduleId'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const scheduleId = Number(req.params.scheduleId);
   console.log(`[DEBUG] GET /reports/by-schedule - Received for scheduleId: ${scheduleId}`);
 
@@ -1047,19 +1181,85 @@ app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:schedule
   }
 });
 
-app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   console.log('[DEBUG] POST /api/reports hit. Request body:', req.body);
   try {
     const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
+
+    // Validations
     if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
       console.error('[ERROR] POST /api/reports: Missing required fields.', { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, description });
       return res.status(400).json({ error: 'Campos obrigatórios em falta para criar o relatório.' });
     }
 
+    if (!Array.isArray(technicianIds)) {
+      return res.status(400).json({ error: 'technicianIds deve ser uma lista de IDs.' });
+    }
+
+    if (parts && !Array.isArray(parts)) {
+      return res.status(400).json({ error: 'parts deve ser uma lista válida.' });
+    }
+
+    // 1. Fetch Schedule Year
+    const { data: scheduleData, error: scheduleError } = await supabase
+      .from('schedules')
+      .select('startDate')
+      .eq('id', scheduleId)
+      .single();
+
+    if (scheduleError || !scheduleData) {
+      console.error('[ERROR] POST /api/reports: Failed to fetch schedule date.', scheduleError);
+      return res.status(500).json({ error: 'Erro ao obter dados do agendamento.' });
+    }
+
+    const scheduleYear = new Date(scheduleData.startDate).getFullYear();
+    const yearPrefix = `${scheduleYear}`;
+
+    // 2. Find max report_number for this year
+    // Assuming report_number format: "AAAABBBB" (e.g., 20260001) as specificied
+    const { data: maxReport, error: maxReportError } = await supabase
+      .from('reports')
+      .select('report_number')
+      .ilike('report_number', `${yearPrefix}%`) // Filter by year prefix
+      .order('report_number', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (maxReportError) {
+      console.error('[ERROR] POST /api/reports: Failed to fetch max report number.', maxReportError);
+      // Fail safe or error? Let's error to ensure sequence/uniqueness
+      return res.status(500).json({ error: 'Erro ao gerar número do relatório.' });
+    }
+
+    let nextSequence = 1;
+    if (maxReport && maxReport.report_number) {
+      const currentSequenceStr = String(maxReport.report_number).slice(4); // Remove AAAA
+      const currentSequence = parseInt(currentSequenceStr, 10);
+      if (!isNaN(currentSequence)) {
+        nextSequence = currentSequence + 1;
+      }
+    }
+
+    const nextSequenceStr = String(nextSequence).padStart(4, '0');
+    const newReportNumber = `${yearPrefix}${nextSequenceStr}`;
+    console.log(`[DEBUG] Generated report_number: ${newReportNumber} for Year: ${scheduleYear}`);
+
     console.log('[DEBUG] Attempting to insert report into Supabase...');
     const { data: report, error: reportError } = await supabase
       .from('reports')
-      .insert({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '' })
+      .insert({
+        clientId,
+        equipmentId,
+        scheduleId,
+        serviceDate,
+        hours,
+        parts: parts || [],
+        description,
+        damage: damage || '',
+        serviceType: serviceType || [],
+        internal_notes: internalNotes || '',
+        report_number: newReportNumber
+      })
       .select('id')
       .single();
 
@@ -1069,21 +1269,26 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
     }
     console.log('[DEBUG] Report inserted successfully. Report ID:', report.id);
 
-    const reportTechnicians = technicianIds.map((techId: number) => ({ reportId: report.id, technicianId: techId }));
-    console.log('[DEBUG] Attempting to associate technicians:', reportTechnicians);
-    const { error: techError } = await supabase.from('report_technicians').insert(reportTechnicians);
+    if (technicianIds.length > 0) {
+      const reportTechnicians = technicianIds.map((techId: number) => ({ reportId: report.id, technicianId: techId }));
+      console.log('[DEBUG] Attempting to associate technicians:', reportTechnicians);
+      const { error: techError } = await supabase.from('report_technicians').insert(reportTechnicians);
 
-    if (techError) {
-      console.error('[ERROR] Supabase associate technicians error:', techError);
-      return res.status(500).json({ error: 'Erro ao associar técnicos ao relatório.', details: techError.message });
+      if (techError) {
+        console.error('[ERROR] Supabase associate technicians error:', techError);
+        // Not fatal, but good to know
+        // return res.status(500).json({ error: 'Erro ao associar técnicos ao relatório.', details: techError.message });
+      } else {
+        console.log('[DEBUG] Technicians associated successfully.');
+      }
+    } else {
+      console.log('[DEBUG] No technicians to associate.');
     }
-    console.log('[DEBUG] Technicians associated successfully.');
 
     console.log('[DEBUG] Attempting to update schedule hasReport status for scheduleId:', scheduleId);
     const { error: scheduleUpdateError } = await supabase.from('schedules').update({ hasReport: true }).eq('id', scheduleId);
     if (scheduleUpdateError) {
       console.error('[ERROR] Supabase update schedule hasReport error:', scheduleUpdateError);
-      // Decide if this should be a blocking error or just log it. For now, logging.
     }
     console.log('[DEBUG] Schedule hasReport status updated.');
 
@@ -1092,25 +1297,29 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
       console.log(`[DEBUG_INV] Processing automatic abate for ${parts.length} parts.`);
       for (const p of parts) {
         if (p.id && p.quantity > 0) {
-          const { data: currentPart, error: fetchError } = await supabase
-            .from('parts')
-            .select('stock_quantity, reserved_quantity, designation')
-            .eq('id', p.id)
-            .single();
-
-          if (!fetchError && currentPart) {
-            const { newStock, newReserved } = inventoryService.processReportAbate(
-              currentPart.stock_quantity || 0,
-              currentPart.reserved_quantity || 0,
-              Number(p.quantity)
-            );
-
-            console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${p.id}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
-
-            await supabase
+          try {
+            const { data: currentPart, error: fetchError } = await supabase
               .from('parts')
-              .update({ stock_quantity: newStock, reserved_quantity: newReserved })
-              .eq('id', p.id);
+              .select('stock_quantity, reserved_quantity, designation')
+              .eq('id', p.id)
+              .single();
+
+            if (!fetchError && currentPart) {
+              const { newStock, newReserved } = inventoryService.processReportAbate(
+                currentPart.stock_quantity || 0,
+                currentPart.reserved_quantity || 0,
+                Number(p.quantity)
+              );
+
+              console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${p.id}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
+
+              await supabase
+                .from('parts')
+                .update({ stock_quantity: newStock, reserved_quantity: newReserved })
+                .eq('id', p.id);
+            }
+          } catch (invErr) {
+            console.error(`[ERROR_INV] Error processing part abate for part ${p.id}:`, invErr);
           }
         }
       }
@@ -1119,11 +1328,11 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
     res.status(201).json({ message: 'Relatório criado com sucesso!', reportId: report.id });
   } catch (err: any) {
     console.error('[FATAL ERROR] POST /api/reports:', err);
-    res.status(500).json({ error: 'Erro interno do servidor.', details: err.message });
+    res.status(500).json({ error: 'Erro interno do servidor ao criar relatório.', details: err.message || 'Erro desconhecido' });
   }
 });
 
-app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   console.log('[DEBUG] PUT /api/reports/:id hit. Report ID:', req.params.id, 'Request body:', req.body);
   try {
     const reportId = req.params.id;
@@ -1175,7 +1384,7 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
 
 
 
-app.put('/api/settings', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/settings', authenticateToken, authorizeRoles(['super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const entries = Object.entries(req.body || {}) as Array<[string, string]>;
     const rows = entries.map(([key, value]) => ({ key, value }));
@@ -1706,7 +1915,7 @@ app.post('/api/my-tickets/:id/reply', authenticateToken, authorizeRoles(['client
   }
 });
 
-app.put(['/api/tickets/:id/mark-as-read', '/api/my-tickets/:id/mark-as-read'], authenticateToken, authorizeRoles(['client', 'technician', 'admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.put(['/api/tickets/:id/mark-as-read', '/api/my-tickets/:id/mark-as-read'], authenticateToken, authorizeRoles(['client', 'technician', 'office_staff', 'admin', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ticketId = Number(req.params.id);
     await supabase
@@ -1722,7 +1931,7 @@ app.put(['/api/tickets/:id/mark-as-read', '/api/my-tickets/:id/mark-as-read'], a
   }
 });
 
-app.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ticketId = Number(req.params.id);
     if (!ticketId || Number.isNaN(ticketId)) return res.status(400).json({ error: 'Invalid ticket id' });
@@ -1747,7 +1956,7 @@ app.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['clie
   }
 });
 
-app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician']), upload.single('file'), async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['client', 'admin', 'technician', 'office_staff', 'super_admin']), upload.single('file'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ticketId = Number(req.params.id);
     const file = req.file;
@@ -1812,7 +2021,7 @@ app.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles(['cli
   }
 });
 
-app.delete('/api/tickets/:ticketId/attachments/:attachmentId', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/tickets/:ticketId/attachments/:attachmentId', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ticketId = Number(req.params.ticketId);
     const attachmentId = String(req.params.attachmentId);
@@ -1846,13 +2055,17 @@ app.delete('/api/tickets/:ticketId/attachments/:attachmentId', authenticateToken
 });
 
 // SCHEDULES for calendar
-app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { data: schedules, error: schedulesError } = await supabase
       .from('schedules')
-      .select('*, schedule_technicians(technicianId)')
+      .select('*, schedule_technicians(technicianId), schedule_blocks:schedule_time_blocks(*)')
       .order('startDate', { ascending: true });
     if (schedulesError) return res.status(500).json({ error: 'Failed to fetch schedules', details: schedulesError.message });
+
+    // Debug logging
+    const totalBlocks = (schedules || []).reduce((acc, s) => acc + (s.schedule_blocks?.length || 0), 0);
+    console.log(`[DEBUG_GET_SCHEDULES] Fetched ${schedules?.length} schedules with ${totalBlocks} total time blocks.`);
 
     const technicianIds = [...new Set((schedules || []).flatMap(s => (s.schedule_technicians || []).map((st: any) => st.technicianId)))];
     let techMap = new Map<string, { id: string; name: string; color?: string }>();
@@ -1927,6 +2140,11 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
         equipmentInfo: equipMap.get(String(eId))?.model || 'Modelo Desconhecido',
         parts: partsMap.get(s.id) || [],
         acknowledgementState: s.acknowledgementState,
+        timeBlocks: (s.schedule_blocks || []).map((tb: any) => ({
+          id: tb.id,
+          start: tb.start_time,
+          end: tb.end_time
+        })),
       };
     });
 
@@ -1938,12 +2156,12 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
   }
 });
 
-app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { data: schedule, error: scheduleError } = await supabase
       .from('schedules')
-      .select('*, schedule_technicians(technicianId)')
+      .select('*, schedule_technicians(technicianId), schedule_time_blocks(*)')
       .eq('id', id)
       .single();
 
@@ -2016,6 +2234,11 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       equipmentInfo,
       parts,
       acknowledgementState: schedule.acknowledgementState,
+      timeBlocks: (schedule.schedule_time_blocks || []).map((tb: any) => ({
+        id: tb.id,
+        start: tb.start_time,
+        end: tb.end_time
+      })),
     };
 
     res.json(result);
@@ -2026,7 +2249,7 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
 });
 
 
-app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const {
       title,
@@ -2040,6 +2263,7 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
       internalNotes,
       serviceType,
       parts,
+      timeBlocks,
     } = req.body as any;
 
     console.log('[DEBUG_SCHEDULES] POST /api/schedules. Body:', JSON.stringify(req.body));
@@ -2065,6 +2289,25 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
     console.log('[DEBUG_SCHEDULES] POST /api/schedules. Insert success. saved additionalInfo:', inserted.additionalInfo);
 
     const scheduleId = inserted.id as number;
+
+    // Insert Time Blocks
+    if (Array.isArray(timeBlocks) && timeBlocks.length > 0) {
+      const blockRows = timeBlocks.map((tb: any) => ({
+        schedule_id: scheduleId,
+        start_time: tb.start,
+        end_time: tb.end
+      }));
+      const { error: tbError } = await supabase.from('schedule_time_blocks').insert(blockRows);
+      if (tbError) console.error('Error inserting time blocks:', tbError);
+    } else {
+      // Fallback
+      const { error: tbError } = await supabase.from('schedule_time_blocks').insert({
+        schedule_id: scheduleId,
+        start_time: startDate,
+        end_time: endDate
+      });
+      if (tbError) console.error('Error inserting default time block:', tbError);
+    }
 
     if (Array.isArray(technicianIds) && technicianIds.length > 0) {
       const techRows = technicianIds.map((tid: any) => ({ scheduleId, technicianId: String(tid) }));
@@ -2203,6 +2446,7 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
       parts: [],
       clientName,
       equipmentInfo,
+      timeBlocks: timeBlocks && timeBlocks.length > 0 ? timeBlocks.map((t: any) => ({ start: t.start, end: t.end })) : [{ start: startDate, end: endDate }]
     };
 
     res.status(201).json(result);
@@ -2212,7 +2456,7 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
   }
 });
 
-app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const scheduleId = Number(req.params.id);
     const {
@@ -2227,6 +2471,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       internalNotes,
       serviceType,
       parts,
+      timeBlocks,
     } = req.body as any;
 
     console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. ID:', scheduleId);
@@ -2253,6 +2498,28 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       return res.status(500).json({ error: 'Failed to update schedule', details: updateError.message });
     }
     console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Update success. saved additionalInfo:', updated.additionalInfo);
+
+    // Update Time Blocks
+    // Remove old blocks
+    await supabase.from('schedule_time_blocks').delete().eq('schedule_id', scheduleId);
+
+    if (Array.isArray(timeBlocks) && timeBlocks.length > 0) {
+      const blockRows = timeBlocks.map((tb: any) => ({
+        schedule_id: scheduleId,
+        start_time: tb.start,
+        end_time: tb.end
+      }));
+      const { error: tbError } = await supabase.from('schedule_time_blocks').insert(blockRows);
+      if (tbError) console.error('Error inserting updated time blocks:', tbError);
+    } else {
+      // Fallback
+      const { error: tbError } = await supabase.from('schedule_time_blocks').insert({
+        schedule_id: scheduleId,
+        start_time: startDate,
+        end_time: endDate
+      });
+      if (tbError) console.error('Error inserting default time block on update:', tbError);
+    }
 
     await supabase.from('schedule_technicians').delete().eq('scheduleId', scheduleId);
     if (Array.isArray(technicianIds) && technicianIds.length > 0) {
@@ -2422,6 +2689,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       acknowledgementState: updated.acknowledgementState || 'pending',
       clientName,
       equipmentInfo,
+      timeBlocks: timeBlocks && timeBlocks.length > 0 ? timeBlocks.map((t: any) => ({ start: t.start, end: t.end })) : [{ start: startDate, end: endDate }]
     };
 
     broadcastCalendarUpdate(scheduleId);
@@ -2433,7 +2701,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
   }
 });
 
-app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const scheduleId = Number(req.params.id);
     const {
@@ -2596,7 +2864,7 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
   }
 });
 
-app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const scheduleId = Number(req.params.id);
     if (!scheduleId || Number.isNaN(scheduleId)) return res.status(400).json({ error: 'Invalid schedule id' });
@@ -2682,7 +2950,7 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
   }
 });
 
-app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const search = req.query.search as string;
     let query = supabase
@@ -2714,7 +2982,7 @@ app.get('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technici
   }
 });
 
-app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const clientIdParam = Number(req.params.id);
   if (!clientIdParam || Number.isNaN(clientIdParam)) {
     return res.status(400).json({ error: 'Invalid client id' });
@@ -2742,7 +3010,7 @@ app.get('/api/clients/:id/equipments', authenticateToken, authorizeRoles(['admin
   }
 });
 
-app.put('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
   const { brand, model, serialNumber, clientId } = req.body;
   if (!brand || !model || !serialNumber || !clientId) {
@@ -2773,7 +3041,7 @@ app.put('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'tech
   }
 });
 
-app.delete('/api/equipments/:id', authenticateToken, authorizeRoles(['admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
 
   try {
@@ -2789,7 +3057,7 @@ app.delete('/api/equipments/:id', authenticateToken, authorizeRoles(['admin']), 
   }
 });
 
-app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const { brand, model, serialNumber, clientId } = req.body as { brand?: string; model?: string; serialNumber?: string; clientId?: number };
   if (!brand || !model || !serialNumber || !clientId) {
     return res.status(400).json({ error: 'brand, model, serialNumber and clientId are required.' });
@@ -2824,7 +3092,7 @@ app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technic
 });
 
 // INVENTORY
-app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { data, error } = await supabase
       .from('parts')
@@ -2838,7 +3106,7 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
   }
 });
 
-app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { reference, designation, stock_quantity, reserved_quantity, ordered_quantity } = req.body;
 
@@ -2864,7 +3132,7 @@ app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technici
   }
 });
 
-app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const partId = req.params.id;
     const { quantity, fromOrder } = req.body; // quantity can be positive (add) or negative (remove)
@@ -2910,7 +3178,7 @@ app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 
   }
 });
 
-app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const partId = req.params.id;
     const { quantity } = req.body;
@@ -2951,7 +3219,7 @@ app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 
   }
 });
 
-app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const partId = req.params.id;
 
@@ -2985,7 +3253,7 @@ app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['a
 });
 
 // GET PART BY REFERENCE - usado no modal de agendamento para autocompletar designação
-app.get('/api/parts/:reference', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/parts/:reference', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const reference = req.params.reference;
 
@@ -3016,7 +3284,7 @@ app.get('/api/parts/:reference', authenticateToken, authorizeRoles(['admin', 'te
 });
 
 // TICKETS LIST BY STATUS
-app.get('/api/tickets', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/tickets', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   const status = (req.query.status as string) || 'open';
   try {
     const { data: tickets, error: ticketsError } = await supabase
@@ -3076,7 +3344,7 @@ app.get('/api/tickets', authenticateToken, authorizeRoles(['admin', 'technician'
   }
 });
 
-app.get('/api/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ticketId = Number(req.params.id);
     if (!ticketId || Number.isNaN(ticketId)) return res.status(400).json({ error: 'Invalid ticket id' });
@@ -3209,7 +3477,7 @@ app.get('/api/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technic
   }
 });
 
-app.post('/api/tickets/:id/reply', authenticateToken, authorizeRoles(['admin', 'technician']), async (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/tickets/:id/reply', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ticketId = Number(req.params.id);
     const { message } = req.body as { message?: string };
