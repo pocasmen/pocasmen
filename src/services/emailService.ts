@@ -6,14 +6,24 @@ let transporter: nodemailer.Transporter | null = null;
 
 const getTransporter = () => {
     if (!transporter) {
+        const port = parseInt(process.env.EMAIL_PORT || '587');
+        const isSecure = process.env.EMAIL_SECURE === 'true' || port === 465;
+
         transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: parseInt(process.env.SMTP_PORT || '587'),
-            secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+            host: process.env.EMAIL_HOST,
+            port: port,
+            secure: isSecure, // true for 465, false for other ports
             auth: {
-                user: process.env.SMTP_USER,
-                pass: process.env.SMTP_PASS,
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
             },
+            tls: {
+                // Do not fail on invalid certs
+                rejectUnauthorized: false
+            },
+            connectionTimeout: 10000, // 10 seconds
+            greetingTimeout: 10000,
+            socketTimeout: 10000,
         });
     }
     return transporter;
@@ -27,14 +37,14 @@ const getTransporter = () => {
  */
 export const sendEmail = async (to: string, subject: string, html: string) => {
     // Check if critical SMTP config is present to avoid crashing or useless errors
-    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
-        console.warn("SMTP configuration (SMTP_HOST or SMTP_USER) is missing. Email skipped.");
+    if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER) {
+        console.warn("SMTP configuration (EMAIL_HOST or EMAIL_USER) is missing. Email skipped.");
         return;
     }
 
     try {
         const info = await getTransporter().sendMail({
-            from: process.env.SMTP_FROM || '"Project1 Support" <noreply@project1.com>',
+            from: process.env.EMAIL_FROM || `"Project1 Support" <${process.env.EMAIL_USER}>`,
             to,
             subject,
             html,
@@ -48,4 +58,11 @@ export const sendEmail = async (to: string, subject: string, html: string) => {
         // User requirement: "immediately after admin approves... must be sent an email".
         // If email fails, is it a failure of approval? Probably not.
     }
+};
+
+/**
+ * Reset the transporter (useful for testing)
+ */
+export const resetTransporter = () => {
+    transporter = null;
 };

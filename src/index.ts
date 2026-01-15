@@ -431,7 +431,8 @@ app.post('/auth/self-register', async (req, res) => {
         first_name: firstName,
         last_name: lastName,
         company_name: companyName,
-        role: 'pending_client'
+        role: 'pending_client',
+        must_set_password: true
       }
     });
 
@@ -548,10 +549,10 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'sup
       throw new Error(`Failed to associate user with client: ${profileError.message}`);
     }
 
-    // Update auth.users metadata
+    // Update auth.users metadata - clear must_set_password and set role to client
     const { data: updatedUser, error: userError } = await supabase.auth.admin.updateUserById(
       userId,
-      { user_metadata: { role: 'client' } }
+      { user_metadata: { role: 'client', must_set_password: false } }
     );
 
     if (userError) {
@@ -600,6 +601,7 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'sup
         console.error("Error loading email template, using default:", e);
       }
 
+      console.log(`[APPROVAL] Sending approval email to ${updatedUser.user.email}`);
       emailService.sendEmail(updatedUser.user.email, emailSubject, emailHtml).catch(err => {
         console.error("Failed to send approval email async:", err);
       });
@@ -892,7 +894,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, email, role, first_name, last_name, color, telegramchatid')
+      .select('id, email, role, first_name, last_name, color, telegramchatid, signature')
       .in('role', ['technician', 'admin', 'office_staff', 'super_admin'])
       .order('first_name', { ascending: true });
     if (error) return res.status(500).json({ error: 'Failed to fetch users', details: error.message });
@@ -905,6 +907,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
       last_name: p.last_name || '',
       color: p.color || '#3174ad',
       telegramchatid: p.telegramchatid || '',
+      signature: p.signature || '',
       name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
     }));
 
@@ -918,7 +921,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
 app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.params.id;
-    const { first_name, last_name, color, role, telegramchatid } = req.body;
+    const { first_name, last_name, color, role, telegramchatid, signature } = req.body;
     const requestingUser = req.user;
     const requestingUserRole = requestingUser.user_metadata.role;
 
@@ -935,7 +938,7 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
       // Impede técnico/office_staff de mudar a sua própria role
     }
 
-    const updateData: any = { first_name, last_name, color, telegramchatid };
+    const updateData: any = { first_name, last_name, color, telegramchatid, signature };
 
     // Role change logic:
     // - super_admin can change any role to any role
@@ -953,7 +956,7 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
       .from('profiles')
       .update(updateData)
       .eq('id', userId)
-      .select('id, email, role, first_name, last_name, color, telegramchatid')
+      .select('id, email, role, first_name, last_name, color, telegramchatid, signature')
       .single();
 
     if (error) {
@@ -1078,10 +1081,13 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
     if (!report) return res.status(404).json({ error: 'Report not found' });
 
     // Fetch related data
-    const [clientRes, equipmentRes, techRes] = await Promise.all([
+    const [clientRes, equipmentRes, techRes, timeBlocksRes] = await Promise.all([
       supabase.from('clients').select('id, name, address, nif').eq('id', report.clientId).single(),
       supabase.from('equipments').select('id, brand, model, serialNumber').eq('id', report.equipmentId).single(),
-      supabase.from('report_technicians').select('technicianId').eq('reportId', report.id)
+      supabase.from('report_technicians').select('technicianId').eq('reportId', report.id),
+      report.scheduleId
+        ? supabase.from('schedule_time_blocks').select('id, start_time, end_time').eq('schedule_id', report.scheduleId)
+        : Promise.resolve({ data: [] })
     ]);
 
     const client = clientRes.data;
@@ -1115,7 +1121,12 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
       equipmentSerialNumber: equipment?.serialNumber || '',
       technicianName: technicianNames,
       technicians: technicians,
-      internalNotes: report.internal_notes
+      internalNotes: report.internal_notes,
+      timeBlocks: (timeBlocksRes as any).data?.map((tb: any) => ({
+        id: tb.id,
+        start: tb.start_time,
+        end: tb.end_time
+      })) || []
     };
 
     res.json(detailedReport);
@@ -1184,7 +1195,8 @@ app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:schedule
 app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   console.log('[DEBUG] POST /api/reports hit. Request body:', req.body);
   try {
-    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
+    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature } = req.body;
+
 
     // Validations
     if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
@@ -1216,11 +1228,15 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
     const yearPrefix = `${scheduleYear}`;
 
     // 2. Find max report_number for this year
-    // Assuming report_number format: "AAAABBBB" (e.g., 20260001) as specificied
+    // Since report_number is an integer in format AAAABBBB
+    const minReportNum = scheduleYear * 10000;
+    const maxReportNum = minReportNum + 9999;
+
     const { data: maxReport, error: maxReportError } = await supabase
       .from('reports')
       .select('report_number')
-      .ilike('report_number', `${yearPrefix}%`) // Filter by year prefix
+      .gte('report_number', minReportNum)
+      .lte('report_number', maxReportNum)
       .order('report_number', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -1258,8 +1274,11 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
         damage: damage || '',
         serviceType: serviceType || [],
         internal_notes: internalNotes || '',
-        report_number: newReportNumber
+        report_number: newReportNumber,
+        signature: signature || '',
+        technician_signature: technician_signature || ''
       })
+
       .select('id')
       .single();
 
@@ -1336,7 +1355,8 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
   console.log('[DEBUG] PUT /api/reports/:id hit. Report ID:', req.params.id, 'Request body:', req.body);
   try {
     const reportId = req.params.id;
-    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
+    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature } = req.body;
+
 
     if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
       console.error('[ERROR] PUT /api/reports/:id: Missing required fields.', { reportId, clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, description });
@@ -1346,8 +1366,9 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
     console.log('[DEBUG] Attempting to update report in Supabase. Report ID:', reportId);
     const { data: updatedReport, error: reportError } = await supabase
       .from('reports')
-      .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '' })
+      .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '', signature: signature, technician_signature: technician_signature })
       .eq('id', reportId)
+
       .select('id')
       .single();
 
@@ -1703,6 +1724,18 @@ app.get('/api/my-report/by-schedule/:id', authenticateToken, authorizeRoles(['cl
       }
     }
 
+    let timeBlocks: any[] = [];
+    if (report.scheduleId) {
+      const { data: tbData } = await supabase.from('schedule_time_blocks').select('id, start_time, end_time').eq('schedule_id', report.scheduleId);
+      if (tbData) {
+        timeBlocks = tbData.map((tb: any) => ({
+          id: tb.id,
+          start: tb.start_time,
+          end: tb.end_time
+        }));
+      }
+    }
+
     const result = {
       id: report.id,
       clientId: report.clientId,
@@ -1721,6 +1754,7 @@ app.get('/api/my-report/by-schedule/:id', authenticateToken, authorizeRoles(['cl
       equipmentBrand,
       equipmentModel,
       equipmentSerialNumber,
+      timeBlocks,
     };
 
     res.json(result);
