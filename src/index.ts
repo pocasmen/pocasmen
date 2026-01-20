@@ -712,6 +712,10 @@ app.get('/api/test', (req, res) => {
   res.send('Server is alive!');
 });
 
+app.get('/api/healthcheck', (req, res) => {
+  res.status(200).send('OK');
+});
+
 // AUTH
 app.post('/auth/login', async (req, res) => {
   const { email, password } = req.body;
