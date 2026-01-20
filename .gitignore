@@ -1,3 +1,47 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.npm
+
+# Dependencies
 node_modules
-google-credentials.json
+package-lock.json # Mantém-se normalmente, mas remova esta linha se preferir usar yarn.lock e não quiser este. (Recomendado: manter)
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Build Output (TypeScript)
+dist
+build
+lib-cov
+
+# Debugging
+.vscode
+.idea
+*.jsp
+*.js.map
+*.d.ts.map
+
+# Coverage directory used by tools like istanbul
+coverage
+*.lcov
+
+# Environment Variables & Secrets (CRITICAL)
 .env
+.env.test
+.env.production
+google-credentials.json
+firebase-service-account.json
+
+# System Files
+.DS_Store
+Thumbs.db
+
+# Optional: Uploads (if stored locally)
+uploads/
+tmp/
