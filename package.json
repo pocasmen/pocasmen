@@ -8,7 +8,8 @@
     "test:email": "ts-node src/testEmail.ts",
     "dev": "ts-node src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "sync:calendar": "ts-node src/sync_all.ts"
   },
   "keywords": [],
   "author": "",
@@ -28,6 +29,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.19.2",
+    "googleapis": "^170.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",

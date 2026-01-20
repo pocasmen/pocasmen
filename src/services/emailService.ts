@@ -34,8 +34,9 @@ const getTransporter = () => {
  * @param to Recipient email address
  * @param subject Email subject
  * @param html Email body in HTML format
+ * @param from Optional custom from address
  */
-export const sendEmail = async (to: string, subject: string, html: string) => {
+export const sendEmail = async (to: string, subject: string, html: string, from?: string) => {
     // Check if critical SMTP config is present to avoid crashing or useless errors
     if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER) {
         console.warn("SMTP configuration (EMAIL_HOST or EMAIL_USER) is missing. Email skipped.");
@@ -44,7 +45,7 @@ export const sendEmail = async (to: string, subject: string, html: string) => {
 
     try {
         const info = await getTransporter().sendMail({
-            from: process.env.EMAIL_FROM || `"Project1 Support" <${process.env.EMAIL_USER}>`,
+            from: from || process.env.EMAIL_FROM || `"Project1 Support" <${process.env.EMAIL_USER}>`,
             to,
             subject,
             html,

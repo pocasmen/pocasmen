@@ -67,6 +67,7 @@ const multer_1 = __importDefault(require("multer"));
 const supabase_js_1 = require("@supabase/supabase-js");
 const inventoryService = __importStar(require("./services/inventoryService"));
 const emailService = __importStar(require("./services/emailService"));
+const googleCalendarService_1 = require("./services/googleCalendarService");
 dotenv_1.default.config();
 // --- SUPABASE CLIENT INITIALIZATION ---
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -243,7 +244,7 @@ function sendScheduleNotificationToTechnicians(scheduleId_1, technicianIds_1) {
         try {
             const { data: schedule, error: sError } = yield supabase
                 .from('schedules')
-                .select('title, startDate, endDate, serviceType, additionalInfo, clients(name)')
+                .select('title, startDate, endDate, serviceType, additionalInfo, clientId, equipmentId, clients(name), equipments(brand, model, serialNumber)')
                 .eq('id', scheduleId)
                 .single();
             if (sError || !schedule) {
@@ -257,7 +258,23 @@ function sendScheduleNotificationToTechnicians(scheduleId_1, technicianIds_1) {
             const clientName = Array.isArray(schedule.clients) ? (_a = schedule.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = schedule.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido';
             const startDate = new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
             const endDate = new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
-            const serviceType = schedule.serviceType || 'Não especificado';
+            // Service Type formatting
+            const serviceTypeMap = {
+                'manutencao': 'Manutenção',
+                'reparacao': 'Reparação',
+                'instalacao': 'Instalação',
+                'calibracao': 'Calibração'
+            };
+            const serviceType = serviceTypeMap[schedule.serviceType] || schedule.serviceType || 'Não especificado';
+            // Equipment info
+            const equipment = Array.isArray(schedule.equipments) ? schedule.equipments[0] : schedule.equipments;
+            let equipmentInfo = 'Não especificado';
+            if (equipment) {
+                const brand = equipment.brand || '';
+                const model = equipment.model || '';
+                const serialNumber = equipment.serialNumber || '';
+                equipmentInfo = `${brand} ${model}${serialNumber ? ` (S/N: ${serialNumber})` : ''}`.trim();
+            }
             // Procurar os perfis dos técnicos atribuídos + todos os administradores (admin e super_admin) para obter nomes e Chat IDs
             const { data: profiles, error: pError } = yield supabase
                 .from('profiles')
@@ -273,18 +290,18 @@ function sendScheduleNotificationToTechnicians(scheduleId_1, technicianIds_1) {
                 .map(p => `${p.first_name || ''} ${p.last_name || ''}`.trim())
                 .join(', ');
             const notificationTitle = isUpdate ? '🔄 *Re-Agendamento*' : '📅 *Novo Agendamento*';
-            // Construir a parte comum da mensagem
+            // Construir a mensagem com formatação consistente
             let baseMessage = `${notificationTitle}\n\n`;
-            baseMessage += `*Título:* ${schedule.title}\n`;
-            baseMessage += `*Cliente:* ${clientName}\n`;
             baseMessage += `*Tipo de Serviço:* ${serviceType}\n`;
+            baseMessage += `*Cliente:* ${clientName}\n`;
+            baseMessage += `*Equipamento:* ${equipmentInfo}\n`;
             baseMessage += `*Início:* ${startDate}\n`;
             baseMessage += `*Final:* ${endDate}\n`;
             if (schedule.additionalInfo) {
-                baseMessage += `*Notas:* ${schedule.additionalInfo}\n`;
+                baseMessage += `*Notas Internas:* ${schedule.additionalInfo}\n`;
             }
             if (scheduleParts && scheduleParts.length > 0) {
-                baseMessage += `\n*Peças necessárias:*\n`;
+                baseMessage += `\n*Peças Necessárias:*\n`;
                 scheduleParts.forEach((sp) => {
                     const p = sp.parts;
                     baseMessage += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
@@ -337,6 +354,77 @@ function runTicketCheck() {
         }
         catch (error) {
             console.error('Error running ticket check:', error);
+        }
+    });
+}
+function runDailyReminders() {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a;
+        const now = new Date();
+        const options = { timeZone: 'Europe/Lisbon', hour12: false, hour: '2-digit', minute: '2-digit' };
+        const currentTime = now.toLocaleTimeString('pt-PT', options);
+        try {
+            const { data: profiles, error: pError } = yield supabase
+                .from('profiles')
+                .select('id, telegramchatid, first_name, notification_time')
+                .eq('daily_notifications_enabled', true);
+            if (pError)
+                throw pError;
+            if (!profiles || profiles.length === 0)
+                return;
+            for (const profile of profiles) {
+                if (!profile.telegramchatid)
+                    continue;
+                const profileTime = (_a = profile.notification_time) === null || _a === void 0 ? void 0 : _a.substring(0, 5);
+                if (profileTime !== currentTime)
+                    continue;
+                const dayOfWeek = now.getDay(); // 0 is Sunday, 6 is Saturday
+                if (dayOfWeek === 0 || dayOfWeek === 6)
+                    continue;
+                let daysToAdd = 1;
+                let dateLabel = 'amanhã';
+                if (dayOfWeek === 5) {
+                    daysToAdd = 3;
+                    dateLabel = 'próxima segunda-feira';
+                }
+                const targetDate = new Date();
+                targetDate.setDate(targetDate.getDate() + daysToAdd);
+                const targetDateStr = targetDate.toISOString().split('T')[0];
+                const { data: techSchedules, error: sError } = yield supabase
+                    .from('schedule_technicians')
+                    .select(`
+          scheduleId,
+          schedules!inner(id, startDate, serviceType, clients(name), equipments(brand, model, "serialNumber"))
+        `)
+                    .eq('technicianId', profile.id)
+                    .gte('schedules.startDate', `${targetDateStr}T00:00:00.000Z`)
+                    .lte('schedules.startDate', `${targetDateStr}T23:59:59.999Z`);
+                if (sError) {
+                    console.error(`Error fetching schedules for ${profile.id}:`, sError);
+                    continue;
+                }
+                if (techSchedules && techSchedules.length > 0) {
+                    let message = `Olá, *${profile.first_name || 'Técnico'}*!\n\n`;
+                    message += `Lembramos os seus agendamentos para ${dateLabel} (*${targetDate.toLocaleDateString('pt-PT')}*):\n\n`;
+                    techSchedules.sort((a, b) => new Date(a.schedules.startDate).getTime() - new Date(b.schedules.startDate).getTime());
+                    techSchedules.forEach((ts) => {
+                        var _a, _b;
+                        const s = ts.schedules;
+                        const startTime = new Date(s.startDate).toLocaleTimeString('pt-PT', { timeZone: 'Europe/Lisbon', hour: '2-digit', minute: '2-digit' });
+                        const clientName = Array.isArray(s.clients) ? (_a = s.clients[0]) === null || _a === void 0 ? void 0 : _a.name : ((_b = s.clients) === null || _b === void 0 ? void 0 : _b.name) || 'Cliente Desconhecido';
+                        const equipment = Array.isArray(s.equipments) ? s.equipments[0] : s.equipments;
+                        const eqDesc = equipment ? `${equipment.brand || ''} ${equipment.model || ''}`.trim() : 'Equipamento Desconhecido';
+                        const sn = (equipment === null || equipment === void 0 ? void 0 : equipment.serialNumber) ? `(S/N: ${equipment.serialNumber})` : 'S/N: -';
+                        message += `• *${startTime}* - ${s.serviceType || 'Serviço'} | ${clientName}\n`;
+                        message += `  _${eqDesc} - ${sn}_\n\n`;
+                    });
+                    message += `\nTenha um bom trabalho!`;
+                    yield sendTelegramNotification(message, profile.telegramchatid);
+                }
+            }
+        }
+        catch (error) {
+            console.error('Error in runDailyReminders:', error);
         }
     });
 }
@@ -445,7 +533,83 @@ function markLastClientMessageAsRead(ticketId) {
     });
 }
 // --- API ENDPOINTS ---
-app.get('/', (req, res) => res.send('Server is running!'));
+function abatePartInventory(partId, quantity) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const { data: currentPart, error: fetchError } = yield supabase
+            .from('parts')
+            .select('stock_quantity, reserved_quantity, designation, is_composed')
+            .eq('id', partId)
+            .single();
+        if (fetchError || !currentPart) {
+            console.error(`[ERROR_INV] Part not found or error fetching part ${partId}:`, fetchError);
+            return;
+        }
+        if (currentPart.is_composed) {
+            console.log(`[DEBUG_INV] Part ${partId} is composed. Exploding components...`);
+            // Fetch components
+            const { data: components, error: compError } = yield supabase
+                .from('part_components')
+                .select('child_part_id, quantity')
+                .eq('parent_part_id', partId);
+            if (compError) {
+                console.error(`[ERROR_INV] Error fetching components for part ${partId}:`, compError);
+                return;
+            }
+            if (components && components.length > 0) {
+                for (const comp of components) {
+                    yield abatePartInventory(comp.child_part_id, comp.quantity * quantity);
+                }
+            }
+        }
+        else {
+            // Normal part abatement
+            const { newStock, newReserved } = inventoryService.processReportAbate(currentPart.stock_quantity || 0, currentPart.reserved_quantity || 0, quantity);
+            console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${partId}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
+            yield supabase
+                .from('parts')
+                .update({ stock_quantity: newStock, reserved_quantity: newReserved })
+                .eq('id', partId);
+        }
+    });
+}
+function updatePartReservation(partId, change) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const { data: currentPart, error: fetchError } = yield supabase
+            .from('parts')
+            .select('reserved_quantity, designation, is_composed')
+            .eq('id', partId)
+            .single();
+        if (fetchError || !currentPart) {
+            console.error(`[ERROR_INV] Part not found or error fetching part ${partId}:`, fetchError);
+            return;
+        }
+        // Update the part itself
+        const newReservedQuantity = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, change);
+        console.log(`[DEBUG_INV] Updating Part Reservation "${currentPart.designation}" (ID: ${partId}): Old Reserved=${currentPart.reserved_quantity}, Change=${change}, New Reserved=${newReservedQuantity}`);
+        yield supabase
+            .from('parts')
+            .update({ reserved_quantity: newReservedQuantity })
+            .eq('id', partId);
+        // If it's composed, update components
+        if (currentPart.is_composed) {
+            console.log(`[DEBUG_INV] Part ${partId} is composed. Propagating reservation change to components...`);
+            const { data: components, error: compError } = yield supabase
+                .from('part_components')
+                .select('child_part_id, quantity')
+                .eq('parent_part_id', partId);
+            if (compError) {
+                console.error(`[ERROR_INV] Error fetching components for part ${partId}:`, compError);
+                return;
+            }
+            if (components && components.length > 0) {
+                for (const comp of components) {
+                    yield updatePartReservation(comp.child_part_id, comp.quantity * change);
+                }
+            }
+        }
+    });
+}
+// --- API ENDPOINTS ---
 app.get('/api/test', (req, res) => {
     console.log('[DEBUG] /api/test endpoint hit. Server is alive!');
     res.send('Server is alive!');
@@ -469,7 +633,8 @@ app.post('/auth/self-register', (req, res) => __awaiter(void 0, void 0, void 0, 
                 first_name: firstName,
                 last_name: lastName,
                 company_name: companyName,
-                role: 'pending_client'
+                role: 'pending_client',
+                must_set_password: true
             }
         });
         if (error) {
@@ -574,8 +739,8 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'sup
             console.error(`Error updating profile for user ${userId}:`, profileError);
             throw new Error(`Failed to associate user with client: ${profileError.message}`);
         }
-        // Update auth.users metadata
-        const { data: updatedUser, error: userError } = yield supabase.auth.admin.updateUserById(userId, { user_metadata: { role: 'client' } });
+        // Update auth.users metadata - clear must_set_password and set role to client
+        const { data: updatedUser, error: userError } = yield supabase.auth.admin.updateUserById(userId, { user_metadata: { role: 'client', must_set_password: false } });
         if (userError) {
             console.error(`Error updating auth role for user ${userId}:`, userError);
             throw new Error(`Failed to update user role: ${userError.message}`);
@@ -602,6 +767,7 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'sup
           </p>
         </div>
       `;
+            let emailFrom = undefined;
             // Try to fetch custom template
             try {
                 const { data: settingsData } = yield supabase.from('settings').select('value').eq('key', 'email_templates').single();
@@ -609,6 +775,7 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'sup
                     const templates = JSON.parse(settingsData.value);
                     if (templates.approval) {
                         emailSubject = templates.approval.subject || emailSubject;
+                        emailFrom = templates.approval.from || undefined;
                         if (templates.approval.body) {
                             emailHtml = templates.approval.body.replace(/{{login_url}}/g, loginUrl);
                         }
@@ -618,7 +785,8 @@ app.post('/admin/approve-user', authenticateToken, authorizeRoles(['admin', 'sup
             catch (e) {
                 console.error("Error loading email template, using default:", e);
             }
-            emailService.sendEmail(updatedUser.user.email, emailSubject, emailHtml).catch(err => {
+            console.log(`[APPROVAL] Sending approval email to ${updatedUser.user.email}`);
+            emailService.sendEmail(updatedUser.user.email, emailSubject, emailHtml, emailFrom).catch(err => {
                 console.error("Failed to send approval email async:", err);
             });
         }
@@ -642,6 +810,7 @@ app.get('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin'
         const defaultTemplates = {
             approval: {
                 name: 'Aprovação Cliente',
+                from: '',
                 subject: 'Aprovação de Conta - Project1',
                 body: `<div style="font-family: Arial, sans-serif; color: #333;">
 <h2>Bem-vindo ao Project1!</h2>
@@ -678,16 +847,9 @@ app.get('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin'
 app.put('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const templates = req.body;
     try {
-        const { data: existing } = yield supabase.from('settings').select('id').eq('key', 'email_templates').single();
-        let error;
-        if (existing) {
-            const result = yield supabase.from('settings').update({ value: JSON.stringify(templates) }).eq('key', 'email_templates');
-            error = result.error;
-        }
-        else {
-            const result = yield supabase.from('settings').insert({ key: 'email_templates', value: JSON.stringify(templates) });
-            error = result.error;
-        }
+        const { data: result, error } = yield supabase
+            .from('settings')
+            .upsert({ key: 'email_templates', value: JSON.stringify(templates) }, { onConflict: 'key' });
         if (error)
             return res.status(500).json({ error: 'Failed to update email templates', details: error.message });
         res.json({ success: true });
@@ -900,7 +1062,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
     try {
         const { data, error } = yield supabase
             .from('profiles')
-            .select('id, email, role, first_name, last_name, color, telegramchatid')
+            .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time')
             .in('role', ['technician', 'admin', 'office_staff', 'super_admin'])
             .order('first_name', { ascending: true });
         if (error)
@@ -913,6 +1075,9 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
             last_name: p.last_name || '',
             color: p.color || '#3174ad',
             telegramchatid: p.telegramchatid || '',
+            signature: p.signature || '',
+            daily_notifications_enabled: p.daily_notifications_enabled || false,
+            notification_time: p.notification_time || '08:00',
             name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
         }));
         res.json(result);
@@ -925,7 +1090,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
 app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const userId = req.params.id;
-        const { first_name, last_name, color, role, telegramchatid } = req.body;
+        const { first_name, last_name, color, role, telegramchatid, signature, daily_notifications_enabled, notification_time } = req.body;
         const requestingUser = req.user;
         const requestingUserRole = requestingUser.user_metadata.role;
         if (!userId) {
@@ -939,7 +1104,15 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
             }
             // Impede técnico/office_staff de mudar a sua própria role
         }
-        const updateData = { first_name, last_name, color, telegramchatid };
+        const updateData = {
+            first_name,
+            last_name,
+            color,
+            telegramchatid,
+            signature,
+            daily_notifications_enabled,
+            notification_time
+        };
         // Role change logic:
         // - super_admin can change any role to any role
         // - admin can change roles but NOT to super_admin
@@ -955,7 +1128,7 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
             .from('profiles')
             .update(updateData)
             .eq('id', userId)
-            .select('id, email, role, first_name, last_name, color, telegramchatid')
+            .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time')
             .single();
         if (error) {
             console.error('Error updating profile:', error);
@@ -1046,6 +1219,7 @@ app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin'
     }
 }));
 app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const { id } = req.params;
     console.log(`[DEBUG] GET /report/:id - id: ${id}`);
     try {
@@ -1061,10 +1235,13 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
         if (!report)
             return res.status(404).json({ error: 'Report not found' });
         // Fetch related data
-        const [clientRes, equipmentRes, techRes] = yield Promise.all([
+        const [clientRes, equipmentRes, techRes, timeBlocksRes] = yield Promise.all([
             supabase.from('clients').select('id, name, address, nif').eq('id', report.clientId).single(),
             supabase.from('equipments').select('id, brand, model, serialNumber').eq('id', report.equipmentId).single(),
-            supabase.from('report_technicians').select('technicianId').eq('reportId', report.id)
+            supabase.from('report_technicians').select('technicianId').eq('reportId', report.id),
+            report.scheduleId
+                ? supabase.from('schedule_time_blocks').select('id, start_time, end_time').eq('schedule_id', report.scheduleId)
+                : Promise.resolve({ data: [] })
         ]);
         const client = clientRes.data;
         const equipment = equipmentRes.data;
@@ -1084,7 +1261,11 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
             }
         }
         // Map to the format expected by ReportPrintPage
-        const detailedReport = Object.assign(Object.assign({}, report), { clientName: (client === null || client === void 0 ? void 0 : client.name) || 'Cliente Desconhecido', clientAddress: (client === null || client === void 0 ? void 0 : client.address) || '', clientNif: (client === null || client === void 0 ? void 0 : client.nif) || '', equipmentBrand: (equipment === null || equipment === void 0 ? void 0 : equipment.brand) || '', equipmentModel: (equipment === null || equipment === void 0 ? void 0 : equipment.model) || '', equipmentSerialNumber: (equipment === null || equipment === void 0 ? void 0 : equipment.serialNumber) || '', technicianName: technicianNames, technicians: technicians, internalNotes: report.internal_notes });
+        const detailedReport = Object.assign(Object.assign({}, report), { clientName: (client === null || client === void 0 ? void 0 : client.name) || 'Cliente Desconhecido', clientAddress: (client === null || client === void 0 ? void 0 : client.address) || '', clientNif: (client === null || client === void 0 ? void 0 : client.nif) || '', equipmentBrand: (equipment === null || equipment === void 0 ? void 0 : equipment.brand) || '', equipmentModel: (equipment === null || equipment === void 0 ? void 0 : equipment.model) || '', equipmentSerialNumber: (equipment === null || equipment === void 0 ? void 0 : equipment.serialNumber) || '', technicianName: technicianNames, technicians: technicians, internalNotes: report.internal_notes, timeBlocks: ((_a = timeBlocksRes.data) === null || _a === void 0 ? void 0 : _a.map((tb) => ({
+                id: tb.id,
+                start: tb.start_time,
+                end: tb.end_time
+            }))) || [] });
         res.json(detailedReport);
     }
     catch (err) {
@@ -1143,7 +1324,7 @@ app.get(['/api/reports/by-schedule/:scheduleId', '/reports/by-schedule/:schedule
 app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     console.log('[DEBUG] POST /api/reports hit. Request body:', req.body);
     try {
-        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
+        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature } = req.body;
         // Validations
         if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
             console.error('[ERROR] POST /api/reports: Missing required fields.', { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, description });
@@ -1168,11 +1349,14 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
         const scheduleYear = new Date(scheduleData.startDate).getFullYear();
         const yearPrefix = `${scheduleYear}`;
         // 2. Find max report_number for this year
-        // Assuming report_number format: "AAAABBBB" (e.g., 20260001) as specificied
+        // Since report_number is an integer in format AAAABBBB
+        const minReportNum = scheduleYear * 10000;
+        const maxReportNum = minReportNum + 9999;
         const { data: maxReport, error: maxReportError } = yield supabase
             .from('reports')
             .select('report_number')
-            .ilike('report_number', `${yearPrefix}%`) // Filter by year prefix
+            .gte('report_number', minReportNum)
+            .lte('report_number', maxReportNum)
             .order('report_number', { ascending: false })
             .limit(1)
             .maybeSingle();
@@ -1206,7 +1390,9 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
             damage: damage || '',
             serviceType: serviceType || [],
             internal_notes: internalNotes || '',
-            report_number: newReportNumber
+            report_number: newReportNumber,
+            signature: signature || '',
+            technician_signature: technician_signature || ''
         })
             .select('id')
             .single();
@@ -1243,19 +1429,7 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
             for (const p of parts) {
                 if (p.id && p.quantity > 0) {
                     try {
-                        const { data: currentPart, error: fetchError } = yield supabase
-                            .from('parts')
-                            .select('stock_quantity, reserved_quantity, designation')
-                            .eq('id', p.id)
-                            .single();
-                        if (!fetchError && currentPart) {
-                            const { newStock, newReserved } = inventoryService.processReportAbate(currentPart.stock_quantity || 0, currentPart.reserved_quantity || 0, Number(p.quantity));
-                            console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${p.id}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
-                            yield supabase
-                                .from('parts')
-                                .update({ stock_quantity: newStock, reserved_quantity: newReserved })
-                                .eq('id', p.id);
-                        }
+                        yield abatePartInventory(p.id, Number(p.quantity));
                     }
                     catch (invErr) {
                         console.error(`[ERROR_INV] Error processing part abate for part ${p.id}:`, invErr);
@@ -1274,7 +1448,7 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
     console.log('[DEBUG] PUT /api/reports/:id hit. Report ID:', req.params.id, 'Request body:', req.body);
     try {
         const reportId = req.params.id;
-        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes } = req.body;
+        const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature } = req.body;
         if (!clientId || !equipmentId || !scheduleId || !technicianIds || !serviceDate || hours === undefined || !description) {
             console.error('[ERROR] PUT /api/reports/:id: Missing required fields.', { reportId, clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, description });
             return res.status(400).json({ error: 'Campos obrigatórios em falta para atualizar o relatório.' });
@@ -1282,7 +1456,7 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
         console.log('[DEBUG] Attempting to update report in Supabase. Report ID:', reportId);
         const { data: updatedReport, error: reportError } = yield supabase
             .from('reports')
-            .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '' })
+            .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '', signature: signature, technician_signature: technician_signature })
             .eq('id', reportId)
             .select('id')
             .single();
@@ -1337,6 +1511,20 @@ app.put('/api/settings', authenticateToken, authorizeRoles(['super_admin']), (re
     catch (err) {
         console.error('Error saving settings:', err);
         res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.post('/api/admin/sync-google-calendar', authenticateToken, authorizeRoles(['super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const calendarId = process.env.GOOGLE_CALENDAR_ID;
+        if (!calendarId) {
+            return res.status(400).json({ error: 'GOOGLE_CALENDAR_ID not configured in server environment.' });
+        }
+        const result = yield googleCalendarService_1.googleCalendarService.syncAllUnsynced(supabase, calendarId);
+        res.json(result);
+    }
+    catch (err) {
+        console.error('Error during manual calendar sync:', err);
+        res.status(500).json({ error: 'Synchronization failed', details: err.message });
     }
 }));
 app.get('/api/my-equipments', authenticateToken, authorizeRoles(['client']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
@@ -1626,6 +1814,17 @@ app.get('/api/my-report/by-schedule/:id', authenticateToken, authorizeRoles(['cl
                 }
             }
         }
+        let timeBlocks = [];
+        if (report.scheduleId) {
+            const { data: tbData } = yield supabase.from('schedule_time_blocks').select('id, start_time, end_time').eq('schedule_id', report.scheduleId);
+            if (tbData) {
+                timeBlocks = tbData.map((tb) => ({
+                    id: tb.id,
+                    start: tb.start_time,
+                    end: tb.end_time
+                }));
+            }
+        }
         const result = {
             id: report.id,
             clientId: report.clientId,
@@ -1644,6 +1843,7 @@ app.get('/api/my-report/by-schedule/:id', authenticateToken, authorizeRoles(['cl
             equipmentBrand,
             equipmentModel,
             equipmentSerialNumber,
+            timeBlocks,
         };
         res.json(result);
     }
@@ -2261,27 +2461,11 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
                     return res.status(500).json({ error: 'Failed to assign parts', details: spError.message });
                 // Incrementar reserved_quantity para cada peça
                 for (const partRow of partRows) {
-                    console.log(`[DEBUG_INV] Processing reservation for partId: ${partRow.partId}, Quantity to add: ${partRow.quantity}`);
-                    const { data: currentPart, error: fetchError } = yield supabase
-                        .from('parts')
-                        .select('reserved_quantity, designation')
-                        .eq('id', partRow.partId)
-                        .single();
-                    if (fetchError) {
-                        console.error(`[DEBUG_INV] ERROR fetching part ${partRow.partId}:`, fetchError);
-                        continue; // Continue with other parts
+                    try {
+                        yield updatePartReservation(partRow.partId, Number(partRow.quantity));
                     }
-                    const newReservedQuantity = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, Number(partRow.quantity));
-                    console.log(`[DEBUG_INV] Part "${currentPart.designation}" (ID: ${partRow.partId}): Current Reserved=${currentPart.reserved_quantity || 0} + Adding=${Number(partRow.quantity)} = New Reserved=${newReservedQuantity}`);
-                    const { error: updateError } = yield supabase
-                        .from('parts')
-                        .update({ reserved_quantity: newReservedQuantity })
-                        .eq('id', partRow.partId);
-                    if (updateError) {
-                        console.error(`[DEBUG_INV] ERROR updating part ${partRow.partId}:`, updateError);
-                    }
-                    else {
-                        console.log(`[DEBUG_INV] SUCCESS: Updated part ${partRow.partId} reserved_quantity to ${newReservedQuantity}`);
+                    catch (invErr) {
+                        console.error(`[ERROR_INV] Error processing part reservation for part ${partRow.partId}:`, invErr);
                     }
                 }
             }
@@ -2311,6 +2495,35 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
         }
         const result = Object.assign(Object.assign({}, inserted), { clientId: finalClientId, equipmentId: finalEquipId, internalNotes: inserted.additionalInfo, acknowledgementState: inserted.acknowledgementState, technicians: [], parts: [], clientName,
             equipmentInfo, timeBlocks: timeBlocks && timeBlocks.length > 0 ? timeBlocks.map((t) => ({ start: t.start, end: t.end })) : [{ start: startDate, end: endDate }] });
+        // --- GOOGLE CALENDAR SYNC ---
+        const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
+        if (googleCalendarId) {
+            // Get technician color for Google Calendar
+            let colorId = '9'; // Default Blueberry
+            if (technicianIds && technicianIds.length > 0) {
+                try {
+                    const { data: techProfile } = yield supabase.from('profiles').select('color').eq('id', technicianIds[0]).single();
+                    if (techProfile === null || techProfile === void 0 ? void 0 : techProfile.color) {
+                        colorId = (0, googleCalendarService_1.mapHexToGoogleColor)(techProfile.color);
+                    }
+                }
+                catch (e) {
+                    console.error('[SYNC] Error fetching technician color:', e);
+                }
+            }
+            googleCalendarService_1.googleCalendarService.createEvent(googleCalendarId, {
+                title: `${clientName} - ${title || 'Agendamento'}`,
+                description: `Equipamento: ${equipmentInfo}\nNotas: ${internalNotes || ''}`,
+                startTime: startDate,
+                endTime: endDate,
+                colorId: colorId
+            }).then((googleEventId) => __awaiter(void 0, void 0, void 0, function* () {
+                if (googleEventId) {
+                    yield supabase.from('schedules').update({ googleEventId }).eq('id', scheduleId);
+                    console.log(`[SYNC] Google Event ID ${googleEventId} associated with schedule ${scheduleId}`);
+                }
+            })).catch(err => console.error('[SYNC ERROR] Google Calendar sync failed:', err));
+        }
         res.status(201).json(result);
     }
     catch (err) {
@@ -2333,11 +2546,26 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         if (!Array.isArray(technicianIds) || technicianIds.length === 0) {
             return res.status(400).json({ error: 'At least one technician is required.' });
         }
+        // --- FETCH ORIGINAL SCHEDULE TO DETECT CHANGES ---
+        const { data: originalSchedule, error: fetchError } = yield supabase
+            .from('schedules')
+            .select('title, startDate, endDate, clientId, equipmentId, serviceType, additionalInfo, schedule_technicians(technicianId), schedule_time_blocks(start_time, end_time)')
+            .eq('id', scheduleId)
+            .single();
+        if (fetchError) {
+            console.error('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Fetch original error:', fetchError);
+            return res.status(500).json({ error: 'Failed to fetch original schedule', details: fetchError.message });
+        }
+        // Fetch original parts
+        const { data: originalParts } = yield supabase
+            .from('schedule_parts')
+            .select('partId, quantity')
+            .eq('scheduleId', scheduleId);
         const { data: updated, error: updateError } = yield supabase
             .from('schedules')
             .update({ title: title || 'Agendamento', startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId, acknowledgementState: 'pending' })
             .eq('id', scheduleId)
-            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
+            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, googleEventId')
             .single();
         if (updateError) {
             console.error('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Update error:', updateError);
@@ -2382,16 +2610,11 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         if (oldParts && oldParts.length > 0) {
             console.log(`[DEBUG_INV] Found ${oldParts.length} old parts to release for schedule ${scheduleId}`);
             for (const op of oldParts) {
-                const { data: currentPart } = yield supabase.from('parts').select('reserved_quantity, designation').eq('id', op.partId).single();
-                if (currentPart) {
-                    const currentReserved = currentPart.reserved_quantity || 0;
-                    const qtyToRelease = Number(op.quantity);
-                    const newReserved = Math.max(0, currentReserved - qtyToRelease);
-                    console.log(`[DEBUG_INV] Releasing Part "${currentPart.designation}" (ID: ${op.partId}): Current Reserved=${currentReserved} - Releasing=${qtyToRelease} = New Reserved=${newReserved}`);
-                    yield supabase.from('parts').update({ reserved_quantity: newReserved }).eq('id', op.partId);
+                try {
+                    yield updatePartReservation(op.partId, -Number(op.quantity));
                 }
-                else {
-                    console.warn(`[DEBUG_INV] Part ${op.partId} not found when releasing reservation.`);
+                catch (invErr) {
+                    console.error(`[ERROR_INV] Error releasing part reservation for part ${op.partId}:`, invErr);
                 }
             }
         }
@@ -2400,42 +2623,19 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
             const partRows = [];
             for (const p of parts) {
                 let partId = p.id;
-                // Se a peça não tem id mas tem reference e designation, criar a peça
                 if (!partId && p.reference && p.designation) {
-                    console.log('[DEBUG] Creating new part:', p.reference, p.designation);
-                    // Verificar se já existe uma peça com esta referência
-                    const { data: existingPart, error: checkError } = yield supabase
-                        .from('parts')
-                        .select('id')
-                        .eq('reference', p.reference)
-                        .maybeSingle(); // Use maybeSingle() instead of single() to avoid error when not found
-                    if (checkError) {
-                        console.error('[ERROR] Error checking for existing part:', checkError);
-                        return res.status(500).json({ error: 'Failed to check for existing part', details: checkError.message });
-                    }
+                    const { data: existingPart } = yield supabase.from('parts').select('id').eq('reference', p.reference).maybeSingle();
                     if (existingPart) {
                         partId = existingPart.id;
-                        console.log('[DEBUG] Part already exists with id:', partId);
                     }
                     else {
-                        // Criar a nova peça
                         const { data: newPart, error: createError } = yield supabase
                             .from('parts')
-                            .insert({
-                            reference: p.reference,
-                            designation: p.designation,
-                            stock_quantity: 0,
-                            reserved_quantity: 0,
-                            ordered_quantity: 0
-                        })
+                            .insert({ reference: p.reference, designation: p.designation, stock_quantity: 0, reserved_quantity: 0, ordered_quantity: 0 })
                             .select('id')
                             .single();
-                        if (createError) {
-                            console.error('[ERROR] Failed to create part:', createError);
-                            return res.status(500).json({ error: 'Failed to create part', details: createError.message });
-                        }
-                        partId = newPart.id;
-                        console.log('[DEBUG] New part created with id:', partId);
+                        if (!createError && newPart)
+                            partId = newPart.id;
                     }
                 }
                 if (partId && p.quantity > 0) {
@@ -2448,27 +2648,11 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
                     return res.status(500).json({ error: 'Failed to assign parts', details: spError.message });
                 // --- INVENTORY MANAGEMENT: Add new reservations ---
                 for (const partRow of partRows) {
-                    console.log(`[DEBUG_INV] PUT: Processing NEW reservation for partId: ${partRow.partId}, Quantity: ${partRow.quantity}`);
-                    const { data: currentPart, error: fetchError } = yield supabase
-                        .from('parts')
-                        .select('reserved_quantity, designation')
-                        .eq('id', partRow.partId)
-                        .single();
-                    if (fetchError) {
-                        console.error(`[DEBUG_INV] ERROR fetching part ${partRow.partId}:`, fetchError);
-                        continue;
+                    try {
+                        yield updatePartReservation(partRow.partId, Number(partRow.quantity));
                     }
-                    const newReservedQuantity = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, Number(partRow.quantity));
-                    console.log(`[DEBUG_INV] PUT: Part "${currentPart.designation}" (ID: ${partRow.partId}): Current Reserved=${currentPart.reserved_quantity || 0} + Adding=${Number(partRow.quantity)} = New Reserved=${newReservedQuantity}`);
-                    const { error: updateError } = yield supabase
-                        .from('parts')
-                        .update({ reserved_quantity: newReservedQuantity })
-                        .eq('id', partRow.partId);
-                    if (updateError) {
-                        console.error(`[DEBUG_INV] ERROR updating part ${partRow.partId}:`, updateError);
-                    }
-                    else {
-                        console.log(`[DEBUG_INV] SUCCESS: Updated part ${partRow.partId} reserved_quantity to ${newReservedQuantity}`);
+                    catch (invErr) {
+                        console.error(`[ERROR_INV] Error processing new part reservation for part ${partRow.partId}:`, invErr);
                     }
                 }
             }
@@ -2488,9 +2672,90 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
                 .update({ scheduleId, status: isCompleted ? 'closed' : 'scheduled', scheduled_at: startDate })
                 .eq('id', ticketId);
         }
-        // Notificar técnicos sobre atualização (opcional, mas recomendado)
-        if (technicianIds && technicianIds.length > 0 && !isCompleted) {
+        // --- DETECT SIGNIFICANT CHANGES (excluding internal notes) ---
+        let hasSignificantChanges = false;
+        // Compare basic fields with detailed logging
+        const normalizedTitle = title || 'Agendamento';
+        if (originalSchedule.title !== normalizedTitle) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] Title changed: "${originalSchedule.title}" -> "${normalizedTitle}"`);
+        }
+        // Normalize dates to ISO for comparison (to avoid false positives from timezone format differences)
+        const normalizeDate = (date) => {
+            if (!date)
+                return '';
+            return new Date(date).toISOString();
+        };
+        const originalStartNormalized = normalizeDate(originalSchedule.startDate);
+        const newStartNormalized = normalizeDate(startDate);
+        if (originalStartNormalized !== newStartNormalized) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] StartDate changed: "${originalSchedule.startDate}" -> "${startDate}"`);
+        }
+        const originalEndNormalized = normalizeDate(originalSchedule.endDate);
+        const newEndNormalized = normalizeDate(endDate);
+        if (originalEndNormalized !== newEndNormalized) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] EndDate changed: "${originalSchedule.endDate}" -> "${endDate}"`);
+        }
+        if (originalSchedule.clientId !== clientId) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] ClientId changed: ${originalSchedule.clientId} -> ${clientId}`);
+        }
+        if (originalSchedule.equipmentId !== equipmentId) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] EquipmentId changed: ${originalSchedule.equipmentId} -> ${equipmentId}`);
+        }
+        // Normalize serviceType for comparison (can be string or array)
+        const normalizeServiceType = (st) => {
+            if (!st)
+                return '';
+            if (typeof st === 'string')
+                return st;
+            if (Array.isArray(st))
+                return st.join(',');
+            return String(st);
+        };
+        const originalServiceTypeNorm = normalizeServiceType(originalSchedule.serviceType);
+        const newServiceTypeNorm = normalizeServiceType(serviceType);
+        if (originalServiceTypeNorm !== newServiceTypeNorm) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] ServiceType changed: "${originalServiceTypeNorm}" -> "${newServiceTypeNorm}"`);
+        }
+        // Compare technicians
+        const originalTechIds = (originalSchedule.schedule_technicians || []).map((st) => String(st.technicianId)).sort();
+        const newTechIds = technicianIds.map((id) => String(id)).sort();
+        if (JSON.stringify(originalTechIds) !== JSON.stringify(newTechIds)) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] Technicians changed: [${originalTechIds.join(',')}] -> [${newTechIds.join(',')}]`);
+        }
+        // Compare time blocks - normalize and sort for accurate comparison
+        const normalizeTimeBlocks = (blocks) => {
+            return blocks.map(tb => ({
+                start: new Date(tb.start || tb.start_time).toISOString(),
+                end: new Date(tb.end || tb.end_time).toISOString()
+            })).sort((a, b) => a.start.localeCompare(b.start));
+        };
+        const originalBlocksNormalized = normalizeTimeBlocks(originalSchedule.schedule_time_blocks || []);
+        const newBlocksNormalized = normalizeTimeBlocks(timeBlocks || [{ start: startDate, end: endDate }]);
+        if (JSON.stringify(originalBlocksNormalized) !== JSON.stringify(newBlocksNormalized)) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] Time blocks changed: ${JSON.stringify(originalBlocksNormalized)} -> ${JSON.stringify(newBlocksNormalized)}`);
+        }
+        // Compare parts
+        const originalPartsNormalized = (originalParts || []).map((p) => ({ partId: p.partId, quantity: p.quantity })).sort((a, b) => a.partId - b.partId);
+        const newPartsNormalized = (parts || []).filter((p) => p.id && p.quantity > 0).map((p) => ({ partId: p.id, quantity: Number(p.quantity) })).sort((a, b) => a.partId - b.partId);
+        if (JSON.stringify(originalPartsNormalized) !== JSON.stringify(newPartsNormalized)) {
+            hasSignificantChanges = true;
+            console.log(`[DEBUG_SCHEDULES] Parts changed: ${JSON.stringify(originalPartsNormalized)} -> ${JSON.stringify(newPartsNormalized)}`);
+        }
+        // Notificar técnicos sobre atualização APENAS se houver alterações significativas
+        if (technicianIds && technicianIds.length > 0 && !isCompleted && hasSignificantChanges) {
+            console.log('[DEBUG_SCHEDULES] Sending Telegram notification due to significant changes');
             yield sendScheduleNotificationToTechnicians(scheduleId, technicianIds, true);
+        }
+        else if (!hasSignificantChanges) {
+            console.log('[DEBUG_SCHEDULES] Skipping Telegram notification - only internal notes changed');
         }
         // Fetch additional info for the response
         const cIdToFetch = clientId || updated.clientId || updated.client_id || updated.clientid;
@@ -2509,6 +2774,28 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         }
         const finalObject = Object.assign(Object.assign({}, updated), { internalNotes: updated.additionalInfo, acknowledgementState: updated.acknowledgementState || 'pending', clientName,
             equipmentInfo, timeBlocks: timeBlocks && timeBlocks.length > 0 ? timeBlocks.map((t) => ({ start: t.start, end: t.end })) : [{ start: startDate, end: endDate }] });
+        // --- GOOGLE CALENDAR SYNC (UPDATE) ---
+        const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
+        if (googleCalendarId && updated.googleEventId) {
+            // Get technician color
+            let colorId = '9';
+            if (technicianIds && technicianIds.length > 0) {
+                try {
+                    const { data: techProfile } = yield supabase.from('profiles').select('color').eq('id', technicianIds[0]).single();
+                    if (techProfile === null || techProfile === void 0 ? void 0 : techProfile.color) {
+                        colorId = (0, googleCalendarService_1.mapHexToGoogleColor)(techProfile.color);
+                    }
+                }
+                catch (e) { }
+            }
+            googleCalendarService_1.googleCalendarService.updateEvent(googleCalendarId, updated.googleEventId, {
+                title: `${clientName} - ${title || 'Agendamento'}`,
+                description: `Equipamento: ${equipmentInfo}\nNotas: ${internalNotes || ''}`,
+                startTime: startDate,
+                endTime: endDate,
+                colorId: colorId
+            }).catch(err => console.error('[SYNC ERROR] Google Calendar update failed:', err));
+        }
         broadcastCalendarUpdate(scheduleId);
         res.json(finalObject);
     }
@@ -2530,7 +2817,7 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
             .from('schedules')
             .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo: internalNotes, serviceType })
             .eq('id', scheduleId)
-            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId')
+            .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, googleEventId')
             .single();
         if (updateError)
             return res.status(500).json({ error: 'Failed to complete schedule', details: updateError.message });
@@ -2643,6 +2930,32 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
                 .update({ scheduleId, status: 'closed', scheduled_at: startDate })
                 .eq('id', ticketId);
         }
+        // Fetch additional info for Google Calendar sync
+        const finalClientId = clientId || updated.clientId || updated.client_id || updated.clientid;
+        let clientName = 'Cliente Desconhecido';
+        if (finalClientId) {
+            const { data: cData } = yield supabase.from('clients').select('name').eq('id', finalClientId).single();
+            if (cData)
+                clientName = cData.name;
+        }
+        const finalEquipId = equipmentId || updated.equipmentId || updated.equipment_id || updated.equipmentid;
+        let equipmentInfo = 'Modelo Desconhecido';
+        if (finalEquipId) {
+            const { data: eData } = yield supabase.from('equipments').select('model').eq('id', finalEquipId).single();
+            if (eData)
+                equipmentInfo = eData.model;
+        }
+        // --- GOOGLE CALENDAR SYNC (COMPLETE) ---
+        const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
+        if (googleCalendarId && updated.googleEventId) {
+            // Fetch equipmentInfo for better description (optional, but good for completeness)
+            googleCalendarService_1.googleCalendarService.updateEvent(googleCalendarId, updated.googleEventId, {
+                title: `${clientName || 'Cliente'} - ${title || 'Agendamento'} (CONCLUÍDO)`,
+                description: `Notas: ${internalNotes || ''}\nEstado: Concluído`,
+                startTime: startDate,
+                endTime: endDate,
+            }).catch(err => console.error('[SYNC ERROR] Google Calendar update failed:', err));
+        }
         broadcastCalendarUpdate(scheduleId);
         res.json(Object.assign(Object.assign({}, updated), { internalNotes: updated.additionalInfo }));
     }
@@ -2660,7 +2973,7 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
         // 1. Fetch details necessary for notification BEFORE deletion
         const { data: schedule, error: scheduleError } = yield supabase
             .from('schedules')
-            .select('title, startDate, endDate, clients(name), schedule_technicians(technicianId)')
+            .select('title, startDate, endDate, clients(name), schedule_technicians(technicianId), googleEventId')
             .eq('id', scheduleId)
             .single();
         if (scheduleError)
@@ -2681,11 +2994,12 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
             .eq('scheduleId', scheduleId);
         if (oldParts && oldParts.length > 0) {
             for (const op of oldParts) {
-                const { data: currentPart } = yield supabase.from('parts').select('reserved_quantity').eq('id', op.partId).single();
-                if (currentPart) {
-                    const newReserved = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, -op.quantity);
-                    yield supabase.from('parts').update({ reserved_quantity: newReserved }).eq('id', op.partId);
+                try {
+                    yield updatePartReservation(op.partId, -Number(op.quantity));
                     console.log(`[DEBUG] Released reservation of ${op.quantity} for part ${op.partId}`);
+                }
+                catch (invErr) {
+                    console.error(`[ERROR_INV] Error releasing part reservation for part ${op.partId}:`, invErr);
                 }
             }
         }
@@ -2701,6 +3015,12 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
         const { error: scheduleDelError } = yield supabase.from('schedules').delete().eq('id', scheduleId);
         if (scheduleDelError)
             return res.status(500).json({ error: 'Failed to delete schedule', details: scheduleDelError.message });
+        // --- GOOGLE CALENDAR SYNC (DELETE) ---
+        const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
+        if (googleCalendarId && schedule.googleEventId) {
+            googleCalendarService_1.googleCalendarService.deleteEvent(googleCalendarId, schedule.googleEventId)
+                .catch(err => console.error('[SYNC ERROR] Google Calendar deletion failed:', err));
+        }
         broadcastCalendarUpdate(scheduleId);
         // --- NOTIFICATION OF DELETION ---
         try {
@@ -2875,13 +3195,88 @@ app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technic
 // INVENTORY
 app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const { data, error } = yield supabase
+        const { data: parts, error } = yield supabase
             .from('parts')
-            .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity')
+            .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity, is_composed')
             .order('designation', { ascending: true });
         if (error)
             return res.status(500).json({ error: 'Failed to fetch inventory', details: error.message });
-        res.json(data !== null && data !== void 0 ? data : []);
+        const { data: allComponents, error: compError } = yield supabase
+            .from('part_components')
+            .select('parent_part_id, child_part_id, quantity');
+        if (compError) {
+            console.error('Error fetching components:', compError);
+            return res.status(500).json({ error: 'Failed to fetch components', details: compError.message });
+        }
+        const partsMap = new Map((parts || []).map(p => [p.id, p]));
+        const componentsByParent = new Map();
+        (allComponents || []).forEach(c => {
+            if (!componentsByParent.has(c.parent_part_id))
+                componentsByParent.set(c.parent_part_id, []);
+            componentsByParent.get(c.parent_part_id).push(c);
+        });
+        const calculateVirtualStock = (partId, visited = new Set()) => {
+            if (visited.has(partId))
+                return 0; // Avoid infinite recursion
+            visited.add(partId);
+            const part = partsMap.get(partId);
+            if (!part)
+                return 0;
+            if (!part.is_composed)
+                return (part.stock_quantity || 0) - (part.reserved_quantity || 0);
+            const components = componentsByParent.get(partId);
+            if (!components || components.length === 0)
+                return 0;
+            let minPossible = Infinity;
+            for (const comp of components) {
+                const compStock = calculateVirtualStock(comp.child_part_id, new Set(visited));
+                const possible = Math.floor(compStock / (comp.quantity || 1));
+                if (possible < minPossible)
+                    minPossible = possible;
+            }
+            return minPossible === Infinity ? 0 : minPossible;
+        };
+        const result = (parts || []).map(p => {
+            if (p.is_composed) {
+                return Object.assign(Object.assign({}, p), { 
+                    // Stock virtual total (baseado em stock bruto)
+                    // Mas talvez o utilizador queira ver o stock "disponível" (bruto - reservado)
+                    // No frontend usualmente mostramos Stock e Disponível em colunas separadas.
+                    // Vou retornar o virtual stock basado no stock bruto, 
+                    // e no frontend a lógica (stock - reservado) continuará a funcionar.
+                    virtual_stock: calculateVirtualStock(p.id) });
+            }
+            return p;
+        });
+        // Ajuste: Para peças compostas, vamos preencher stock_quantity com o virtual stock bruto
+        // Para simplificar o frontend sem mudar as colunas
+        const finalResult = (parts || []).map(p => {
+            if (p.is_composed) {
+                // Cálculo do stock bruto disponível (sem subtrair reservas de topo)
+                // Na verdade, para composta, (stock_quantity - reserved_quantity) deve ser o que se pode montar.
+                // Então stock_quantity virtual deve ser o total possível com stock bruto dos componentes.
+                const computeBruto = (pid, v = new Set()) => {
+                    const pt = partsMap.get(pid);
+                    if (!pt)
+                        return 0;
+                    if (!pt.is_composed)
+                        return pt.stock_quantity || 0;
+                    const comps = componentsByParent.get(pid);
+                    if (!comps)
+                        return 0;
+                    let minP = Infinity;
+                    for (const c of comps) {
+                        const possible = Math.floor(computeBruto(c.child_part_id, new Set(v)) / c.quantity);
+                        if (possible < minP)
+                            minP = possible;
+                    }
+                    return minP === Infinity ? 0 : minP;
+                };
+                return Object.assign(Object.assign({}, p), { stock_quantity: computeBruto(p.id) });
+            }
+            return p;
+        });
+        res.json(finalResult);
     }
     catch (err) {
         console.error('Error fetching inventory:', err);
@@ -2907,6 +3302,44 @@ app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technici
     }
     catch (err) {
         console.error('Error adding inventory item:', err);
+        res.status(500).json({ error: 'Internal server error', details: err.message });
+    }
+}));
+app.post(['/api/inventory/composed', '/inventory/composed'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const { reference, designation, components } = req.body;
+        if (!reference || !designation || !Array.isArray(components) || components.length === 0) {
+            return res.status(400).json({ error: 'Reference, designation and at least one component are required.' });
+        }
+        // 1. Create the parent part
+        const { data: parentPart, error: parentError } = yield supabase
+            .from('parts')
+            .insert([{ reference, designation, is_composed: true, stock_quantity: 0, reserved_quantity: 0, ordered_quantity: 0 }])
+            .select('id, reference, designation, is_composed')
+            .single();
+        if (parentError) {
+            console.error('Error creating composed part:', parentError);
+            return res.status(500).json({ error: 'Failed to create composed part', details: parentError.message });
+        }
+        // 2. Create the components entries
+        // components should be [{ partId: number, quantity: number }]
+        const componentsData = components.map((comp) => ({
+            parent_part_id: parentPart.id,
+            child_part_id: comp.partId,
+            quantity: comp.quantity
+        }));
+        const { error: compError } = yield supabase
+            .from('part_components')
+            .insert(componentsData);
+        if (compError) {
+            console.error('Error adding components:', compError);
+            // We should probably delete the parent part if components fail, but for now let's just return error
+            return res.status(500).json({ error: 'Failed to add components for composed part', details: compError.message });
+        }
+        res.status(201).json(Object.assign(Object.assign({}, parentPart), { components: componentsData }));
+    }
+    catch (err) {
+        console.error('Error adding composed inventory item:', err);
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
@@ -3269,7 +3702,7 @@ app.post('/api/tickets/:id/reply', authenticateToken, authorizeRoles(['admin', '
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.delete('/admin/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technician']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.delete('/admin/tickets/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const ticketId = Number(req.params.id);
         if (!ticketId || Number.isNaN(ticketId))
@@ -3298,7 +3731,7 @@ app.delete('/admin/tickets/:id', authenticateToken, authorizeRoles(['admin', 'te
         res.status(500).json({ error: 'Internal server error', details: err.message });
     }
 }));
-app.get('/api/equipments/:id/history', authenticateToken, authorizeRoles(['admin', 'technician', 'client']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+app.get('/api/equipments/:id/history', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin', 'client']), (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c;
     const equipmentId = Number(req.params.id);
     if (!equipmentId || Number.isNaN(equipmentId)) {
@@ -3395,6 +3828,7 @@ if (process.env.NODE_ENV !== 'test') {
     app.listen(port, () => __awaiter(void 0, void 0, void 0, function* () {
         console.log(`Server is running on http://localhost:${port}`);
         scheduleTicketCheck();
+        cron.schedule('* * * * *', runDailyReminders, { timezone: "Europe/Lisbon" });
         yield getBotInfo();
     }));
 }
