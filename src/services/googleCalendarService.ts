@@ -404,28 +404,75 @@ export const googleCalendarService = {
         let successCount = 0;
         let failCount = 0;
 
-        // 1. Clear individual blocks
-        const { data: blocks } = await supabase.from('schedule_time_blocks').select('id, google_event_id').not('google_event_id', 'is', null);
-        for (const b of blocks || []) {
+        try {
+            // 1. Clear individual blocks
+            const { data: blocks, error: bError } = await supabase
+                .from('schedule_time_blocks')
+                .select('id, google_event_id')
+                .not('google_event_id', 'is', null);
+
+            if (bError) {
+                console.error('[SYNC] Error fetching blocks:', bError);
+            } else {
+                const blocksToProcess = blocks || [];
+                console.log(`[SYNC] Found ${blocksToProcess.length} blocks to clear.`);
+
+                for (let i = 0; i < blocksToProcess.length; i++) {
+                    const b = blocksToProcess[i];
+                    if (b.google_event_id) {
+                        process.stdout.write(`[SYNC] Deleting block ${i + 1}/${blocksToProcess.length}: ${b.google_event_id}... `);
+                        const deleted = await this.deleteEvent(calendarId, b.google_event_id);
+                        if (deleted) {
+                            successCount++;
+                            console.log('OK');
+                        } else {
+                            failCount++;
+                            console.log('FAIL');
+                        }
+                    }
+                    // Always clear the ID in database regardless of Google success
+                    await supabase.from('schedule_time_blocks').update({ google_event_id: null }).eq('id', b.id);
+                }
+            }
+
+            // 2. Main schedule records (legacy)
+            // Attempt to clear legacy googleEventId if column still exists
             try {
-                if (b.google_event_id) {
-                    const { data: event } = await calendar.events.get({ calendarId, eventId: b.google_event_id! });
-                    const isOurs = event.extendedProperties?.private?.source === 'Project1_FieldService';
-                    if (isOurs || event.summary?.includes(' - ')) {
-                        await this.deleteEvent(calendarId, b.google_event_id!);
-                        successCount++;
+                // Using any to avoid TS errors if column is being removed
+                const { data: legacySchedules, error: lError } = await supabase
+                    .from('schedules')
+                    .select('id, googleEventId' as any)
+                    .not('googleEventId' as any, 'is', null);
+
+                if (!lError && legacySchedules && legacySchedules.length > 0) {
+                    console.log(`[SYNC] Found ${legacySchedules.length} legacy schedules to clear.`);
+                    for (let i = 0; i < legacySchedules.length; i++) {
+                        const s = legacySchedules[i];
+                        const gId = (s as any).googleEventId;
+                        if (gId) {
+                            process.stdout.write(`[SYNC] Deleting legacy ${i + 1}/${legacySchedules.length}: ${gId}... `);
+                            const deleted = await this.deleteEvent(calendarId, gId);
+                            if (deleted) {
+                                successCount++;
+                                console.log('OK');
+                            } else {
+                                failCount++;
+                                console.log('FAIL');
+                            }
+                            await supabase.from('schedules').update({ googleEventId: null } as any).eq('id', (s as any).id);
+                        }
                     }
                 }
-            } catch (err: any) {
-                if (err.code === 404) successCount++;
-                else failCount++;
+            } catch (legacyErr) {
+                // Column probably doesn't exist
+                console.log('[SYNC] Legacy column check skipped (likely already removed).');
             }
-            await supabase.from('schedule_time_blocks').update({ google_event_id: null }).eq('id', b.id);
+
+        } catch (err: any) {
+            console.error('[SYNC] Severe error during full deletion:', err);
         }
 
-        // 2. Main schedule records (legacy) no longer handled here as the column is being removed.
-        // If there are still events in Google Calendar from the old system, they must be deleted manually
-        // or via a dedicated cleanup script, as we no longer have the IDs stored in 'schedules'.
+        console.log(`[SYNC] Full deletion finished. Total success: ${successCount}, Total fail: ${failCount}`);
         return { successCount, failCount };
     }
 };
