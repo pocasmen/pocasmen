@@ -4326,4 +4326,4 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
-export { app, supabase };
+export { app, supabase }; 
