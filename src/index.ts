@@ -3410,6 +3410,17 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
     if (scheduleError) return res.status(500).json({ error: 'Failed to fetch schedule', details: scheduleError.message });
     if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
 
+    // --- GOOGLE CALENDAR SYNC (DELETE) ---
+    const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
+    if (googleCalendarId) {
+      if (await isGoogleSyncEnabled()) {
+        await googleCalendarService.deleteScheduleEvents(supabase, googleCalendarId, scheduleId)
+          .catch(err => console.error('[SYNC ERROR] Google Calendar deletion failed:', err));
+      } else {
+        console.log(`[SYNC] Automatic sync disabled. Skipping deletion for schedule ${scheduleId}`);
+      }
+    }
+
     const techIds = (schedule.schedule_technicians || []).map((st: any) => st.technicianId);
     const clientName = Array.isArray(schedule.clients) ? schedule.clients[0]?.name : (schedule.clients as any)?.name || 'Cliente Desconhecido';
     const startDate = new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
@@ -3447,13 +3458,6 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
 
     const { error: scheduleDelError } = await supabase.from('schedules').delete().eq('id', scheduleId);
     if (scheduleDelError) return res.status(500).json({ error: 'Failed to delete schedule', details: scheduleDelError.message });
-
-    // --- GOOGLE CALENDAR SYNC (DELETE) ---
-    const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
-    if (googleCalendarId) {
-      googleCalendarService.deleteScheduleEvents(supabase, googleCalendarId, scheduleId)
-        .catch(err => console.error('[SYNC ERROR] Google Calendar deletion failed:', err));
-    }
 
     broadcastCalendarUpdate(scheduleId);
 
