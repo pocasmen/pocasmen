@@ -56,6 +56,23 @@ const broadcastCalendarUpdate = (scheduleId?: number | string) => {
   });
 };
 
+// Helper to check if Google Calendar Sync is enabled in settings
+async function isGoogleSyncEnabled(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from('settings')
+      .select('value')
+      .eq('key', 'google_calendar_sync_enabled')
+      .single();
+
+    if (error || !data) return false;
+    return data.value === 'true';
+  } catch (err) {
+    console.error('[SYNC] Error checking sync setting:', err);
+    return false;
+  }
+}
+
 // --- TELEGRAM BOT POLLING LOGIC ---
 let lastUpdateId = 0;
 let botUsername = '';
@@ -280,6 +297,8 @@ async function sendScheduleNotificationToTechnicians(scheduleId: number, technic
     const serviceTypeMap: Record<string, string> = {
       'manutencao': 'Manutenção',
       'reparacao': 'Reparação',
+      'assistencia': 'Assistência',
+      'remota': 'Remota',
       'instalacao': 'Instalação',
       'calibracao': 'Calibração'
     };
@@ -789,7 +808,7 @@ app.post('/api/admin/set-telegram-webhook', authenticateToken, authorizeRoles(['
   }
 });
 
-app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req, res) => {
+app.post('/api/admin/sync-telegram-updates', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin', 'client']), async (req, res) => {
   const result = await syncTelegramUpdates();
   res.json(result);
 });
@@ -1195,7 +1214,7 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time')
+      .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time, phone, google_calendar_color_id')
       .in('role', ['technician', 'admin', 'office_staff', 'super_admin'])
       .order('first_name', { ascending: true });
     if (error) return res.status(500).json({ error: 'Failed to fetch users', details: error.message });
@@ -1211,6 +1230,8 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
       signature: p.signature || '',
       daily_notifications_enabled: p.daily_notifications_enabled || false,
       notification_time: p.notification_time || '08:00',
+      phone: p.phone || '',
+      google_calendar_color_id: p.google_calendar_color_id || '',
       name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
     }));
 
@@ -1221,10 +1242,43 @@ app.get('/api/technicians', authenticateToken, authorizeRoles(['admin', 'technic
   }
 });
 
-app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.get('/api/users/me', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = req.user.id;
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time, phone')
+      .eq('id', userId)
+      .single();
+
+    if (error) return res.status(500).json({ error: 'Failed to fetch user profile', details: error.message });
+
+    const result = {
+      id: data.id,
+      email: data.email || '',
+      role: data.role || 'client',
+      first_name: data.first_name || '',
+      last_name: data.last_name || '',
+      color: data.color || '#3174ad',
+      telegramchatid: data.telegramchatid || '',
+      signature: data.signature || '',
+      daily_notifications_enabled: data.daily_notifications_enabled || false,
+      notification_time: data.notification_time || '08:00',
+      phone: data.phone || '', // Adicionado phone
+      name: `${data.first_name || ''} ${data.last_name || ''}`.trim(),
+    };
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Error fetching current user:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin', 'client']), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.params.id;
-    const { first_name, last_name, color, role, telegramchatid, signature, daily_notifications_enabled, notification_time } = req.body;
+    const { first_name, last_name, color, role, telegramchatid, signature, daily_notifications_enabled, notification_time, phone, google_calendar_color_id } = req.body;
     const requestingUser = req.user;
     const requestingUserRole = requestingUser.user_metadata.role;
 
@@ -1232,13 +1286,13 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
       return res.status(400).json({ error: 'User ID is required.' });
     }
 
-    // Se for técnico ou office_staff, só pode editar o seu próprio perfil
+    // Se for técnico, office_staff ou client, só pode editar o seu próprio perfil
     // E não pode alterar a sua própria role
-    if (requestingUserRole === 'technician' || requestingUserRole === 'office_staff') {
+    if (requestingUserRole === 'technician' || requestingUserRole === 'office_staff' || requestingUserRole === 'client') {
       if (userId !== requestingUser.id) {
         return res.status(403).json({ error: 'Você só pode editar o seu próprio perfil.' });
       }
-      // Impede técnico/office_staff de mudar a sua própria role
+      // Impede técnico/office_staff/client de mudar a sua própria role
     }
 
     const updateData: any = {
@@ -1248,13 +1302,15 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
       telegramchatid,
       signature,
       daily_notifications_enabled,
-      notification_time
+      notification_time,
+      phone,
+      google_calendar_color_id
     };
 
     // Role change logic:
     // - super_admin can change any role to any role
     // - admin can change roles but NOT to super_admin
-    // - technician/office_staff cannot change roles
+    // - technician/office_staff/client cannot change roles
     if (role && (requestingUserRole === 'admin' || requestingUserRole === 'super_admin')) {
       // Only super_admin can set or change to super_admin role
       if (role === 'super_admin' && requestingUserRole !== 'super_admin') {
@@ -1267,7 +1323,7 @@ app.put('/api/technicians/:id', authenticateToken, authorizeRoles(['admin', 'tec
       .from('profiles')
       .update(updateData)
       .eq('id', userId)
-      .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time')
+      .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time, phone, google_calendar_color_id')
       .single();
 
     if (error) {
@@ -1374,9 +1430,12 @@ app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin'
   }
 });
 
-app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin', 'client']), async (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  console.log(`[DEBUG] GET /report/:id - id: ${id}`);
+  const userRole = req.user?.user_metadata?.role;
+  const userId = req.user?.id;
+
+  console.log(`[DEBUG] GET /report/:id - id: ${id} by user ${userId} (${userRole})`);
   try {
     const { data: report, error } = await supabase
       .from('reports')
@@ -1390,6 +1449,23 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
     }
 
     if (!report) return res.status(404).json({ error: 'Report not found' });
+
+    // SECURITY CHECK FOR CLIENTS
+    if (userRole === 'client') {
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('client_id')
+        .eq('id', userId)
+        .single();
+
+      if (profileError || !profile || !profile.client_id) {
+        return res.status(403).json({ error: 'Permission denied. Could not verify client identity.' });
+      }
+
+      if (report.clientId !== profile.client_id) {
+        return res.status(403).json({ error: 'Permission denied. This report does not belong to you.' });
+      }
+    }
 
     // Fetch related data
     const [clientRes, equipmentRes, techRes, timeBlocksRes] = await Promise.all([
@@ -1737,6 +1813,21 @@ app.post('/api/admin/sync-google-calendar', authenticateToken, authorizeRoles(['
   } catch (err: any) {
     console.error('Error during manual calendar sync:', err);
     res.status(500).json({ error: 'Synchronization failed', details: err.message });
+  }
+});
+
+app.post('/api/admin/clear-google-calendar', authenticateToken, authorizeRoles(['super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const calendarId = process.env.GOOGLE_CALENDAR_ID;
+    if (!calendarId) {
+      return res.status(400).json({ error: 'GOOGLE_CALENDAR_ID not configured in server environment.' });
+    }
+
+    const result = await googleCalendarService.clearAllSyncedEvents(supabase, calendarId);
+    res.json(result);
+  } catch (err: any) {
+    console.error('Error during calendar clear:', err);
+    res.status(500).json({ error: 'Clearing failed', details: err.message });
   }
 });
 
@@ -2770,31 +2861,12 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
     // --- GOOGLE CALENDAR SYNC ---
     const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
     if (googleCalendarId) {
-      // Get technician color for Google Calendar
-      let colorId = '9'; // Default Blueberry
-      if (technicianIds && technicianIds.length > 0) {
-        try {
-          const { data: techProfile } = await supabase.from('profiles').select('color').eq('id', technicianIds[0]).single();
-          if (techProfile?.color) {
-            colorId = mapHexToGoogleColor(techProfile.color);
-          }
-        } catch (e) {
-          console.error('[SYNC] Error fetching technician color:', e);
-        }
+      if (await isGoogleSyncEnabled()) {
+        googleCalendarService.syncSchedule(supabase, googleCalendarId, scheduleId)
+          .catch(err => console.error('[SYNC ERROR] Google Calendar sync failed:', err));
+      } else {
+        console.log(`[SYNC] Automatic sync disabled. Skipping schedule ${scheduleId}`);
       }
-
-      googleCalendarService.createEvent(googleCalendarId, {
-        title: `${clientName} - ${title || 'Agendamento'}`,
-        description: `Equipamento: ${equipmentInfo}\nNotas: ${internalNotes || ''}`,
-        startTime: startDate,
-        endTime: endDate,
-        colorId: colorId
-      }).then(async (googleEventId) => {
-        if (googleEventId) {
-          await supabase.from('schedules').update({ googleEventId }).eq('id', scheduleId);
-          console.log(`[SYNC] Google Event ID ${googleEventId} associated with schedule ${scheduleId}`);
-        }
-      }).catch(err => console.error('[SYNC ERROR] Google Calendar sync failed:', err));
     }
 
     res.status(201).json(result);
@@ -2967,7 +3039,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       .from('schedules')
       .update(updateData)
       .eq('id', scheduleId)
-      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, googleEventId')
+      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
       .single();
 
     if (updateError) {
@@ -3116,25 +3188,13 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
 
     // --- GOOGLE CALENDAR SYNC (UPDATE) ---
     const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
-    if (googleCalendarId && (updated as any).googleEventId) {
-      // Get technician color
-      let colorId = '9';
-      if (technicianIds && technicianIds.length > 0) {
-        try {
-          const { data: techProfile } = await supabase.from('profiles').select('color').eq('id', technicianIds[0]).single();
-          if (techProfile?.color) {
-            colorId = mapHexToGoogleColor(techProfile.color);
-          }
-        } catch (e) { }
+    if (googleCalendarId) {
+      if (await isGoogleSyncEnabled()) {
+        googleCalendarService.syncSchedule(supabase, googleCalendarId, scheduleId)
+          .catch(err => console.error('[SYNC ERROR] Google Calendar update failed:', err));
+      } else {
+        console.log(`[SYNC] Automatic sync disabled. Skipping update for schedule ${scheduleId}`);
       }
-
-      googleCalendarService.updateEvent(googleCalendarId, (updated as any).googleEventId, {
-        title: `${clientName} - ${title || 'Agendamento'}`,
-        description: `Equipamento: ${equipmentInfo}\nNotas: ${internalNotes || ''}`,
-        startTime: startDate,
-        endTime: endDate,
-        colorId: colorId
-      }).catch(err => console.error('[SYNC ERROR] Google Calendar update failed:', err));
     }
 
     broadcastCalendarUpdate(scheduleId);
@@ -3171,7 +3231,7 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
       .from('schedules')
       .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo: internalNotes, serviceType })
       .eq('id', scheduleId)
-      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, googleEventId')
+      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId')
       .single();
     if (updateError) return res.status(500).json({ error: 'Failed to complete schedule', details: updateError.message });
 
@@ -3317,14 +3377,13 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
 
     // --- GOOGLE CALENDAR SYNC (COMPLETE) ---
     const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
-    if (googleCalendarId && (updated as any).googleEventId) {
-      // Fetch equipmentInfo for better description (optional, but good for completeness)
-      googleCalendarService.updateEvent(googleCalendarId, (updated as any).googleEventId, {
-        title: `${clientName || 'Cliente'} - ${title || 'Agendamento'} (CONCLUÍDO)`,
-        description: `Notas: ${internalNotes || ''}\nEstado: Concluído`,
-        startTime: startDate,
-        endTime: endDate,
-      }).catch(err => console.error('[SYNC ERROR] Google Calendar update failed:', err));
+    if (googleCalendarId) {
+      if (await isGoogleSyncEnabled()) {
+        googleCalendarService.syncSchedule(supabase, googleCalendarId, scheduleId)
+          .catch(err => console.error('[SYNC ERROR] Google Calendar completion sync failed:', err));
+      } else {
+        console.log(`[SYNC] Automatic sync disabled. Skipping completion sync for schedule ${scheduleId}`);
+      }
     }
 
     broadcastCalendarUpdate(scheduleId);
@@ -3344,7 +3403,7 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
     // 1. Fetch details necessary for notification BEFORE deletion
     const { data: schedule, error: scheduleError } = await supabase
       .from('schedules')
-      .select('title, startDate, endDate, clients(name), schedule_technicians(technicianId), googleEventId')
+      .select('title, startDate, endDate, clients(name), schedule_technicians(technicianId)')
       .eq('id', scheduleId)
       .single();
 
@@ -3391,8 +3450,8 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
 
     // --- GOOGLE CALENDAR SYNC (DELETE) ---
     const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
-    if (googleCalendarId && (schedule as any).googleEventId) {
-      googleCalendarService.deleteEvent(googleCalendarId, (schedule as any).googleEventId)
+    if (googleCalendarId) {
+      googleCalendarService.deleteScheduleEvents(supabase, googleCalendarId, scheduleId)
         .catch(err => console.error('[SYNC ERROR] Google Calendar deletion failed:', err));
     }
 

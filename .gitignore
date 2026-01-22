@@ -45,3 +45,6 @@ Thumbs.db
 # Optional: Uploads (if stored locally)
 uploads/
 tmp/
+
+# Tools & Diagnostic Scripts
+scripts/

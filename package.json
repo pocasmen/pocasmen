@@ -5,11 +5,11 @@
   "main": "dist/index.js",
   "scripts": {
     "test": "jest",
-    "test:email": "ts-node src/testEmail.ts",
+    "test:email": "ts-node scripts/testEmail.ts",
     "dev": "ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "sync:calendar": "ts-node src/sync_all.ts"
+    "sync:calendar": "ts-node scripts/sync_all.ts"
   },
   "keywords": [],
   "author": "",
