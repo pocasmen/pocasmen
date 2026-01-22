@@ -1,19 +1,7 @@
-import { google } from 'googleapis';
-import path from 'path';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { getCalendarClient } from '../utils/googleAuth';
 
-// Define the scope for Calendar API
-const SCOPES = ['https://www.googleapis.com/auth/calendar'];
-
-// Path to the service account key file
-const KEY_FILE_PATH = path.join(process.cwd(), 'google-credentials.json');
-
-const auth = new google.auth.GoogleAuth({
-    keyFile: KEY_FILE_PATH,
-    scopes: SCOPES,
-});
-
-const calendar = google.calendar({ version: 'v3', auth });
+const calendar = getCalendarClient();
 
 /**
  * Maps common hex colors to Google Calendar color IDs (1-11)
