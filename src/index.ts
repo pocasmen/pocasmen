@@ -1008,21 +1008,118 @@ app.put('/api/admin/email-templates', authenticateToken, authorizeRoles(['admin'
 app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   console.log('[DEBUG] /api/dashboard/stats endpoint hit.');
   try {
-    const { count: openTickets, error: ticketsError } = await supabase.from('tickets').select('*', { count: 'exact', head: true }).in('status', ['open', 'acknowledged']);
+    let startDateParam = req.query.startDate as string;
+    let endDateParam = req.query.endDate as string;
+
+    let start: Date;
+    let end: Date;
+
+    if (startDateParam && endDateParam) {
+      start = new Date(startDateParam);
+      end = new Date(endDateParam);
+    } else {
+      const today = new Date();
+      const day = today.getDay() || 7;
+      const firstDayOfWeek = new Date(today);
+      firstDayOfWeek.setDate(today.getDate() - (day - 1));
+      firstDayOfWeek.setHours(0, 0, 0, 0);
+
+      const lastDayOfWeek = new Date(firstDayOfWeek);
+      lastDayOfWeek.setDate(firstDayOfWeek.getDate() + 6);
+      lastDayOfWeek.setHours(23, 59, 59, 999);
+
+      start = firstDayOfWeek;
+      end = lastDayOfWeek;
+    }
+
+    const now = new Date();
+
+    // Tickets Stats
+    const { data: ticketsData, error: ticketsError } = await supabase
+      .from('tickets')
+      .select('status');
+
     if (ticketsError) throw ticketsError;
 
-    const today = new Date();
-    const firstDayOfWeek = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay());
-    const lastDayOfWeek = new Date(firstDayOfWeek.getFullYear(), firstDayOfWeek.getMonth(), firstDayOfWeek.getDate() + 6);
+    const ticketsStats = {
+      open: 0,
+      scheduled: 0,
+      closed: 0
+    };
 
-    const { count: weeklySchedules, error: schedulesError } = await supabase.from('schedules').select('*', { count: 'exact', head: true }).gte('startDate', firstDayOfWeek.toISOString()).lte('startDate', lastDayOfWeek.toISOString());
+    ticketsData.forEach(t => {
+      if (t.status === 'open' || t.status === 'acknowledged') ticketsStats.open++;
+      else if (t.status === 'scheduled') ticketsStats.scheduled++;
+      else if (t.status === 'closed') ticketsStats.closed++;
+    });
+
+    // Weekly (or Custom Range) Schedules Stats
+    const { data: weeklySchedulesData, error: schedulesError } = await supabase
+      .from('schedules')
+      .select('isCompleted, hasReport, startDate, endDate')
+      .gte('startDate', start.toISOString())
+      .lte('startDate', end.toISOString());
+
     if (schedulesError) throw schedulesError;
 
-    const { count: pendingReports, error: reportsError } = await supabase.from('schedules').select('*', { count: 'exact', head: true }).eq('isCompleted', true).eq('hasReport', false);
-    if (reportsError) throw reportsError;
+    const weeklyStats = {
+      total: weeklySchedulesData.length,
+      completed: 0,
+      withReport: 0,
+      overdue: 0
+    };
 
-    res.json({ openTickets: openTickets || 0, weeklySchedules: weeklySchedules || 0, pendingReports: pendingReports || 0 });
+    weeklySchedulesData.forEach((s: any) => {
+      const isCompleted = !!(s.isCompleted || s.is_completed);
+      const hasReport = !!(s.hasReport || s.has_report);
+      const endDate = s.endDate || s.end_date;
+
+      if (hasReport) {
+        // Badge Verde na tabela -> "Fechados" no cartão
+        weeklyStats.withReport++;
+      } else if (isCompleted) {
+        // Badge Azul na tabela -> "Concluídos" no cartão
+        weeklyStats.completed++;
+      } else if (endDate && new Date(endDate) < now) {
+        // Badge Vermelha na tabela -> "Por fechar" no cartão
+        weeklyStats.overdue++;
+      }
+    });
+
+    // Report Pending (Filtered by period)
+    // 1. "Fechados" (isCompleted = true, hasReport = false)
+    const { count: completedPendingCount, error: completedErr } = await supabase
+      .from('schedules')
+      .select('id', { count: 'exact', head: true })
+      .gte('startDate', start.toISOString())
+      .lte('startDate', end.toISOString())
+      .eq('isCompleted', true)
+      .eq('hasReport', false);
+
+    // 2. "Por fechar" (isCompleted = false, endDate < now, hasReport = false)
+    const { count: overduePendingCount, error: overdueErr } = await supabase
+      .from('schedules')
+      .select('id', { count: 'exact', head: true })
+      .gte('startDate', start.toISOString())
+      .lte('startDate', end.toISOString())
+      .eq('isCompleted', false)
+      .eq('hasReport', false)
+      .lt('endDate', now.toISOString());
+
+    if (completedErr || overdueErr) throw (completedErr || overdueErr);
+
+    res.json({
+      tickets: ticketsStats,
+      weekly: weeklyStats,
+      overdue: weeklyStats.overdue,
+      pendingReports: {
+        total: (completedPendingCount || 0) + (overduePendingCount || 0),
+        completed: completedPendingCount || 0,
+        overdue: overduePendingCount || 0
+      }
+    });
   } catch (err: any) {
+    console.error('Error fetching dashboard stats:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
@@ -1030,29 +1127,63 @@ app.get('/api/dashboard/stats', authenticateToken, authorizeRoles(['admin', 'tec
 app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   console.log('[DEBUG] /api/dashboard/weekly-schedules endpoint hit.');
   try {
-    const today = new Date();
-    const firstDayOfWeek = new Date(today.getFullYear(), today.getMonth(), today.getDate() - today.getDay());
-    const lastDayOfWeek = new Date(firstDayOfWeek.getFullYear(), firstDayOfWeek.getMonth(), firstDayOfWeek.getDate() + 6);
+    let startDateParam = req.query.startDate as string;
+    let endDateParam = req.query.endDate as string;
+
+    let start: Date;
+    let end: Date;
+
+    if (startDateParam && endDateParam) {
+      start = new Date(startDateParam);
+      end = new Date(endDateParam);
+    } else {
+      const today = new Date();
+      const day = today.getDay() || 7;
+      const firstDayOfWeek = new Date(today);
+      firstDayOfWeek.setDate(today.getDate() - (day - 1));
+      firstDayOfWeek.setHours(0, 0, 0, 0);
+
+      const lastDayOfWeek = new Date(firstDayOfWeek);
+      lastDayOfWeek.setDate(firstDayOfWeek.getDate() + 6);
+      lastDayOfWeek.setHours(23, 59, 59, 999);
+
+      start = firstDayOfWeek;
+      end = lastDayOfWeek;
+    }
 
     const { data: schedules, error: schedulesError } = await supabase
       .from('schedules')
-      .select('id, title, startDate, clients(name), schedule_technicians(technicianId)')
-      .gte('startDate', firstDayOfWeek.toISOString())
-      .lte('startDate', lastDayOfWeek.toISOString())
-      .order('startDate', { ascending: true });
+      .select('id, title, startDate, endDate, isCompleted, hasReport, clients(name), schedule_technicians(technicianId)')
+      .gte('startDate', start.toISOString())
+      .lte('startDate', end.toISOString())
+      .order('startDate', { ascending: false });
 
     if (schedulesError) throw schedulesError;
 
     const technicianIds = [...new Set(schedules.flatMap(s => s.schedule_technicians.map((st: any) => st.technicianId)))];
 
     if (technicianIds.length === 0) {
-      const result = schedules.map(s => ({
-        id: s.id,
-        title: s.title,
-        startDate: s.startDate,
-        clientName: Array.isArray(s.clients) ? s.clients[0]?.name : (s.clients as any)?.name || 'Cliente Desconhecido',
-        technicians: [],
-      }));
+      const result = schedules.map((s: any) => {
+        const isCompleted = !!(s.isCompleted || s.is_completed);
+        const hasReport = !!(s.hasReport || s.has_report);
+        const startDate = s.startDate || s.start_date;
+        const endDate = s.endDate || s.end_date;
+
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`[DEBUG] Schedule ${s.id} status: isComp=${isCompleted}, hasRep=${hasReport}, end=${endDate}`);
+        }
+
+        return {
+          id: s.id,
+          title: s.title,
+          startDate,
+          endDate,
+          isCompleted,
+          hasReport,
+          clientName: Array.isArray(s.clients) ? s.clients[0]?.name : (s.clients as any)?.name || 'Cliente Desconhecido',
+          technicians: [],
+        };
+      });
       return res.json(result);
     }
 
@@ -1065,10 +1196,13 @@ app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['a
 
     const technicianMap = new Map(profiles.map(p => [p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim()]));
 
-    const result = schedules.map(s => ({
+    const result = schedules.map((s: any) => ({
       id: s.id,
       title: s.title,
-      startDate: s.startDate,
+      startDate: s.startDate || s.start_date,
+      endDate: s.endDate || s.end_date,
+      isCompleted: !!(s.isCompleted || s.is_completed),
+      hasReport: !!(s.hasReport || s.has_report),
       clientName: Array.isArray(s.clients) ? s.clients[0]?.name : (s.clients as any)?.name || 'Cliente Desconhecido',
       technicians: s.schedule_technicians.map((st: any) => technicianMap.get(st.technicianId) || 'Técnico Desconhecido'),
     }));
@@ -1083,22 +1217,50 @@ app.get('/api/dashboard/weekly-schedules', authenticateToken, authorizeRoles(['a
 app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res) => {
   console.log('[DEBUG] /api/dashboard/pending-reports endpoint hit.');
   try {
+    let startDateParam = req.query.startDate as string;
+    let endDateParam = req.query.endDate as string;
+
+    let start: Date;
+    let end: Date;
+
+    if (startDateParam && endDateParam) {
+      start = new Date(startDateParam);
+      end = new Date(endDateParam);
+    } else {
+      const today = new Date();
+      const day = today.getDay() || 7;
+      const firstDayOfWeek = new Date(today);
+      firstDayOfWeek.setDate(today.getDate() - (day - 1));
+      firstDayOfWeek.setHours(0, 0, 0, 0);
+      const lastDayOfWeek = new Date(firstDayOfWeek);
+      lastDayOfWeek.setDate(firstDayOfWeek.getDate() + 4); // Monday-Friday default
+      lastDayOfWeek.setHours(23, 59, 59, 999);
+      start = firstDayOfWeek;
+      end = lastDayOfWeek;
+    }
+
+    const now = new Date().toISOString();
     const { data: schedules, error: schedulesError } = await supabase
       .from('schedules')
-      .select('id, title, endDate, clients(name), schedule_technicians(technicianId)')
-      .eq('isCompleted', true)
+      .select('id, title, startDate, endDate, isCompleted, hasReport, clients(name), schedule_technicians(technicianId)')
+      .gte('startDate', start.toISOString())
+      .lte('startDate', end.toISOString())
       .eq('hasReport', false)
-      .order('endDate', { ascending: true });
+      .or(`isCompleted.eq.true,and(isCompleted.eq.false,endDate.lt.${now})`)
+      .order('endDate', { ascending: false });
 
     if (schedulesError) throw schedulesError;
 
     const technicianIds = [...new Set(schedules.flatMap(s => s.schedule_technicians.map((st: any) => st.technicianId)))];
 
     if (technicianIds.length === 0) {
-      const result = schedules.map(s => ({
+      const result = schedules.map((s: any) => ({
         id: s.id,
         title: s.title,
-        endDate: s.endDate,
+        startDate: s.startDate || s.start_date,
+        endDate: s.endDate || s.end_date,
+        isCompleted: !!(s.isCompleted || s.is_completed),
+        hasReport: !!(s.hasReport || s.has_report),
         clientName: Array.isArray(s.clients) ? s.clients[0]?.name : (s.clients as any)?.name || 'Cliente Desconhecido',
         technicians: [],
       }));
@@ -1114,10 +1276,13 @@ app.get('/api/dashboard/pending-reports', authenticateToken, authorizeRoles(['ad
 
     const technicianMap = new Map(profiles.map(p => [p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim()]));
 
-    const result = schedules.map(s => ({
+    const result = schedules.map((s: any) => ({
       id: s.id,
       title: s.title,
-      endDate: s.endDate,
+      startDate: s.startDate || s.start_date,
+      endDate: s.endDate || s.end_date,
+      isCompleted: !!(s.isCompleted || s.is_completed),
+      hasReport: !!(s.hasReport || s.has_report),
       clientName: Array.isArray(s.clients) ? s.clients[0]?.name : (s.clients as any)?.name || 'Cliente Desconhecido',
       technicians: s.schedule_technicians.map((st: any) => technicianMap.get(st.technicianId) || 'Técnico Desconhecido'),
     }));
