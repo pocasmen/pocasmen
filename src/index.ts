@@ -3213,6 +3213,15 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
     }
     console.log('[DEBUG_SCHEDULES] PUT /api/schedules/:id. Update success. saved additionalInfo:', updated.additionalInfo);
 
+    // --- GOOGLE CALENDAR SYNC (PRE-DELETE OLD EVENTS) ---
+    // Since we delete and re-insert blocks below, we must remove old Google events first,
+    // otherwise we lose their IDs and they become orphaned/duplicated.
+    const googleCalendarIdForDelete = process.env.GOOGLE_CALENDAR_ID;
+    if (googleCalendarIdForDelete && await isGoogleSyncEnabled()) {
+      await googleCalendarService.deleteScheduleEvents(supabase, googleCalendarIdForDelete, scheduleId)
+        .catch(err => console.error('[SYNC ERROR] Google Calendar pre-update deletion failed:', err));
+    }
+
     // Update Time Blocks
     // Remove old blocks
     await supabase.from('schedule_time_blocks').delete().eq('schedule_id', scheduleId);
@@ -3861,23 +3870,20 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
       return p;
     });
 
-    // Ajuste: Para peças compostas, vamos preencher stock_quantity com o virtual stock bruto
-    // Para simplificar o frontend sem mudar as colunas
+    // Ajuste: Para peças compostas, vamos preencher stock_quantity com o virtual stock disponível dos componentes
     const finalResult = (parts || []).map(p => {
       if (p.is_composed) {
-        // Cálculo do stock bruto disponível (sem subtrair reservas de topo)
-        // Na verdade, para composta, (stock_quantity - reserved_quantity) deve ser o que se pode montar.
-        // Então stock_quantity virtual deve ser o total possível com stock bruto dos componentes.
-
-        const computeBruto = (pid: number, v = new Set<number>()): number => {
+        const computeAvailable = (pid: number, v = new Set<number>()): number => {
+          if (v.has(pid)) return 0;
+          v.add(pid);
           const pt = partsMap.get(pid);
           if (!pt) return 0;
-          if (!pt.is_composed) return pt.stock_quantity || 0;
+          if (!pt.is_composed) return (pt.stock_quantity || 0) - (pt.reserved_quantity || 0);
           const comps = componentsByParent.get(pid);
           if (!comps) return 0;
           let minP = Infinity;
           for (const c of comps) {
-            const possible = Math.floor(computeBruto(c.child_part_id, new Set(v)) / c.quantity);
+            const possible = Math.floor(computeAvailable(c.child_part_id, new Set(v)) / (c.quantity || 1));
             if (possible < minP) minP = possible;
           }
           return minP === Infinity ? 0 : minP;
@@ -3885,7 +3891,7 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
 
         return {
           ...p,
-          stock_quantity: computeBruto(p.id)
+          stock_quantity: computeAvailable(p.id)
         };
       }
       return p;
@@ -3967,6 +3973,92 @@ app.post(['/api/inventory/composed', '/inventory/composed'], authenticateToken, 
     res.status(201).json({ ...parentPart, components: componentsData });
   } catch (err: any) {
     console.error('Error adding composed inventory item:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.get('/api/inventory/:id/components', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const parentId = req.params.id;
+    const { data, error } = await supabase
+      .from('part_components')
+      .select('child_part_id, quantity, parts:child_part_id(reference, designation, stock_quantity, reserved_quantity)')
+      .eq('parent_part_id', parentId);
+
+    if (error) {
+      console.error('Error fetching components:', error);
+      return res.status(500).json({ error: 'Failed to fetch components', details: error.message });
+    }
+
+    const result = (data || []).map((c: any) => ({
+      partId: c.child_part_id,
+      quantity: c.quantity,
+      reference: c.parts?.reference,
+      designation: c.parts?.designation,
+      stock_quantity: c.parts?.stock_quantity,
+      reserved_quantity: c.parts?.reserved_quantity
+    }));
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Error fetching components:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.put('/api/inventory/:id/composed', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const parentId = req.params.id;
+    const { reference, designation, components } = req.body;
+
+    if (!reference || !designation || !Array.isArray(components)) {
+      return res.status(400).json({ error: 'Reference, designation and components are required.' });
+    }
+
+    // 1. Update the parent part
+    const { data: parentPart, error: parentError } = await supabase
+      .from('parts')
+      .update({ reference, designation, is_composed: true })
+      .eq('id', parentId)
+      .select('id, reference, designation, is_composed')
+      .single();
+
+    if (parentError) {
+      console.error('Error updating composed part:', parentError);
+      return res.status(500).json({ error: 'Failed to update composed part', details: parentError.message });
+    }
+
+    // 2. Update components entries (Delete and Re-insert)
+    const { error: deleteError } = await supabase
+      .from('part_components')
+      .delete()
+      .eq('parent_part_id', parentId);
+
+    if (deleteError) {
+      console.error('Error deleting old components:', deleteError);
+      return res.status(500).json({ error: 'Failed to update components', details: deleteError.message });
+    }
+
+    const componentsData = components.map((comp: any) => ({
+      parent_part_id: parentId,
+      child_part_id: comp.partId,
+      quantity: comp.quantity
+    }));
+
+    if (componentsData.length > 0) {
+      const { error: compError } = await supabase
+        .from('part_components')
+        .insert(componentsData);
+
+      if (compError) {
+        console.error('Error adding new components:', compError);
+        return res.status(500).json({ error: 'Failed to add new components', details: compError.message });
+      }
+    }
+
+    res.json({ ...parentPart, components: componentsData });
+  } catch (err: any) {
+    console.error('Error updating composed inventory item:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
