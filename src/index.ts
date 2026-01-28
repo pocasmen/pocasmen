@@ -555,7 +555,8 @@ const app = express();
 const port = process.env.PORT || 5001;
 //const port = 5001;
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 // Multer setup for file uploads (stores files in memory)
 const upload = multer({ storage: multer.memoryStorage() });
@@ -4180,6 +4181,60 @@ app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['a
     res.json(reservations);
   } catch (err: any) {
     console.error('Error fetching part reservations:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+app.delete('/api/inventory/:id', authenticateToken, authorizeRoles(['admin', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const partId = req.params.id;
+
+    // Check if part is used in any schedule_parts
+    const { count: scheduleCount, error: scheduleError } = await supabase
+      .from('schedule_parts')
+      .select('*', { count: 'exact', head: true })
+      .eq('partId', partId);
+
+    if (scheduleError) {
+      return res.status(500).json({ error: 'Failed to check dependencies', details: scheduleError.message });
+    }
+
+    if (scheduleCount && scheduleCount > 0) {
+      return res.status(400).json({ error: 'Não é possível apagar a peça: Está a ser utilizada em agendamentos existentes.' });
+    }
+
+    // Check composed parts usage
+    const { count: parentCount, error: parentError } = await supabase
+      .from('part_components')
+      .select('*', { count: 'exact', head: true })
+      .eq('child_part_id', partId);
+
+    if (parentCount && parentCount > 0) {
+      return res.status(400).json({ error: 'Não é possível apagar a peça: Faz parte da composição de outros itens (Kits).' });
+    }
+
+    // If it is a composed part itself, delete its component definitions first
+    const { count: childCount } = await supabase
+      .from('part_components')
+      .select('*', { count: 'exact', head: true })
+      .eq('parent_part_id', partId);
+
+    if (childCount && childCount > 0) {
+      await supabase.from('part_components').delete().eq('parent_part_id', partId);
+    }
+
+    const { error } = await supabase
+      .from('parts')
+      .delete()
+      .eq('id', partId);
+
+    if (error) {
+      return res.status(500).json({ error: 'Failed to delete part', details: error.message });
+    }
+
+    res.sendStatus(204);
+  } catch (err: any) {
+    console.error('Error deleting inventory item:', err);
     res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
