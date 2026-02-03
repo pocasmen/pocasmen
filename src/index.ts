@@ -767,6 +767,7 @@ app.get('/api/test', (req, res) => {
 });
 
 app.get('/api/healthcheck', (req, res) => {
+  console.log('[DEBUG] /api/healthcheck endpoint hit. UptimeBot is alive!');
   res.status(200).send('OK');
 });
 
