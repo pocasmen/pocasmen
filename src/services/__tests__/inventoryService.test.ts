@@ -16,19 +16,45 @@ describe('Inventory Service', () => {
     });
 
     describe('processStockUpdate', () => {
-        test('should update stock and ordered quantity when receiving an order', () => {
-            const result = processStockUpdate(10, 5, 3, true);
+        test('should update stock and ordered quantity when receiving an order (general)', () => {
+            const result = processStockUpdate(
+                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                3,
+                true,
+                'general'
+            );
             expect(result.newStock).toBe(13);
             expect(result.newOrdered).toBe(2);
         });
 
+        test('should update contract stock and ordered quantity when receiving an order (contract)', () => {
+            const result = processStockUpdate(
+                { stock: 0, ordered: 0, stockContract: 10, orderedContract: 5 },
+                3,
+                true,
+                'contract'
+            );
+            expect(result.newStockContract).toBe(13);
+            expect(result.newOrderedContract).toBe(2);
+        });
+
         test('should not decrease ordered quantity below zero', () => {
-            const result = processStockUpdate(10, 5, 10, true);
+            const result = processStockUpdate(
+                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                10,
+                true,
+                'general'
+            );
             expect(result.newOrdered).toBe(0);
         });
 
         test('should only update stock when not from order', () => {
-            const result = processStockUpdate(10, 5, 3, false);
+            const result = processStockUpdate(
+                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                3,
+                false,
+                'general'
+            );
             expect(result.newStock).toBe(13);
             expect(result.newOrdered).toBe(5);
         });

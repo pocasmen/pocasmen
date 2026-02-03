@@ -632,10 +632,16 @@ async function markLastClientMessageAsRead(ticketId: number) {
 }
 
 // --- API ENDPOINTS ---
-async function abatePartInventory(partId: number, quantity: number) {
+async function abatePartInventory(partId: number, quantity: number, stockType: 'general' | 'contract' | 'client' | 'warranty' = 'general') {
+  // Se for cliente ou garantia, não fazemos nada no inventário
+  if (stockType === 'client' || stockType === 'warranty') {
+    console.log(`[DEBUG_INV] Part ID ${partId} is of type ${stockType}. Skipping inventory abatement.`);
+    return;
+  }
+
   const { data: currentPart, error: fetchError } = await supabase
     .from('parts')
-    .select('stock_quantity, reserved_quantity, designation, is_composed')
+    .select('stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract, designation, is_composed')
     .eq('id', partId)
     .single();
 
@@ -659,30 +665,48 @@ async function abatePartInventory(partId: number, quantity: number) {
 
     if (components && components.length > 0) {
       for (const comp of components) {
-        await abatePartInventory(comp.child_part_id, comp.quantity * quantity);
+        await abatePartInventory(comp.child_part_id, comp.quantity * quantity, stockType);
       }
     }
   } else {
     // Normal part abatement
-    const { newStock, newReserved } = inventoryService.processReportAbate(
-      currentPart.stock_quantity || 0,
-      currentPart.reserved_quantity || 0,
-      quantity
+    const result = inventoryService.processReportAbate(
+      {
+        stock: currentPart.stock_quantity || 0,
+        reserved: currentPart.reserved_quantity || 0,
+        stockContract: currentPart.stock_quantity_contract || 0,
+        reservedContract: currentPart.reserved_quantity_contract || 0
+      },
+      quantity,
+      stockType
     );
 
-    console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${partId}): Old Stock=${currentPart.stock_quantity}, New Stock=${newStock} | Old Reserved=${currentPart.reserved_quantity}, New Reserved=${newReserved}`);
+    console.log(`[DEBUG_INV] Abating Part "${currentPart.designation}" (ID: ${partId}) [Type: ${stockType}]: 
+      Old Stock (G/C): ${currentPart.stock_quantity}/${currentPart.stock_quantity_contract} -> New Stock (G/C): ${result.newStock}/${result.newStockContract}
+      Old Reserved (G/C): ${currentPart.reserved_quantity}/${currentPart.reserved_quantity_contract} -> New Reserved (G/C): ${result.newReserved}/${result.newReservedContract}`);
 
     await supabase
       .from('parts')
-      .update({ stock_quantity: newStock, reserved_quantity: newReserved })
+      .update({
+        stock_quantity: result.newStock,
+        reserved_quantity: result.newReserved,
+        stock_quantity_contract: result.newStockContract,
+        reserved_quantity_contract: result.newReservedContract
+      })
       .eq('id', partId);
   }
 }
 
-async function updatePartReservation(partId: number, change: number) {
+async function updatePartReservation(partId: number, change: number, stockType: 'general' | 'contract' | 'client' | 'warranty' = 'general') {
+  // Se for cliente ou garantia, não reservamos nada
+  if (stockType === 'client' || stockType === 'warranty') {
+    console.log(`[DEBUG_INV] Part ID ${partId} is of type ${stockType}. Skipping reservation update.`);
+    return;
+  }
+
   const { data: currentPart, error: fetchError } = await supabase
     .from('parts')
-    .select('reserved_quantity, designation, is_composed')
+    .select('reserved_quantity, reserved_quantity_contract, designation, is_composed')
     .eq('id', partId)
     .single();
 
@@ -692,16 +716,26 @@ async function updatePartReservation(partId: number, change: number) {
   }
 
   // Update the part itself
-  const newReservedQuantity = inventoryService.calculateNewQuantity(
-    currentPart.reserved_quantity || 0,
-    change
-  );
-
-  console.log(`[DEBUG_INV] Updating Part Reservation "${currentPart.designation}" (ID: ${partId}): Old Reserved=${currentPart.reserved_quantity}, Change=${change}, New Reserved=${newReservedQuantity}`);
+  let updateData: any = {};
+  if (stockType === 'contract') {
+    const newReservedQuantity = inventoryService.calculateNewQuantity(
+      currentPart.reserved_quantity_contract || 0,
+      change
+    );
+    updateData.reserved_quantity_contract = newReservedQuantity;
+    console.log(`[DEBUG_INV] Updating Part Reservation (CONTRACT) "${currentPart.designation}" (ID: ${partId}): Old=${currentPart.reserved_quantity_contract}, Change=${change}, New=${newReservedQuantity}`);
+  } else {
+    const newReservedQuantity = inventoryService.calculateNewQuantity(
+      currentPart.reserved_quantity || 0,
+      change
+    );
+    updateData.reserved_quantity = newReservedQuantity;
+    console.log(`[DEBUG_INV] Updating Part Reservation (GENERAL) "${currentPart.designation}" (ID: ${partId}): Old=${currentPart.reserved_quantity}, Change=${change}, New=${newReservedQuantity}`);
+  }
 
   await supabase
     .from('parts')
-    .update({ reserved_quantity: newReservedQuantity })
+    .update(updateData)
     .eq('id', partId);
 
   // If it's composed, update components
@@ -719,7 +753,7 @@ async function updatePartReservation(partId: number, change: number) {
 
     if (components && components.length > 0) {
       for (const comp of components) {
-        await updatePartReservation(comp.child_part_id, comp.quantity * change);
+        await updatePartReservation(comp.child_part_id, comp.quantity * change, stockType);
       }
     }
   }
@@ -1552,7 +1586,7 @@ app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin'
     const [clientsRes, equipmentsRes, techniciansRes] = await Promise.all([
       clientIds.length > 0 ? supabase.from('clients').select('id, name').in('id', clientIds) : Promise.resolve({ data: [] }),
       equipmentIds.length > 0 ? supabase.from('equipments').select('id, brand, model').in('id', equipmentIds) : Promise.resolve({ data: [] }),
-      reportIds.length > 0 ? supabase.from('report_technicians').select('reportId, technicianId').in('reportId', reportIds) : Promise.resolve({ data: [] })
+      reportIds.length > 0 ? supabase.from('report_technicians').select('reportId, technicianId, signature').in('reportId', reportIds) : Promise.resolve({ data: [] })
     ]);
 
     const clientMap = new Map(clientsRes.data?.map(c => [c.id, c.name]) || []);
@@ -1571,7 +1605,8 @@ app.get(['/api/reports', '/reports'], authenticateToken, authorizeRoles(['admin'
         techMap.get(rt.reportId)!.push({
           id: p.id,
           name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
-          color: p.color
+          color: p.color,
+          signature: rt.signature
         });
       }
     });
@@ -1637,7 +1672,7 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
     const [clientRes, equipmentRes, techRes, timeBlocksRes] = await Promise.all([
       supabase.from('clients').select('id, name, address, nif').eq('id', report.clientId).single(),
       supabase.from('equipments').select('id, brand, model, serialNumber').eq('id', report.equipmentId).single(),
-      supabase.from('report_technicians').select('technicianId').eq('reportId', report.id),
+      supabase.from('report_technicians').select('technicianId, signature').eq('reportId', report.id),
       report.scheduleId
         ? supabase.from('schedule_time_blocks').select('id, start_time, end_time').eq('schedule_id', report.scheduleId)
         : Promise.resolve({ data: [] })
@@ -1654,11 +1689,15 @@ app.get(['/api/reports/:id', '/report/:id'], authenticateToken, authorizeRoles([
       const techIds = reportTechs.map((rt: any) => rt.technicianId);
       const { data: profiles } = await supabase.from('profiles').select('id, first_name, last_name, color').in('id', techIds);
       if (profiles) {
-        technicians = profiles.map((p: any) => ({
-          id: p.id,
-          name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
-          color: p.color
-        }));
+        technicians = profiles.map((p: any) => {
+          const techRel = reportTechs.find((rt: any) => rt.technicianId === p.id);
+          return {
+            id: p.id,
+            name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+            color: p.color,
+            signature: techRel?.signature
+          };
+        });
         technicianNames = technicians.map(t => t.name).join(', ');
       }
     }
@@ -1829,7 +1868,8 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
         internal_notes: internalNotes || '',
         report_number: newReportNumber,
         signature: signature || '',
-        technician_signature: technician_signature || ''
+        technician_signature: technician_signature || '',
+        includes_travel: req.body.includesTravel !== undefined ? req.body.includesTravel : false
       })
 
       .select('id')
@@ -1842,7 +1882,11 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
     console.log('[DEBUG] Report inserted successfully. Report ID:', report.id);
 
     if (technicianIds.length > 0) {
-      const reportTechnicians = technicianIds.map((techId: number) => ({ reportId: report.id, technicianId: techId }));
+      const reportTechnicians = technicianIds.map((techId: number) => ({
+        reportId: report.id,
+        technicianId: techId,
+        signature: req.body.technicianSignatures ? req.body.technicianSignatures[techId] : null
+      }));
       console.log('[DEBUG] Attempting to associate technicians:', reportTechnicians);
       const { error: techError } = await supabase.from('report_technicians').insert(reportTechnicians);
 
@@ -1870,7 +1914,8 @@ app.post('/api/reports', authenticateToken, authorizeRoles(['admin', 'technician
       for (const p of parts) {
         if (p.id && p.quantity > 0) {
           try {
-            await abatePartInventory(p.id, Number(p.quantity));
+            // stockType can be 'general' | 'contract' | 'client' | 'warranty'
+            await abatePartInventory(p.id, Number(p.quantity), p.stockType || 'general');
           } catch (invErr) {
             console.error(`[ERROR_INV] Error processing part abate for part ${p.id}:`, invErr);
           }
@@ -1901,7 +1946,7 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
     console.log('[DEBUG] Attempting to update report in Supabase. Report ID:', reportId);
     const { data: updatedReport, error: reportError } = await supabase
       .from('reports')
-      .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '', signature: signature, technician_signature: technician_signature })
+      .update({ clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [], description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '', signature: signature, technician_signature: technician_signature, includes_travel: req.body.includesTravel })
       .eq('id', reportId)
 
       .select('id')
@@ -1921,7 +1966,11 @@ app.put('/api/reports/:id', authenticateToken, authorizeRoles(['admin', 'technic
     }
     console.log('[DEBUG] Existing technicians deleted.');
 
-    const reportTechnicians = technicianIds.map((techId: number) => ({ reportId: updatedReport.id, technicianId: techId }));
+    const reportTechnicians = technicianIds.map((techId: number) => ({
+      reportId: updatedReport.id,
+      technicianId: techId,
+      signature: req.body.technicianSignatures ? req.body.technicianSignatures[techId] : null
+    }));
     console.log('[DEBUG] Attempting to associate new technicians:', reportTechnicians);
     const { error: insertTechError } = await supabase.from('report_technicians').insert(reportTechnicians);
 
@@ -2699,7 +2748,7 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
     if (scheduleIds.length > 0) {
       const { data: scheduleParts, error: partsError } = await supabase
         .from('schedule_parts')
-        .select('scheduleId, partId, quantity, parts(id, reference, designation)')
+        .select('scheduleId, partId, quantity, stock_type, parts(id, reference, designation)')
         .in('scheduleId', scheduleIds);
 
       if (!partsError && scheduleParts) {
@@ -2712,7 +2761,8 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
             reference: sp.parts.reference,
             designation: sp.parts.designation,
             quantity: sp.quantity,
-            isDesignationLocked: true
+            isDesignationLocked: true,
+            stockType: sp.stock_type || 'general'
           });
         });
       }
@@ -2739,6 +2789,7 @@ app.get('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technicia
         equipmentInfo: equipMap.get(String(eId))?.model || 'Modelo Desconhecido',
         parts: partsMap.get(s.id) || [],
         acknowledgementState: s.acknowledgementState,
+        includes_travel: s.includes_travel,
         timeBlocks: (s.schedule_blocks || []).map((tb: any) => ({
           id: tb.id,
           start: tb.start_time,
@@ -2788,7 +2839,7 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
     // Fetch parts
     const { data: scheduleParts, error: partsError } = await supabase
       .from('schedule_parts')
-      .select('partId, quantity, parts(id, reference, designation)')
+      .select('partId, quantity, stock_type, is_applied, parts(id, reference, designation)')
       .eq('scheduleId', id);
 
     const parts = (scheduleParts || []).map((sp: any) => ({
@@ -2796,7 +2847,9 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       reference: sp.parts.reference,
       designation: sp.parts.designation,
       quantity: sp.quantity,
-      isDesignationLocked: true
+      isDesignationLocked: true,
+      stockType: sp.stock_type || 'general',
+      isApplied: sp.is_applied !== false // default to true if null/undefined
     }));
 
     const cId = schedule.clientId || (schedule as any).client_id || (schedule as any).clientid;
@@ -2833,6 +2886,7 @@ app.get('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       equipmentInfo,
       parts,
       acknowledgementState: schedule.acknowledgementState,
+      includes_travel: schedule.includes_travel,
       timeBlocks: (schedule.schedule_time_blocks || []).map((tb: any) => ({
         id: tb.id,
         start: tb.start_time,
@@ -2877,8 +2931,8 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
 
     const { data: inserted, error: insertError } = await supabase
       .from('schedules')
-      .insert({ title: title || 'Agendamento', startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId })
-      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
+      .insert({ title: title || 'Agendamento', startDate, endDate, clientId, equipmentId, isCompleted: !!isCompleted, additionalInfo: internalNotes, serviceType, ticketId, includes_travel: req.body.includesTravel || false })
+      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, includes_travel')
       .single();
 
     if (insertError) {
@@ -2948,11 +3002,13 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
                 designation: p.designation,
                 stock_quantity: 0,
                 reserved_quantity: 0,
-                ordered_quantity: 0
+                ordered_quantity: 0,
+                stock_quantity_contract: 0,
+                reserved_quantity_contract: 0,
+                ordered_quantity_contract: 0
               })
               .select('id')
               .single();
-
             if (createError) {
               console.error('[ERROR] Failed to create part:', createError);
               return res.status(500).json({ error: 'Failed to create part', details: createError.message });
@@ -2964,7 +3020,13 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
         }
 
         if (partId && p.quantity > 0) {
-          partRows.push({ scheduleId, partId, quantity: Number(p.quantity) });
+          partRows.push({
+            scheduleId,
+            partId,
+            quantity: Number(p.quantity),
+            stock_type: p.stockType || 'general',
+            is_applied: p.isApplied === false ? false : true
+          });
         }
       }
 
@@ -2975,7 +3037,7 @@ app.post('/api/schedules', authenticateToken, authorizeRoles(['admin', 'technici
         // Incrementar reserved_quantity para cada peça
         for (const partRow of partRows) {
           try {
-            await updatePartReservation(partRow.partId, Number(partRow.quantity));
+            await updatePartReservation(partRow.partId, Number(partRow.quantity), partRow.stock_type);
           } catch (invErr) {
             console.error(`[ERROR_INV] Error processing part reservation for part ${partRow.partId}:`, invErr);
           }
@@ -3075,7 +3137,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
     // --- FETCH ORIGINAL SCHEDULE TO DETECT CHANGES ---
     const { data: originalSchedule, error: fetchError } = await supabase
       .from('schedules')
-      .select('title, startDate, endDate, clientId, equipmentId, serviceType, additionalInfo, schedule_technicians(technicianId), schedule_time_blocks(start_time, end_time)')
+      .select('title, startDate, endDate, clientId, equipmentId, serviceType, additionalInfo, includes_travel, schedule_technicians(technicianId), schedule_time_blocks(start_time, end_time)')
       .eq('id', scheduleId)
       .single();
 
@@ -3193,7 +3255,8 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       isCompleted: !!isCompleted,
       additionalInfo: internalNotes,
       serviceType,
-      ticketId
+      ticketId,
+      includes_travel: req.body.includesTravel !== undefined ? req.body.includesTravel : originalSchedule.includes_travel
     };
 
     // Only reset acknowledgementState if there are significant changes
@@ -3205,7 +3268,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
       .from('schedules')
       .update(updateData)
       .eq('id', scheduleId)
-      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState')
+      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, includes_travel')
       .single();
 
     if (updateError) {
@@ -3255,14 +3318,14 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
     // --- INVENTORY MANAGEMENT: Release old reservations ---
     const { data: oldParts } = await supabase
       .from('schedule_parts')
-      .select('partId, quantity')
+      .select('partId, quantity, stock_type')
       .eq('scheduleId', scheduleId);
 
     if (oldParts && oldParts.length > 0) {
       console.log(`[DEBUG_INV] Found ${oldParts.length} old parts to release for schedule ${scheduleId}`);
       for (const op of oldParts) {
         try {
-          await updatePartReservation(op.partId, -Number(op.quantity));
+          await updatePartReservation(op.partId, -Number(op.quantity), op.stock_type || 'general');
         } catch (invErr) {
           console.error(`[ERROR_INV] Error releasing part reservation for part ${op.partId}:`, invErr);
         }
@@ -3283,7 +3346,16 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
           } else {
             const { data: newPart, error: createError } = await supabase
               .from('parts')
-              .insert({ reference: p.reference, designation: p.designation, stock_quantity: 0, reserved_quantity: 0, ordered_quantity: 0 })
+              .insert({
+                reference: p.reference,
+                designation: p.designation,
+                stock_quantity: 0,
+                reserved_quantity: 0,
+                ordered_quantity: 0,
+                stock_quantity_contract: 0,
+                reserved_quantity_contract: 0,
+                ordered_quantity_contract: 0
+              })
               .select('id')
               .single();
             if (!createError && newPart) partId = newPart.id;
@@ -3291,7 +3363,13 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         }
 
         if (partId && p.quantity > 0) {
-          partRows.push({ scheduleId, partId, quantity: Number(p.quantity) });
+          partRows.push({
+            scheduleId,
+            partId,
+            quantity: Number(p.quantity),
+            stock_type: p.stockType || 'general',
+            is_applied: p.isApplied === false ? false : true
+          });
         }
       }
 
@@ -3302,7 +3380,7 @@ app.put('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'techn
         // --- INVENTORY MANAGEMENT: Add new reservations ---
         for (const partRow of partRows) {
           try {
-            await updatePartReservation(partRow.partId, Number(partRow.quantity));
+            await updatePartReservation(partRow.partId, Number(partRow.quantity), partRow.stock_type);
           } catch (invErr) {
             console.error(`[ERROR_INV] Error processing new part reservation for part ${partRow.partId}:`, invErr);
           }
@@ -3404,9 +3482,9 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
 
     const { data: updated, error: updateError } = await supabase
       .from('schedules')
-      .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo: internalNotes, serviceType })
+      .update({ title, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo: internalNotes, serviceType, includes_travel: req.body.includesTravel })
       .eq('id', scheduleId)
-      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId')
+      .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, includes_travel')
       .single();
     if (updateError) return res.status(500).json({ error: 'Failed to complete schedule', details: updateError.message });
 
@@ -3420,15 +3498,15 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
     // --- INVENTORY MANAGEMENT: Release old reservations ---
     const { data: oldParts } = await supabase
       .from('schedule_parts')
-      .select('partId, quantity')
+      .select('partId, quantity, stock_type')
       .eq('scheduleId', scheduleId);
 
     if (oldParts && oldParts.length > 0) {
       for (const op of oldParts) {
-        const { data: currentPart } = await supabase.from('parts').select('reserved_quantity').eq('id', op.partId).single();
-        if (currentPart) {
-          const newReserved = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, -op.quantity);
-          await supabase.from('parts').update({ reserved_quantity: newReserved }).eq('id', op.partId);
+        try {
+          await updatePartReservation(op.partId, -Number(op.quantity), op.stock_type || 'general');
+        } catch (invErr) {
+          console.error(`[ERROR_INV] Error releasing part reservation for part ${op.partId}:`, invErr);
         }
       }
     }
@@ -3468,7 +3546,10 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
                 designation: p.designation,
                 stock_quantity: 0,
                 reserved_quantity: 0,
-                ordered_quantity: 0
+                ordered_quantity: 0,
+                stock_quantity_contract: 0,
+                reserved_quantity_contract: 0,
+                ordered_quantity_contract: 0
               })
               .select('id')
               .single();
@@ -3484,7 +3565,13 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
         }
 
         if (partId && p.quantity > 0) {
-          partRows.push({ scheduleId, partId, quantity: Number(p.quantity) });
+          partRows.push({
+            scheduleId,
+            partId,
+            quantity: Number(p.quantity),
+            stock_type: p.stockType || 'general',
+            is_applied: p.isApplied === false ? false : true
+          });
         }
       }
 
@@ -3494,26 +3581,10 @@ app.post('/api/schedules/:id/complete', authenticateToken, authorizeRoles(['admi
 
         // --- INVENTORY MANAGEMENT: Add new reservations ---
         for (const partRow of partRows) {
-          const { data: currentPart, error: fetchError } = await supabase
-            .from('parts')
-            .select('reserved_quantity')
-            .eq('id', partRow.partId)
-            .single();
-
-          if (fetchError) {
-            console.error('[ERROR] Failed to fetch part for reservation:', fetchError);
-            continue;
-          }
-
-          const newReservedQuantity = inventoryService.calculateNewQuantity(currentPart.reserved_quantity || 0, Number(partRow.quantity));
-
-          const { error: updateError } = await supabase
-            .from('parts')
-            .update({ reserved_quantity: newReservedQuantity })
-            .eq('id', partRow.partId);
-
-          if (updateError) {
-            console.error('[ERROR] Failed to update reserved quantity:', updateError);
+          try {
+            await updatePartReservation(partRow.partId, Number(partRow.quantity), partRow.stock_type);
+          } catch (invErr) {
+            console.error(`[ERROR_INV] Error processing new part reservation for part ${partRow.partId}:`, invErr);
           }
         }
       }
@@ -3607,13 +3678,13 @@ app.delete('/api/schedules/:id', authenticateToken, authorizeRoles(['admin', 'te
     // --- INVENTORY MANAGEMENT: Release reservations before deleting ---
     const { data: oldParts } = await supabase
       .from('schedule_parts')
-      .select('partId, quantity')
+      .select('partId, quantity, stock_type')
       .eq('scheduleId', scheduleId);
 
     if (oldParts && oldParts.length > 0) {
       for (const op of oldParts) {
         try {
-          await updatePartReservation(op.partId, -Number(op.quantity));
+          await updatePartReservation(op.partId, -Number(op.quantity), op.stock_type || 'general');
           console.log(`[DEBUG] Released reservation of ${op.quantity} for part ${op.partId}`);
         } catch (invErr) {
           console.error(`[ERROR_INV] Error releasing part reservation for part ${op.partId}:`, invErr);
@@ -3736,6 +3807,18 @@ app.put('/api/equipments/:id', authenticateToken, authorizeRoles(['admin', 'tech
   }
 
   try {
+    // Check if serial number already exists for another equipment
+    const { data: existing, error: checkError } = await supabase
+      .from('equipments')
+      .select('id')
+      .eq('serialNumber', serialNumber)
+      .neq('id', id)
+      .maybeSingle();
+
+    if (checkError) return res.status(500).json({ error: 'Check unique serial error', details: checkError.message });
+    if (existing) {
+      return res.status(400).json({ error: 'Já existe um equipamento com este número de série.' });
+    }
     const { data, error } = await supabase
       .from('equipments')
       .update({ brand, model, serialNumber, clientId })
@@ -3781,6 +3864,17 @@ app.post('/api/equipments', authenticateToken, authorizeRoles(['admin', 'technic
     return res.status(400).json({ error: 'brand, model, serialNumber and clientId are required.' });
   }
   try {
+    // Check if serial number already exists
+    const { data: existing, error: checkError } = await supabase
+      .from('equipments')
+      .select('id')
+      .eq('serialNumber', serialNumber)
+      .maybeSingle();
+
+    if (checkError) return res.status(500).json({ error: 'Check unique serial error', details: checkError.message });
+    if (existing) {
+      return res.status(400).json({ error: 'Já existe um equipamento com este número de série.' });
+    }
     const { data: client, error: clientError } = await supabase
       .from('clients')
       .select('id')
@@ -3814,7 +3908,7 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
   try {
     const { data: parts, error } = await supabase
       .from('parts')
-      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity, is_composed')
+      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract, is_composed')
       .order('designation', { ascending: true });
 
     if (error) return res.status(500).json({ error: 'Failed to fetch inventory', details: error.message });
@@ -3874,7 +3968,7 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
     // Ajuste: Para peças compostas, vamos preencher stock_quantity com o virtual stock disponível dos componentes
     const finalResult = (parts || []).map(p => {
       if (p.is_composed) {
-        const computeAvailable = (pid: number, v = new Set<number>()): number => {
+        const computeAvailableGeneral = (pid: number, v = new Set<number>()): number => {
           if (v.has(pid)) return 0;
           v.add(pid);
           const pt = partsMap.get(pid);
@@ -3884,7 +3978,23 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
           if (!comps) return 0;
           let minP = Infinity;
           for (const c of comps) {
-            const possible = Math.floor(computeAvailable(c.child_part_id, new Set(v)) / (c.quantity || 1));
+            const possible = Math.floor(computeAvailableGeneral(c.child_part_id, new Set(v)) / (c.quantity || 1));
+            if (possible < minP) minP = possible;
+          }
+          return minP === Infinity ? 0 : minP;
+        };
+
+        const computeAvailableContract = (pid: number, v = new Set<number>()): number => {
+          if (v.has(pid)) return 0;
+          v.add(pid);
+          const pt = partsMap.get(pid);
+          if (!pt) return 0;
+          if (!pt.is_composed) return (pt.stock_quantity_contract || 0) - (pt.reserved_quantity_contract || 0);
+          const comps = componentsByParent.get(pid);
+          if (!comps) return 0;
+          let minP = Infinity;
+          for (const c of comps) {
+            const possible = Math.floor(computeAvailableContract(c.child_part_id, new Set(v)) / (c.quantity || 1));
             if (possible < minP) minP = possible;
           }
           return minP === Infinity ? 0 : minP;
@@ -3892,7 +4002,8 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
 
         return {
           ...p,
-          stock_quantity: computeAvailable(p.id)
+          stock_quantity: computeAvailableGeneral(p.id) + (p.reserved_quantity || 0), // Retro Compatibilidade se necessário, mas para composto o stock real é o disponível
+          stock_quantity_contract: computeAvailableContract(p.id) + (p.reserved_quantity_contract || 0)
         };
       }
       return p;
@@ -3908,7 +4019,7 @@ app.get('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technicia
 
 app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technician', 'office_staff', 'super_admin']), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { reference, designation, stock_quantity, reserved_quantity, ordered_quantity } = req.body;
+    const { reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract } = req.body;
 
     if (!reference || !designation) {
       return res.status(400).json({ error: 'Reference and designation are required.' });
@@ -3916,8 +4027,17 @@ app.post('/api/inventory', authenticateToken, authorizeRoles(['admin', 'technici
 
     const { data, error } = await supabase
       .from('parts')
-      .insert([{ reference, designation, stock_quantity: stock_quantity || 0, reserved_quantity: reserved_quantity || 0, ordered_quantity: ordered_quantity || 0 }])
-      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity')
+      .insert([{
+        reference,
+        designation,
+        stock_quantity: stock_quantity || 0,
+        reserved_quantity: reserved_quantity || 0,
+        ordered_quantity: ordered_quantity || 0,
+        stock_quantity_contract: stock_quantity_contract || 0,
+        reserved_quantity_contract: reserved_quantity_contract || 0,
+        ordered_quantity_contract: ordered_quantity_contract || 0
+      }])
+      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract')
       .single();
 
     if (error) {
@@ -3944,7 +4064,17 @@ app.post(['/api/inventory/composed', '/inventory/composed'], authenticateToken, 
     // 1. Create the parent part
     const { data: parentPart, error: parentError } = await supabase
       .from('parts')
-      .insert([{ reference, designation, is_composed: true, stock_quantity: 0, reserved_quantity: 0, ordered_quantity: 0 }])
+      .insert([{
+        reference,
+        designation,
+        is_composed: true,
+        stock_quantity: 0,
+        reserved_quantity: 0,
+        ordered_quantity: 0,
+        stock_quantity_contract: 0,
+        reserved_quantity_contract: 0,
+        ordered_quantity_contract: 0
+      }])
       .select('id, reference, designation, is_composed')
       .single();
 
@@ -4076,7 +4206,7 @@ app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 
 
     const { data: currentPart, error: fetchError } = await supabase
       .from('parts')
-      .select('stock_quantity, ordered_quantity')
+      .select('stock_quantity, ordered_quantity, stock_quantity_contract, ordered_quantity_contract')
       .eq('id', partId)
       .single();
 
@@ -4085,18 +4215,29 @@ app.put('/api/inventory/:id/stock', authenticateToken, authorizeRoles(['admin', 
       return res.status(404).json({ error: 'Part not found.' });
     }
 
-    const { newStock: newStockQuantity, newOrdered: newOrderedQuantity } = inventoryService.processStockUpdate(
-      currentPart.stock_quantity,
-      currentPart.ordered_quantity,
+    const { targetStock } = req.body;
+    const result = inventoryService.processStockUpdate(
+      {
+        stock: currentPart.stock_quantity || 0,
+        ordered: currentPart.ordered_quantity || 0,
+        stockContract: currentPart.stock_quantity_contract || 0,
+        orderedContract: currentPart.ordered_quantity_contract || 0
+      },
       quantity,
-      !!fromOrder
+      !!fromOrder,
+      targetStock || 'general'
     );
 
     const { data, error } = await supabase
       .from('parts')
-      .update({ stock_quantity: newStockQuantity, ordered_quantity: newOrderedQuantity })
+      .update({
+        stock_quantity: result.newStock,
+        ordered_quantity: result.newOrdered,
+        stock_quantity_contract: result.newStockContract,
+        ordered_quantity_contract: result.newOrderedContract
+      })
       .eq('id', partId)
-      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity')
+      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract')
       .single();
 
     if (error) {
@@ -4122,7 +4263,7 @@ app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 
 
     const { data: currentPart, error: fetchError } = await supabase
       .from('parts')
-      .select('ordered_quantity')
+      .select('ordered_quantity, ordered_quantity_contract')
       .eq('id', partId)
       .single();
 
@@ -4131,13 +4272,24 @@ app.put('/api/inventory/:id/order', authenticateToken, authorizeRoles(['admin', 
       return res.status(404).json({ error: 'Part not found.' });
     }
 
-    const newOrderedQuantity = inventoryService.calculateNewQuantity(currentPart.ordered_quantity, quantity);
+    const { targetStock } = req.body;
+    const newOrderedQuantity = inventoryService.calculateNewQuantity(
+      (targetStock === 'contract' ? currentPart.ordered_quantity_contract : currentPart.ordered_quantity) || 0,
+      quantity
+    );
+
+    const updateData: any = {};
+    if (targetStock === 'contract') {
+      updateData.ordered_quantity_contract = newOrderedQuantity;
+    } else {
+      updateData.ordered_quantity = newOrderedQuantity;
+    }
 
     const { data, error } = await supabase
       .from('parts')
-      .update({ ordered_quantity: newOrderedQuantity })
+      .update(updateData)
       .eq('id', partId)
-      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity')
+      .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract')
       .single();
 
     if (error) {
@@ -4158,7 +4310,7 @@ app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['a
 
     const { data, error } = await supabase
       .from('schedule_parts')
-      .select('quantity, schedules(id, title, startDate, isCompleted, clients(name))')
+      .select('quantity, stock_type, schedules(id, title, startDate, isCompleted, clients(name))')
       .eq('partId', partId)
       .eq('schedules.isCompleted', false);
 
@@ -4175,7 +4327,8 @@ app.get('/api/inventory/:id/reservations', authenticateToken, authorizeRoles(['a
         title: item.schedules.title,
         startDate: item.schedules.startDate,
         clientName: item.schedules.clients?.name || 'Cliente Desconhecido',
-        quantityReserved: item.quantity
+        quantityReserved: item.quantity,
+        stockType: item.stock_type || 'general'
       }));
 
     res.json(reservations);
@@ -4250,7 +4403,7 @@ app.get('/api/parts/:reference', authenticateToken, authorizeRoles(['admin', 'te
 
     const { data, error } = await supabase
       .from('parts')
-      .select('id, reference, designation')
+      .select('id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract')
       .eq('reference', reference)
       .single();
 

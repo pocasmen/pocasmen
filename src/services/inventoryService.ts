@@ -4,30 +4,45 @@
  */
 
 export const calculateNewQuantity = (current: number, change: number): number => {
-    const result = current + change;
-    return Math.max(0, result);
+    // Note: User requested allowing negative balance for abates, 
+    // but for reservations/general additions we might still want to guard against negative if appropriate.
+    // However, since we allow negative on abate, we'll let this be simple.
+    return current + change;
 };
 
 export interface PartUpdateResult {
-    newReserved: number;
     newStock: number;
+    newReserved: number;
     newOrdered: number;
+    newStockContract: number;
+    newReservedContract: number;
+    newOrderedContract: number;
 }
 
 export const processStockUpdate = (
-    currentStock: number,
-    currentOrdered: number,
+    current: { stock: number; ordered: number; stockContract: number; orderedContract: number },
     change: number,
-    isFromOrder: boolean
-): { newStock: number; newOrdered: number } => {
-    const newStock = Math.max(0, currentStock + change);
-    let newOrdered = currentOrdered;
+    isFromOrder: boolean,
+    targetStock: 'general' | 'contract'
+): { newStock: number; newOrdered: number; newStockContract: number; newOrderedContract: number } => {
+    let newStock = current.stock;
+    let newStockContract = current.stockContract;
+    let newOrdered = current.ordered;
+    let newOrderedContract = current.orderedContract;
 
-    if (isFromOrder && change > 0) {
-        newOrdered = Math.max(0, currentOrdered - change);
+    if (targetStock === 'contract') {
+        newStockContract = Math.max(0, current.stockContract + change);
+        if (isFromOrder && change > 0) {
+            newOrderedContract = Math.max(0, current.orderedContract - change);
+        }
+    } else {
+        newStock = Math.max(0, current.stock + change);
+        if (isFromOrder && change > 0) {
+            newOrdered = Math.max(0, current.ordered - change);
+        }
     }
 
-    return { newStock, newOrdered };
+    return { newStock, newOrdered, newStockContract, newOrderedContract };
 };
 
 export const hasEnoughStock = (stock: number, reserved: number, requested: number): boolean => {
@@ -35,13 +50,28 @@ export const hasEnoughStock = (stock: number, reserved: number, requested: numbe
 };
 
 export const processReportAbate = (
-    currentStock: number,
-    currentReserved: number,
-    quantityUsed: number
-): { newStock: number; newReserved: number } => {
+    current: { stock: number; reserved: number; stockContract: number; reservedContract: number },
+    quantityUsed: number,
+    stockType: 'general' | 'contract' | 'client' | 'warranty'
+): { newStock: number; newReserved: number; newStockContract: number; newReservedContract: number } => {
+    let newStock = current.stock;
+    let newReserved = current.reserved;
+    let newStockContract = current.stockContract;
+    let newReservedContract = current.reservedContract;
+
+    if (stockType === 'contract') {
+        newStockContract = current.stockContract - quantityUsed; // Permite negativo
+        newReservedContract = Math.max(0, current.reservedContract - quantityUsed);
+    } else if (stockType === 'general') {
+        newStock = current.stock - quantityUsed; // Permite negativo
+        newReserved = Math.max(0, current.reserved - quantityUsed);
+    }
+    // 'client' e 'warranty' não alteram nada
+
     return {
-        newStock: Math.max(0, currentStock - quantityUsed),
-        newReserved: Math.max(0, currentReserved - quantityUsed)
+        newStock,
+        newReserved,
+        newStockContract,
+        newReservedContract
     };
 };
-
