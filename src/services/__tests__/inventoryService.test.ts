@@ -1,4 +1,5 @@
 import { calculateNewQuantity, processStockUpdate, hasEnoughStock } from '../inventoryService';
+import { StockType } from '../../types';
 
 describe('Inventory Service', () => {
     describe('calculateNewQuantity', () => {
@@ -21,7 +22,7 @@ describe('Inventory Service', () => {
                 { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
                 3,
                 true,
-                'general'
+                StockType.GENERAL
             );
             expect(result.newStock).toBe(13);
             expect(result.newOrdered).toBe(2);
@@ -32,7 +33,7 @@ describe('Inventory Service', () => {
                 { stock: 0, ordered: 0, stockContract: 10, orderedContract: 5 },
                 3,
                 true,
-                'contract'
+                StockType.CONTRACT
             );
             expect(result.newStockContract).toBe(13);
             expect(result.newOrderedContract).toBe(2);
@@ -43,7 +44,7 @@ describe('Inventory Service', () => {
                 { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
                 10,
                 true,
-                'general'
+                StockType.GENERAL
             );
             expect(result.newOrdered).toBe(0);
         });
@@ -53,7 +54,7 @@ describe('Inventory Service', () => {
                 { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
                 3,
                 false,
-                'general'
+                StockType.GENERAL
             );
             expect(result.newStock).toBe(13);
             expect(result.newOrdered).toBe(5);

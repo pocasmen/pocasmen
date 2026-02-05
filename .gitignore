@@ -48,4 +48,4 @@ tmp/
 
 # Tools & Diagnostic Scripts
 scripts/
-__tests__/
+services\__tests__
