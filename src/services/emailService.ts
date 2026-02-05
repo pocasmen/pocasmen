@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { logger } from '../utils/logger';
 
 // Create a transporter using environment variables
 // These variables should be defined in your .env file
@@ -39,7 +40,7 @@ const getTransporter = () => {
 export const sendEmail = async (to: string, subject: string, html: string, from?: string) => {
     // Check if critical SMTP config is present to avoid crashing or useless errors
     if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER) {
-        console.warn("SMTP configuration (EMAIL_HOST or EMAIL_USER) is missing. Email skipped.");
+        logger.warn("SMTP configuration (EMAIL_HOST or EMAIL_USER) is missing. Email skipped.");
         return;
     }
 
@@ -50,14 +51,10 @@ export const sendEmail = async (to: string, subject: string, html: string, from?
             subject,
             html,
         });
-        console.log(`[EmailService] Email sent to ${to}. MessageId: ${info.messageId}`);
+        logger.info({ to, messageId: info.messageId }, `[EmailService] Email sent`);
         return info;
     } catch (error) {
-        console.error("[EmailService] Error sending email:", error);
-        // We don't throw here to prevent breaking the calling flow, but you might want to depending on requirements
-        // For now, valid flow (approval) should probably succeed even if email fails?
-        // User requirement: "immediately after admin approves... must be sent an email".
-        // If email fails, is it a failure of approval? Probably not.
+        logger.error(error, "[EmailService] Error sending email:");
     }
 };
 

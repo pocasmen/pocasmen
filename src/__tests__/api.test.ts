@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { app } from '../index';
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { UserRole, TicketStatus } from '../constants/enums';
 
 // Mock do Supabase
 jest.mock('@supabase/supabase-js', () => ({
@@ -19,6 +20,11 @@ jest.mock('@supabase/supabase-js', () => ({
             order: jest.fn().mockReturnThis(),
             limit: jest.fn().mockReturnThis(),
             in: jest.fn().mockReturnThis(),
+            maybeSingle: jest.fn().mockReturnThis(),
+            or: jest.fn().mockReturnThis(),
+            gte: jest.fn().mockReturnThis(),
+            lte: jest.fn().mockReturnThis(),
+            lt: jest.fn().mockReturnThis(),
         })),
         storage: {
             from: jest.fn(() => ({
@@ -45,7 +51,7 @@ describe('API Integration Tests', () => {
             // Importamos o app e o supabase mockado
             const { supabase } = require('../index');
 
-            (supabase.auth.signInWithPassword as jest.Mock).mockResolvedValue({
+            (supabase.auth.signInWithPassword as jest.Mock<() => Promise<any>>).mockResolvedValue({
                 data: { user: { id: '123' }, session: { access_token: 'fake_token' } },
                 error: null
             });
@@ -65,7 +71,7 @@ describe('API Integration Tests', () => {
         it('POST /auth/login - should return 401 on failure', async () => {
             const { supabase } = require('../index');
 
-            (supabase.auth.signInWithPassword as jest.Mock).mockResolvedValue({
+            (supabase.auth.signInWithPassword as jest.Mock<() => Promise<any>>).mockResolvedValue({
                 data: { user: null, session: null },
                 error: { message: 'Invalid credentials' }
             });
@@ -84,18 +90,18 @@ describe('API Integration Tests', () => {
             const { supabase } = require('../index');
 
             // Mock do usuário autenticado (middleware authenticateToken)
-            (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+            (supabase.auth.getUser as jest.Mock<() => Promise<any>>).mockResolvedValue({
                 data: {
                     user: {
                         id: 'admin_id',
-                        user_metadata: { role: 'admin' }
+                        user_metadata: { role: UserRole.ADMIN }
                     }
                 },
                 error: null
             });
 
             // Mock dos dados de tickets
-            (supabase.from as jest.Mock).mockImplementation((table: string) => {
+            (supabase.from as jest.Mock).mockImplementation((table: any) => {
                 const mockObj: any = {
                     select: jest.fn().mockReturnThis(),
                     eq: jest.fn().mockReturnThis(),
@@ -104,14 +110,14 @@ describe('API Integration Tests', () => {
                 };
 
                 if (table === 'tickets') {
-                    mockObj.order = jest.fn().mockResolvedValue({
+                    mockObj.order = (jest.fn() as jest.Mock<() => Promise<any>>).mockResolvedValue({
                         data: [
-                            { id: 1, title: 'Ticket 1', status: 'open', client_id: 101, equipmentId: 201 },
+                            { id: 1, title: 'Ticket 1', status: TicketStatus.OPEN, client_id: 101, equipmentId: 201 },
                         ],
                         error: null
                     });
                 } else {
-                    mockObj.in = jest.fn().mockResolvedValue({ data: [], error: null });
+                    mockObj.in = (jest.fn() as jest.Mock<() => Promise<any>>).mockResolvedValue({ data: [], error: null });
                 }
 
                 return mockObj;
@@ -129,11 +135,11 @@ describe('API Integration Tests', () => {
         it('GET /api/tickets - should return 403 if user is a client', async () => {
             const { supabase } = require('../index');
 
-            (supabase.auth.getUser as jest.Mock).mockResolvedValue({
+            (supabase.auth.getUser as jest.Mock<() => Promise<any>>).mockResolvedValue({
                 data: {
                     user: {
                         id: 'client_id',
-                        user_metadata: { role: 'client' }
+                        user_metadata: { role: UserRole.CLIENT }
                     }
                 },
                 error: null
@@ -152,8 +158,8 @@ describe('API Integration Tests', () => {
             const { supabase } = require('../index');
 
             // 1. Mock Admin Auth
-            (supabase.auth.getUser as jest.Mock).mockResolvedValue({
-                data: { user: { id: 'admin_id', user_metadata: { role: 'admin' } } },
+            (supabase.auth.getUser as jest.Mock<() => Promise<any>>).mockResolvedValue({
+                data: { user: { id: 'admin_id', user_metadata: { role: UserRole.ADMIN } } },
                 error: null
             });
 
@@ -176,7 +182,7 @@ describe('API Integration Tests', () => {
                 return chain;
             };
 
-            (supabase.from as jest.Mock).mockImplementation((table: string) => {
+            (supabase.from as jest.Mock).mockImplementation((table: any) => {
                 if (table === 'schedules') {
                     return createMockChain({ id: 10 });
                 }
@@ -224,8 +230,8 @@ describe('API Integration Tests', () => {
             const { supabase } = require('../index');
 
             // 1. Mock Tech Auth
-            (supabase.auth.getUser as jest.Mock).mockResolvedValue({
-                data: { user: { id: 'tech_id', user_metadata: { role: 'technician' } } },
+            (supabase.auth.getUser as jest.Mock<() => Promise<any>>).mockResolvedValue({
+                data: { user: { id: 'tech_id', user_metadata: { role: UserRole.TECHNICIAN } } },
                 error: null
             });
 
@@ -235,11 +241,11 @@ describe('API Integration Tests', () => {
                 insert: jest.fn().mockReturnThis(),
                 update: jest.fn().mockReturnThis(),
                 eq: jest.fn().mockReturnThis(),
-                single: jest.fn().mockResolvedValue({ data, error }),
+                single: (jest.fn() as jest.Mock<() => Promise<any>>).mockResolvedValue({ data, error }),
                 then: jest.fn((onFulfilled: any) => Promise.resolve(onFulfilled({ data, error }))),
             });
 
-            (supabase.from as jest.Mock).mockImplementation((table: string) => {
+            (supabase.from as jest.Mock).mockImplementation((table: any) => {
                 if (table === 'reports') return createMockChain({ id: 50 });
                 if (table === 'report_technicians') return createMockChain();
                 if (table === 'schedules') return createMockChain();
@@ -290,8 +296,8 @@ describe('API Integration Tests', () => {
             const { supabase } = require('../index');
 
             // 1. Mock Admin Auth
-            (supabase.auth.getUser as jest.Mock).mockResolvedValue({
-                data: { user: { id: 'admin_id', user_metadata: { role: 'admin' } } },
+            (supabase.auth.getUser as jest.Mock<() => Promise<any>>).mockResolvedValue({
+                data: { user: { id: 'admin_id', user_metadata: { role: UserRole.ADMIN } } },
                 error: null
             });
 
@@ -315,7 +321,7 @@ describe('API Integration Tests', () => {
                 }
             ];
 
-            (supabase.from as jest.Mock).mockImplementation((table: string) => {
+            (supabase.from as jest.Mock).mockImplementation((table: any) => {
                 if (table === 'schedule_parts') return createMockChain(mockReservationData);
                 return createMockChain();
             });
@@ -337,14 +343,14 @@ describe('API Integration Tests', () => {
             const { supabase } = require('../index');
 
             // 1. Mock Tech Auth
-            (supabase.auth.getUser as jest.Mock).mockResolvedValue({
-                data: { user: { id: 'tech_id', user_metadata: { role: 'technician' } } },
+            (supabase.auth.getUser as jest.Mock<() => Promise<any>>).mockResolvedValue({
+                data: { user: { id: 'tech_id', user_metadata: { role: UserRole.TECHNICIAN } } },
                 error: null
             });
 
             // 2. Mock Storage Upload
-            (supabase.storage.from as jest.Mock).mockImplementation((bucket: string) => ({
-                upload: jest.fn().mockResolvedValue({ data: { path: 'path/to/file' }, error: null }),
+            (supabase.storage.from as jest.Mock).mockImplementation((bucket: any) => ({
+                upload: (jest.fn() as jest.Mock<() => Promise<any>>).mockResolvedValue({ data: { path: 'path/to/file' }, error: null }),
                 getPublicUrl: jest.fn().mockReturnValue({ data: { publicUrl: 'http://cdn/file.png' } }),
             }));
 
@@ -352,11 +358,11 @@ describe('API Integration Tests', () => {
             const createMockChain = (data: any = null, error: any = null) => ({
                 insert: jest.fn().mockReturnThis(),
                 select: jest.fn().mockReturnThis(),
-                single: jest.fn().mockResolvedValue({ data, error }),
+                single: (jest.fn() as jest.Mock<() => Promise<any>>).mockResolvedValue({ data, error }),
                 then: jest.fn((onFulfilled: any) => Promise.resolve(onFulfilled({ data, error }))),
             });
 
-            (supabase.from as jest.Mock).mockImplementation((table: string) => {
+            (supabase.from as jest.Mock).mockImplementation((table: any) => {
                 if (table === 'ticket_attachments') {
                     return createMockChain({ id: 99, file_name: 'test.png' });
                 }

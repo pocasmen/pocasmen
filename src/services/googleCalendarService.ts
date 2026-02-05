@@ -1,5 +1,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { getCalendarClient } from '../utils/googleAuth';
+import { ServiceType } from '../constants/enums';
+import { logger } from '../utils/logger';
 
 const calendar = getCalendarClient();
 
@@ -59,7 +61,7 @@ export const googleCalendarService = {
     }) {
         try {
             if (!calendarId) {
-                console.warn('[GOOGLE CALENDAR] No Calendar ID provided. Skipping sync.');
+                logger.warn('[GOOGLE CALENDAR] No Calendar ID provided. Skipping sync.');
                 return null;
             }
 
@@ -89,10 +91,10 @@ export const googleCalendarService = {
                 requestBody: event,
             });
 
-            console.log(`[GOOGLE CALENDAR] Event created: ${response.data.id}`);
+            logger.info({ eventId: response.data.id }, `[GOOGLE CALENDAR] Event created`);
             return response.data.id;
         } catch (error) {
-            console.error('[GOOGLE CALENDAR] Error creating event:', error);
+            logger.error(error, '[GOOGLE CALENDAR] Error creating event:');
             return null;
         }
     },
@@ -113,7 +115,7 @@ export const googleCalendarService = {
     }) {
         try {
             if (!calendarId || !eventId) {
-                console.warn('[GOOGLE CALENDAR] Missing Calendar ID or Event ID. Skipping update.');
+                logger.warn('[GOOGLE CALENDAR] Missing Calendar ID or Event ID. Skipping update.');
                 return false;
             }
 
@@ -138,14 +140,14 @@ export const googleCalendarService = {
                 requestBody: event,
             });
 
-            console.log(`[GOOGLE CALENDAR] Event updated: ${eventId}`);
+            logger.info({ eventId }, `[GOOGLE CALENDAR] Event updated`);
             return true;
         } catch (error: any) {
             if (error.code === 404 || error.code === 410) {
-                console.warn(`[GOOGLE CALENDAR] Event ${eventId} not found in Google. It may have been deleted manually.`);
+                logger.warn({ eventId }, `[GOOGLE CALENDAR] Event not found in Google. It may have been deleted manually.`);
                 return false;
             }
-            console.error('[GOOGLE CALENDAR] Error updating event:', error);
+            logger.error(error, '[GOOGLE CALENDAR] Error updating event:');
             return false;
         }
     },
@@ -166,11 +168,11 @@ export const googleCalendarService = {
                 eventId: eventId,
             });
 
-            console.log(`[GOOGLE CALENDAR] Event deleted: ${eventId}`);
+            logger.info({ eventId }, `[GOOGLE CALENDAR] Event deleted`);
             return true;
         } catch (error: any) {
             if (error.code === 404 || error.code === 410) return true; // Already gone
-            console.error('[GOOGLE CALENDAR] Error deleting event:', error);
+            logger.error(error, '[GOOGLE CALENDAR] Error deleting event:');
             return false;
         }
     },
@@ -197,7 +199,7 @@ export const googleCalendarService = {
             // No longer fetching from 'schedules' table as googleEventId is being removed.
             return true;
         } catch (err) {
-            console.error(`[SYNC] Error deleting schedule events for ${scheduleId}:`, err);
+            logger.error(err, `[SYNC] Error deleting schedule events for ${scheduleId}:`);
             return false;
         }
     },
@@ -231,17 +233,23 @@ export const googleCalendarService = {
                 .single();
 
             if (sErr || !s) {
-                console.error(`[SYNC] Error fetching schedule ${scheduleId}:`, sErr);
+                logger.error(sErr, `[SYNC] Error fetching schedule ${scheduleId}:`);
                 return null;
             }
 
             // 2. Fetch Client Name
-            const { data: client } = await supabase.from('clients').select('name').eq('id', s.clientId).single();
-            const clientName = client?.name || 'Cliente Desconhecido';
+            let clientName = 'Cliente Desconhecido';
+            if (s.clientId) {
+                const { data: client } = await supabase.from('clients').select('name').eq('id', s.clientId).maybeSingle();
+                if (client?.name) clientName = client.name;
+            }
 
             // 3. Fetch Equipment
-            const { data: equip } = await supabase.from('equipments').select('model').eq('id', s.equipmentId).single();
-            const equipInfo = equip?.model || 'Modelo Desconhecido';
+            let equipInfo = 'Modelo Desconhecido';
+            if (s.equipmentId) {
+                const { data: equip } = await supabase.from('equipments').select('model').eq('id', s.equipmentId).maybeSingle();
+                if (equip?.model) equipInfo = equip.model;
+            }
 
             // 4. Fetch Technician Infos (for initials and color)
             let colorId = '9';
@@ -276,16 +284,16 @@ export const googleCalendarService = {
             }
 
             // 5. Preparation & Formatting
-            const serviceTypeMap: Record<string, string> = {
-                'manutencao': 'Manutenção',
-                'reparacao': 'Reparação',
-                'assistencia': 'Assistência',
-                'remota': 'Remota',
-                'instalacao': 'Instalação',
-                'calibracao': 'Calibração'
+            const serviceTypeLabels: Record<ServiceType, string> = {
+                [ServiceType.MANUTENCAO]: 'Manutenção',
+                [ServiceType.REPARACAO]: 'Reparação',
+                [ServiceType.ASSISTENCIA]: 'Assistência',
+                [ServiceType.REMOTA]: 'Remota',
+                [ServiceType.INSTALACAO]: 'Instalação',
+                [ServiceType.CALIBRACAO]: 'Calibração'
             };
 
-            const typeLabel = serviceTypeMap[s.serviceType] || s.serviceType || 'Serviço';
+            const typeLabel = serviceTypeLabels[s.serviceType as ServiceType] || s.serviceType || 'Serviço';
             let formattedTitlePrefix = `${techInitials} - ${typeLabel} - ${equipInfo} - ${clientName}`;
             if (s.isCompleted) formattedTitlePrefix += ' (CONCLUÍDO)';
 
@@ -295,7 +303,7 @@ export const googleCalendarService = {
 
             // 6. Handle Synchronization based on blocks
             if (blocks.length > 0) {
-                console.log(`[SYNC] Schedule ${scheduleId} has ${blocks.length} blocks. Syncing individually.`);
+                logger.info({ scheduleId, blockCount: blocks.length }, `[SYNC] Syncing schedule blocks`);
 
                 // If there were legacy single events, they should have been migrated or deleted by now.
                 // We no longer check or update googleEventId on the schedules table.
@@ -333,11 +341,11 @@ export const googleCalendarService = {
             } else {
                 // FALLBACK: If no blocks exist, we don't sync anything to Google Calendar anymore.
                 // This shouldn't happen with the current architecture where a default block is created.
-                console.warn(`[SYNC] Schedule ${scheduleId} has no time blocks. Skipping sync.`);
+                logger.warn({ scheduleId }, `[SYNC] Schedule has no time blocks. Skipping sync.`);
                 return null;
             }
         } catch (err) {
-            console.error(`[SYNC] Severe error syncing schedule ${scheduleId}:`, err);
+            logger.error(err, `[SYNC] Severe error syncing schedule ${scheduleId}:`);
             return null;
         }
     },
@@ -346,7 +354,7 @@ export const googleCalendarService = {
      * Synchronizes all unsynced schedules to Google Calendar
      */
     async syncAllUnsynced(supabase: SupabaseClient, calendarId: string) {
-        console.log('[SYNC] Starting full synchronization of unsynced schedules...');
+        logger.info('[SYNC] Starting full synchronization of unsynced schedules...');
 
         // Fetch schedules that are not synced OR have blocks that are not synced
         const { data: schedules, error } = await supabase
@@ -357,7 +365,7 @@ export const googleCalendarService = {
             `);
 
         if (error) {
-            console.error('[SYNC] Error fetching schedules:', error);
+            logger.error(error, '[SYNC] Error fetching schedules:');
             throw error;
         }
 
@@ -369,7 +377,7 @@ export const googleCalendarService = {
             return false;
         });
 
-        console.log(`[SYNC] Found ${unsyncedSchedules.length} schedules to sync.`);
+        logger.info({ count: unsyncedSchedules.length }, `[SYNC] Found schedules to sync.`);
 
         let successCount = 0;
         let failCount = 0;
@@ -387,7 +395,7 @@ export const googleCalendarService = {
      * Deletes all events from Google Calendar that are linked to schedules or blocks
      */
     async clearAllSyncedEvents(supabase: SupabaseClient, calendarId: string) {
-        console.log('[SYNC] Starting full deletion of synced schedules from Google Calendar...');
+        logger.info('[SYNC] Starting full deletion of synced schedules from Google Calendar...');
 
         let successCount = 0;
         let failCount = 0;
@@ -400,22 +408,20 @@ export const googleCalendarService = {
                 .not('google_event_id', 'is', null);
 
             if (bError) {
-                console.error('[SYNC] Error fetching blocks:', bError);
+                logger.error(bError, '[SYNC] Error fetching blocks:');
             } else {
                 const blocksToProcess = blocks || [];
-                console.log(`[SYNC] Found ${blocksToProcess.length} blocks to clear.`);
+                logger.info({ count: blocksToProcess.length }, `[SYNC] Found blocks to clear.`);
 
                 for (let i = 0; i < blocksToProcess.length; i++) {
                     const b = blocksToProcess[i];
                     if (b.google_event_id) {
-                        process.stdout.write(`[SYNC] Deleting block ${i + 1}/${blocksToProcess.length}: ${b.google_event_id}... `);
+                        logger.info({ blockIndex: i + 1, total: blocksToProcess.length, googleId: b.google_event_id }, `[SYNC] Deleting block`);
                         const deleted = await this.deleteEvent(calendarId, b.google_event_id);
                         if (deleted) {
                             successCount++;
-                            console.log('OK');
                         } else {
                             failCount++;
-                            console.log('FAIL');
                         }
                     }
                     // Always clear the ID in database regardless of Google success
@@ -433,19 +439,17 @@ export const googleCalendarService = {
                     .not('googleEventId' as any, 'is', null);
 
                 if (!lError && legacySchedules && legacySchedules.length > 0) {
-                    console.log(`[SYNC] Found ${legacySchedules.length} legacy schedules to clear.`);
+                    logger.info({ count: legacySchedules.length }, `[SYNC] Found legacy schedules to clear.`);
                     for (let i = 0; i < legacySchedules.length; i++) {
                         const s = legacySchedules[i];
                         const gId = (s as any).googleEventId;
                         if (gId) {
-                            process.stdout.write(`[SYNC] Deleting legacy ${i + 1}/${legacySchedules.length}: ${gId}... `);
+                            logger.info({ legacyIndex: i + 1, total: legacySchedules.length, googleId: gId }, `[SYNC] Deleting legacy event`);
                             const deleted = await this.deleteEvent(calendarId, gId);
                             if (deleted) {
                                 successCount++;
-                                console.log('OK');
                             } else {
                                 failCount++;
-                                console.log('FAIL');
                             }
                             await supabase.from('schedules').update({ googleEventId: null } as any).eq('id', (s as any).id);
                         }
@@ -453,14 +457,14 @@ export const googleCalendarService = {
                 }
             } catch (legacyErr) {
                 // Column probably doesn't exist
-                console.log('[SYNC] Legacy column check skipped (likely already removed).');
+                logger.debug('[SYNC] Legacy column check skipped (likely already removed).');
             }
 
         } catch (err: any) {
-            console.error('[SYNC] Severe error during full deletion:', err);
+            logger.error(err, '[SYNC] Severe error during full deletion:');
         }
 
-        console.log(`[SYNC] Full deletion finished. Total success: ${successCount}, Total fail: ${failCount}`);
+        logger.info({ successCount, failCount }, `[SYNC] Full deletion finished.`);
         return { successCount, failCount };
     }
 };

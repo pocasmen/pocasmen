@@ -9,7 +9,9 @@
     "dev": "ts-node src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "sync:calendar": "ts-node scripts/sync_all.ts"
+    "sync:calendar": "ts-node scripts/sync_all.ts",
+    "list:unsynced": "ts-node scripts/list_unsynced.ts",
+    "sync:missing": "ts-node scripts/sync_unsynced.ts"
   },
   "keywords": [],
   "author": "",
@@ -23,6 +25,7 @@
     "@types/multer": "^2.0.0",
     "@types/node": "^20.12.12",
     "@types/node-cron": "^3.0.11",
+    "@types/pino-http": "^5.8.4",
     "axios": "^1.13.2",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
@@ -34,13 +37,21 @@
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.10",
+    "pino": "^10.3.0",
+    "pino-http": "^11.0.0",
+    "pino-pretty": "^13.1.3",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/nodemailer": "^7.0.3",
     "@types/supertest": "^6.0.3",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
     "jest": "^30.2.0",
     "supertest": "^7.1.4",
     "ts-jest": "^29.4.6"
