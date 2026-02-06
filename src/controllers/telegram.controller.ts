@@ -4,6 +4,7 @@ import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 import axios from 'axios';
 import { sendTelegramNotification } from '../services/telegramService';
 import { broadcastCalendarUpdate } from '../services/realtimeService';
+import { SERVICE_TYPE_MAP } from '../services/scheduleService';
 import { catchAsync } from '../utils/catchAsync';
 import { ApiError, BadRequestError } from '../utils/ApiError';
 import { logger } from '../utils/logger';
@@ -84,17 +85,61 @@ async function processTelegramUpdate(update: any) {
             // Notificar o frontend de que houve uma alteração
             broadcastCalendarUpdate(supabase, scheduleId);
 
-            const { data: s, error: fetchErr } = await supabase.from('schedules').select('*, clients(name), equipments(model, serialNumber)').eq('id', scheduleId).single();
+            const { data: s, error: fetchErr } = await supabase
+                .from('schedules')
+                .select('*, clients(name), equipments(brand, model, serialNumber)')
+                .eq('id', scheduleId)
+                .single();
+
             if (fetchErr) logger.error(fetchErr, `[TELEGRAM] Error fetching schedule ${scheduleId} for message update`);
 
             if (s) {
+                const { data: scheduleParts } = await supabase
+                    .from('schedule_parts')
+                    .select('quantity, parts(reference, designation)')
+                    .eq('scheduleId', scheduleId);
+
                 const clientName = (s.clients as any)?.name || 'Cliente';
                 const eq = (s.equipments as any);
+                const startDate = new Date(s.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
+                const endDate = new Date(s.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' });
+                const serviceType = SERVICE_TYPE_MAP[s.serviceType] || s.serviceType || 'Não especificado';
+
+                let equipmentInfo = 'Não especificado';
+                if (eq) {
+                    const brand = eq.brand || '';
+                    const model = eq.model || '';
+                    const serialNumber = eq.serialNumber || '';
+                    equipmentInfo = `${brand} ${model}${serialNumber ? ` (S/N: ${serialNumber})` : ''}`.trim();
+                }
+
                 const statusEmoji = isAccept ? '✅' : '❌';
                 const statusText = isAccept ? 'ACEITE' : 'REJEITADO';
 
                 let updatedMsg = `${statusEmoji} *AGENDAMENTO ${statusText}*\n\n`;
-                updatedMsg += `*Cliente:* ${clientName}\n*Equipamento:* ${eq?.model || '?'}\n`;
+                updatedMsg += `*Tipo de Serviço:* ${serviceType}\n`;
+                updatedMsg += `*Cliente:* ${clientName}\n`;
+                updatedMsg += `*Equipamento:* ${equipmentInfo}\n`;
+                updatedMsg += `*Início:* ${startDate}\n`;
+                updatedMsg += `*Final:* ${endDate}\n`;
+
+                if (s.additionalInfo) {
+                    updatedMsg += `*Notas Internas:* ${s.additionalInfo}\n`;
+                }
+
+                if (scheduleParts && scheduleParts.length > 0) {
+                    updatedMsg += `\n*Peças Necessárias:*\n`;
+                    scheduleParts.forEach((sp: any) => {
+                        const p = sp.parts;
+                        updatedMsg += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
+                    });
+                }
+
+                if (isAccept) {
+                    updatedMsg += `\nObrigado por confirmar o agendamento! Bom trabalho!`;
+                } else {
+                    updatedMsg += `\nO agendamento foi rejeitado. Por favor, entre em contacto com a administração se necessário.`;
+                }
 
                 await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
                     chat_id: chatId,

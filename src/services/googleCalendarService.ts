@@ -1,7 +1,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { getCalendarClient } from '../utils/googleAuth';
-import { ServiceType } from '../constants/enums';
 import { logger } from '../utils/logger';
+import { SERVICE_TYPE_MAP } from './scheduleService';
 
 const calendar = getCalendarClient();
 
@@ -284,16 +284,7 @@ export const googleCalendarService = {
             }
 
             // 5. Preparation & Formatting
-            const serviceTypeLabels: Record<ServiceType, string> = {
-                [ServiceType.MANUTENCAO]: 'Manutenção',
-                [ServiceType.REPARACAO]: 'Reparação',
-                [ServiceType.ASSISTENCIA]: 'Assistência',
-                [ServiceType.REMOTA]: 'Remota',
-                [ServiceType.INSTALACAO]: 'Instalação',
-                [ServiceType.CALIBRACAO]: 'Calibração'
-            };
-
-            const typeLabel = serviceTypeLabels[s.serviceType as ServiceType] || s.serviceType || 'Serviço';
+            const typeLabel = SERVICE_TYPE_MAP[s.serviceType] || s.serviceType || 'Serviço';
             let formattedTitlePrefix = `${techInitials} - ${typeLabel} - ${equipInfo} - ${clientName}`;
             if (s.isCompleted) formattedTitlePrefix += ' (CONCLUÍDO)';
 
