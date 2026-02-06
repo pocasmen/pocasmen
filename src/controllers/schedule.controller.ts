@@ -93,6 +93,7 @@ export const getSchedules = catchAsync(async (req: AuthenticatedRequest, res: Re
             parts: partsMap.get(s.id) || [],
             acknowledgementState: s.acknowledgementState,
             includes_travel: s.includes_travel,
+            classification: s.classification || 'geral',
             timeBlocks: (s.schedule_blocks || []).map((tb: any) => ({
                 id: tb.id,
                 start: tb.start_time,
@@ -168,6 +169,7 @@ export const getScheduleById = catchAsync(async (req: AuthenticatedRequest, res:
         clientName,
         equipmentInfo,
         parts,
+        classification: schedule.classification || 'geral',
         timeBlocks: (schedule.schedule_time_blocks || []).map((tb: any) => ({
             id: tb.id,
             start: tb.start_time,
@@ -191,6 +193,7 @@ export const createSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
         serviceType,
         parts,
         timeBlocks,
+        classification,
     } = req.body;
 
     const generatedTitle = await scheduleService.generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
@@ -208,9 +211,10 @@ export const createSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
             serviceType,
             ticketId,
             acknowledgementState: ScheduleStatus.PENDING,
-            includes_travel: req.body.includesTravel
+            includes_travel: req.body.includesTravel,
+            classification: classification || 'geral'
         })
-        .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, includes_travel')
+        .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, includes_travel, classification')
         .single();
 
     if (sError) throw new ApiError(500, 'Failed to create schedule', sError.message);
@@ -285,7 +289,9 @@ export const createSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
             if (spError) throw new ApiError(500, 'Failed to assign parts', spError.message);
 
             for (const partRow of partRows) {
-                await inventoryService.updatePartReservation(supabase, partRow.partId, Number(partRow.quantity), partRow.stock_type);
+                if (!inserted.isCompleted) {
+                    await inventoryService.updatePartReservation(supabase, partRow.partId, Number(partRow.quantity), partRow.stock_type);
+                }
             }
         }
     }
@@ -333,11 +339,12 @@ export const updateSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
         serviceType,
         parts,
         timeBlocks,
+        classification,
     } = req.body;
 
     const { data: originalSchedule, error: fetchError } = await supabase
         .from('schedules')
-        .select('title, startDate, endDate, clientId, equipmentId, serviceType, additionalInfo, includes_travel, schedule_technicians(technicianId), schedule_time_blocks(start_time, end_time)')
+        .select('title, startDate, endDate, clientId, equipmentId, serviceType, additionalInfo, includes_travel, classification, schedule_technicians(technicianId), schedule_time_blocks(start_time, end_time)')
         .eq('id', scheduleId)
         .single();
 
@@ -395,7 +402,8 @@ export const updateSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
         additionalInfo: internalNotes,
         serviceType,
         ticketId,
-        includes_travel: req.body.includesTravel !== undefined ? req.body.includesTravel : originalSchedule.includes_travel
+        includes_travel: req.body.includesTravel !== undefined ? req.body.includesTravel : originalSchedule.includes_travel,
+        classification: classification !== undefined ? classification : originalSchedule.classification
     };
 
     if (hasSignificantChanges) updateData.acknowledgementState = ScheduleStatus.PENDING;
@@ -404,7 +412,7 @@ export const updateSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
         .from('schedules')
         .update(updateData)
         .eq('id', scheduleId)
-        .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, includes_travel')
+        .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, acknowledgementState, includes_travel, classification')
         .single();
 
     if (updateError) throw new ApiError(500, 'Failed to update schedule', updateError.message);
@@ -451,7 +459,11 @@ export const updateSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
         }
         if (partRows.length > 0) {
             await supabase.from('schedule_parts').insert(partRows);
-            for (const pr of partRows) await inventoryService.updatePartReservation(supabase, pr.partId, Number(pr.quantity), pr.stock_type);
+            for (const pr of partRows) {
+                if (!isCompleted) {
+                    await inventoryService.updatePartReservation(supabase, pr.partId, Number(pr.quantity), pr.stock_type);
+                }
+            }
         }
     }
 
@@ -484,15 +496,16 @@ export const completeSchedule = catchAsync(async (req: AuthenticatedRequest, res
         internalNotes,
         serviceType,
         parts,
+        classification,
     } = req.body;
 
     const generatedTitle = await scheduleService.generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
     const { data: updated, error: updateError } = await supabase
         .from('schedules')
-        .update({ title: generatedTitle, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo: internalNotes, serviceType, includes_travel: req.body.includesTravel })
+        .update({ title: generatedTitle, startDate, endDate, clientId, equipmentId, isCompleted: true, additionalInfo: internalNotes, serviceType, includes_travel: req.body.includesTravel, classification: classification || 'geral' })
         .eq('id', scheduleId)
-        .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, includes_travel')
+        .select('id, title, startDate, endDate, isCompleted, hasReport, additionalInfo, serviceType, ticketId, clientId, equipmentId, includes_travel, classification')
         .single();
 
     if (updateError) throw new ApiError(500, 'Failed to complete schedule', updateError.message);
@@ -528,7 +541,9 @@ export const completeSchedule = catchAsync(async (req: AuthenticatedRequest, res
         }
         if (partRows.length > 0) {
             await supabase.from('schedule_parts').insert(partRows);
-            for (const pr of partRows) await inventoryService.updatePartReservation(supabase, pr.partId, Number(pr.quantity), pr.stock_type);
+            // Ao completar um agendamento, as peças deixam de estar reservadas no sistema geral.
+            // Elas serão abatidas do stock real quando o relatório for criado.
+            // Portanto, NÃO re-reservamos aqui.
         }
     }
 

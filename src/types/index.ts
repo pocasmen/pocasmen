@@ -1,6 +1,6 @@
-import { UserRole, TicketStatus, ScheduleStatus, StockType } from '../constants/enums';
+import { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification } from '../constants/enums';
 
-export { UserRole, TicketStatus, ScheduleStatus, StockType };
+export { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification };
 
 export interface Profile {
     id: string;
@@ -69,6 +69,7 @@ export interface Schedule {
     serviceType: string;
     additionalInfo?: string;
     includes_travel: boolean;
+    classification: ServiceClassification;
 }
 
 export interface ScheduleTechnician {
@@ -130,6 +131,7 @@ export interface Report {
     signature?: string;
     technician_signature?: string;
     includes_travel: boolean;
+    classification: ServiceClassification;
 }
 
 export interface EnrichedPart {

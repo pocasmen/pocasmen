@@ -117,27 +117,80 @@ export const getPartReservations = catchAsync(async (req: AuthenticatedRequest, 
 
 export const deletePart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const partId = req.params.id;
+
+    // 1. Check schedules
     const { count: scheduleCount, error: scheduleError } = await supabase
         .from('schedule_parts')
         .select('*', { count: 'exact', head: true })
         .eq('partId', partId);
 
-    if (scheduleError) throw new ApiError(500, 'Failed to check dependencies', scheduleError.message);
-    if (scheduleCount && scheduleCount > 0) throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em agendamentos existentes.');
+    if (scheduleError) {
+        console.error('Error checking schedule_parts:', scheduleError);
+        throw new ApiError(500, 'Failed to check schedule dependencies', scheduleError.message);
+    }
+    if (scheduleCount && scheduleCount > 0) {
+        throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em agendamentos existentes.');
+    }
 
+    // 2. Check reports (new table)
+    const { count: reportCount, error: reportError } = await supabase
+        .from('report_parts')
+        .select('*', { count: 'exact', head: true })
+        .eq('partId', partId);
+
+    if (reportError && reportError.code !== 'PGRST116' && reportError.code !== '42P01') {
+        console.error('Error checking report_parts:', reportError);
+        throw new ApiError(500, 'Failed to check report dependencies', reportError.message);
+    }
+    if (reportCount && reportCount > 0) {
+        throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em relatórios existentes.');
+    }
+
+    // 3. Check kit dependencies (is this part a component of another kit?)
     const { count: parentCount, error: parentError } = await supabase
         .from('part_components')
         .select('*', { count: 'exact', head: true })
         .eq('child_part_id', partId);
 
-    if (parentError) throw new ApiError(500, 'Failed to check dependencies', parentError.message);
-    if (parentCount && parentCount > 0) throw new BadRequestError('Não é possível apagar a peça: Faz parte da composição de outros itens (Kits).');
+    if (parentError) {
+        console.error('Error checking part_components:', parentError);
+        throw new ApiError(500, 'Failed to check kit dependencies', parentError.message);
+    }
+    if (parentCount && parentCount > 0) {
+        throw new BadRequestError('Não é possível apagar a peça: Faz parte da composição de outros itens (Kits).');
+    }
 
+    // Clear its own composition if it's a kit
     await supabase.from('part_components').delete().eq('parent_part_id', partId);
+
+    // Delete the part
     const { error } = await supabase.from('parts').delete().eq('id', partId);
 
     if (error) throw new ApiError(500, 'Failed to delete part', error.message);
     res.sendStatus(204);
+});
+
+export const getPartComponents = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const parentId = req.params.id;
+    const { data, error } = await supabase
+        .from('part_components')
+        .select(`
+            partId:child_part_id,
+            quantity,
+            parts:parts!child_part_id(reference, designation)
+        `)
+        .eq('parent_part_id', parentId);
+
+    if (error) throw new ApiError(500, 'Failed to fetch part components', error.message);
+
+    const components = (data || []).map((c: any) => ({
+        partId: c.partId,
+        quantity: c.quantity,
+        reference: c.parts.reference,
+        designation: c.parts.designation
+    }));
+
+    res.json(components);
 });
 
 export const getPartByReference = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
@@ -208,5 +261,72 @@ export const updateOrder = catchAsync(async (req: AuthenticatedRequest, res: Res
 
     const { data, error } = await supabase.from('parts').update(updateData).eq('id', partId).select().single();
     if (error) throw new ApiError(500, 'Failed to update order', error.message);
+    res.json(data);
+});
+
+export const createPart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { reference, designation, stock_quantity, is_composed } = req.body;
+
+    // Validate if reference already exists
+    const { data: existing } = await supabase.from('parts').select('id').eq('reference', reference).maybeSingle();
+    if (existing) throw new BadRequestError('Já existe uma peça com esta referência.');
+
+    const { data, error } = await supabase.from('parts').insert({
+        reference,
+        designation,
+        stock_quantity: stock_quantity || 0,
+        is_composed: !!is_composed
+    }).select().single();
+
+    if (error) throw new ApiError(500, 'Failed to create part', error.message);
+    res.status(201).json(data);
+});
+
+export const createComposedPart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { reference, designation, components } = req.body;
+
+    // Validate if reference already exists
+    const { data: existing } = await supabase.from('parts').select('id').eq('reference', reference).maybeSingle();
+    if (existing) throw new BadRequestError('Já existe uma peça com esta referência.');
+
+    const { data: parentPart, error: parentError } = await supabase
+        .from('parts')
+        .insert({
+            reference,
+            designation,
+            is_composed: true,
+            stock_quantity: 0
+        })
+        .select()
+        .single();
+
+    if (parentError) throw new ApiError(500, 'Failed to create parent part', parentError.message);
+
+    const componentsData = components.map((comp: any) => ({
+        parent_part_id: parentPart.id,
+        child_part_id: comp.partId,
+        quantity: comp.quantity
+    }));
+
+    if (componentsData.length > 0) {
+        const { error: compError } = await supabase.from('part_components').insert(componentsData);
+        if (compError) throw new ApiError(500, 'Failed to create part components', compError.message);
+    }
+
+    res.status(201).json({ ...parentPart, components: componentsData });
+});
+
+export const updatePart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const { reference, designation } = req.body;
+
+    const { data, error } = await supabase
+        .from('parts')
+        .update({ reference, designation })
+        .eq('id', id)
+        .select()
+        .single();
+
+    if (error) throw new ApiError(500, 'Failed to update part', error.message);
     res.json(data);
 });

@@ -286,6 +286,7 @@ describe('API Integration Tests', () => {
             expect(res.body.reportId).toBe(50);
             expect(supabase.from).toHaveBeenCalledWith('reports');
             expect(supabase.from).toHaveBeenCalledWith('report_technicians');
+            expect(supabase.from).toHaveBeenCalledWith('report_parts');
             expect(supabase.from).toHaveBeenCalledWith('schedules');
             expect(supabase.from).toHaveBeenCalledWith('parts'); // Novo: verifica abate
         });

@@ -3,6 +3,7 @@ import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 import axios from 'axios';
 import { sendTelegramNotification } from '../services/telegramService';
+import { broadcastCalendarUpdate } from '../services/realtimeService';
 import { catchAsync } from '../utils/catchAsync';
 import { ApiError, BadRequestError } from '../utils/ApiError';
 import { logger } from '../utils/logger';
@@ -25,6 +26,7 @@ export const setWebhook = catchAsync(async (req: AuthenticatedRequest, res: Resp
 });
 
 export const handleWebhook = catchAsync(async (req: Request, res: Response) => {
+    logger.info({ body: req.body }, '[TELEGRAM] Webhook received');
     res.sendStatus(200);
     const update = req.body;
     await processTelegramUpdate(update);
@@ -36,6 +38,7 @@ export const syncUpdates = catchAsync(async (req: AuthenticatedRequest, res: Res
 });
 
 async function processTelegramUpdate(update: any) {
+    logger.debug({ update }, '[TELEGRAM] Processing update');
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return;
 
@@ -49,16 +52,34 @@ async function processTelegramUpdate(update: any) {
     }
 
     if (update.callback_query) {
+        const callbackQueryId = update.callback_query.id;
         const callbackData = update.callback_query.data;
         const chatId = update.callback_query.message.chat.id;
         const messageId = update.callback_query.message.message_id;
 
         if (callbackData.startsWith('sch_acc_') || callbackData.startsWith('sch_rej_')) {
+            // Responder imediatamente ao callback para parar o spinner no Telegram
+            await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+                callback_query_id: callbackQueryId
+            }).catch(err => logger.error(err, '[TELEGRAM] Erro ao responder callback query:'));
+
             const isAccept = callbackData.startsWith('sch_acc_');
             const scheduleId = isAccept ? callbackData.replace('sch_acc_', '') : callbackData.replace('sch_rej_', '');
             const newState = isAccept ? ScheduleStatus.ACCEPTED : ScheduleStatus.REJECTED;
 
-            await supabase.from('schedules').update({ confirmation_status: newState }).eq('id', scheduleId);
+            // Correção: o nome da coluna correto é acknowledgementState
+            const { error: updateError } = await supabase
+                .from('schedules')
+                .update({ acknowledgementState: newState })
+                .eq('id', scheduleId);
+
+            if (updateError) {
+                logger.error(updateError, `[TELEGRAM] Erro ao atualizar agendamento ${scheduleId}:`);
+                return;
+            }
+
+            // Notificar o frontend de que houve uma alteração
+            broadcastCalendarUpdate(supabase, scheduleId);
 
             const { data: s } = await supabase.from('schedules').select('*, clients(name), equipments(model, serialNumber)').eq('id', scheduleId).single();
             if (s) {
@@ -75,7 +96,7 @@ async function processTelegramUpdate(update: any) {
                     message_id: messageId,
                     text: updatedMsg,
                     parse_mode: 'Markdown'
-                });
+                }).catch(err => logger.error(err, '[TELEGRAM] Erro ao editar mensagem:'));
             }
         }
     }

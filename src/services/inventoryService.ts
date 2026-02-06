@@ -48,7 +48,8 @@ export const hasEnoughStock = (stock: number, reserved: number, requested: numbe
 export const processReportAbate = (
     current: { stock: number; reserved: number; stockContract: number; reservedContract: number },
     quantityUsed: number,
-    stockType: StockType
+    stockType: StockType,
+    skipReserved: boolean = false
 ): { newStock: number; newReserved: number; newStockContract: number; newReservedContract: number } => {
     let newStock = current.stock;
     let newReserved = current.reserved;
@@ -57,10 +58,14 @@ export const processReportAbate = (
 
     if (stockType === StockType.CONTRACT) {
         newStockContract = current.stockContract - quantityUsed; // Permite negativo
-        newReservedContract = Math.max(0, current.reservedContract - quantityUsed);
+        if (!skipReserved) {
+            newReservedContract = Math.max(0, current.reservedContract - quantityUsed);
+        }
     } else if (stockType === StockType.GENERAL) {
         newStock = current.stock - quantityUsed; // Permite negativo
-        newReserved = Math.max(0, current.reserved - quantityUsed);
+        if (!skipReserved) {
+            newReserved = Math.max(0, current.reserved - quantityUsed);
+        }
     }
 
     return {
@@ -71,7 +76,7 @@ export const processReportAbate = (
     };
 };
 
-export async function abatePartInventory(supabase: SupabaseClient, partId: number, quantity: number, stockType: StockType = StockType.GENERAL) {
+export async function abatePartInventory(supabase: SupabaseClient, partId: number, quantity: number, stockType: StockType = StockType.GENERAL, skipReserved: boolean = false) {
     if (stockType === StockType.CLIENT || stockType === StockType.WARRANTY) {
         logger.debug({ partId, stockType }, `[DEBUG_INV] Skipping inventory abatement for this stock type.`);
         return;
@@ -102,7 +107,7 @@ export async function abatePartInventory(supabase: SupabaseClient, partId: numbe
 
         if (components && components.length > 0) {
             for (const comp of components) {
-                await abatePartInventory(supabase, comp.child_part_id, comp.quantity * quantity, stockType);
+                await abatePartInventory(supabase, comp.child_part_id, comp.quantity * quantity, stockType, skipReserved);
             }
         }
     } else {
@@ -114,15 +119,17 @@ export async function abatePartInventory(supabase: SupabaseClient, partId: numbe
                 reservedContract: currentPart.reserved_quantity_contract || 0
             },
             quantity,
-            stockType
+            stockType,
+            skipReserved
         );
 
         logger.debug({
             partId,
             designation: currentPart.designation,
             stockType,
-            old: { stock: currentPart.stock_quantity, contract: currentPart.stock_quantity_contract },
-            new: { stock: result.newStock, contract: result.newStockContract }
+            skipReserved,
+            old: { stock: currentPart.stock_quantity, contract: currentPart.stock_quantity_contract, reserved: currentPart.reserved_quantity },
+            new: { stock: result.newStock, contract: result.newStockContract, reserved: result.newReserved }
         }, `[DEBUG_INV] Abating Part Inventory`);
 
         await supabase

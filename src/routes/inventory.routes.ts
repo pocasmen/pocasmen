@@ -50,6 +50,88 @@ router.get('/api/inventory', authenticateToken, authorizeRoles([UserRole.ADMIN, 
 
 /**
  * @swagger
+ * /api/inventory:
+ *   post:
+ *     summary: Create a new inventory part
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reference
+ *               - designation
+ *             properties:
+ *               reference:
+ *                 type: string
+ *               designation:
+ *                 type: string
+ *               stock_quantity:
+ *                 type: integer
+ *               is_composed:
+ *                 type: boolean
+ *     responses:
+ *       201:
+ *         description: Part created successfully
+ *       400:
+ *         description: Reference already exists
+ */
+router.post('/api/inventory',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    validate(inventoryValidation.createPartSchema),
+    inventoryController.createPart
+);
+
+/**
+ * @swagger
+ * /api/inventory/composed:
+ *   post:
+ *     summary: Create a new composed part (Admin only)
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reference
+ *               - designation
+ *               - components
+ *             properties:
+ *               reference:
+ *                 type: string
+ *               designation:
+ *                 type: string
+ *               components:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     partId:
+ *                       type: integer
+ *                     quantity:
+ *                       type: integer
+ *     responses:
+ *       201:
+ *         description: Composed part created successfully
+ */
+router.post('/api/inventory/composed',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    validate(inventoryValidation.createComposedPartSchema),
+    inventoryController.createComposedPart
+);
+
+/**
+ * @swagger
  * /api/inventory/{id}/composed:
  *   put:
  *     summary: Update a composed part (Admin only)
@@ -212,6 +294,74 @@ router.get('/api/inventory/:id/reservations',
     authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
     validate(commonValidation.idParamSchema),
     inventoryController.getPartReservations
+);
+
+/**
+ * @swagger
+ * /api/inventory/{id}/components:
+ *   get:
+ *     summary: Get composed part components
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: The part ID
+ *     responses:
+ *       200:
+ *         description: List of components
+ */
+router.get('/api/inventory/:id/components',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
+    validate(commonValidation.idParamSchema),
+    inventoryController.getPartComponents
+);
+
+/**
+ * @swagger
+ * /api/inventory/{id}:
+ *   put:
+ *     summary: Update simple part details
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: The part ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - reference
+ *               - designation
+ *             properties:
+ *               reference:
+ *                 type: string
+ *               designation:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Part updated successfully
+ *       404:
+ *         description: Part not found
+ */
+router.put('/api/inventory/:id',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    validate(inventoryValidation.updatePartSchema),
+    inventoryController.updatePart
 );
 
 /**

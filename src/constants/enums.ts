@@ -37,3 +37,11 @@ export enum ServiceType {
     INSTALACAO = 'Instalação',
     CALIBRACAO = 'Calibração'
 }
+
+export enum ServiceClassification {
+    GERAL = 'geral',
+    CONTRATO = 'contrato',
+    GARANTIA = 'garantia',
+    OFERTA = 'oferta'
+}
+

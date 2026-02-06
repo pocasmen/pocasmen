@@ -4,7 +4,7 @@ import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 import * as inventoryService from '../services/inventoryService';
 import { catchAsync } from '../utils/catchAsync';
 import { ApiError, ForbiddenError, NotFoundError, UnauthorizedError, BadRequestError } from '../utils/ApiError';
-import { UserRole, StockType } from '../constants/enums';
+import { UserRole, StockType, EnrichedPart } from '../types';
 
 export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { data: reports, error: reportsError } = await supabase
@@ -19,10 +19,11 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
     const equipmentIds = [...new Set(reports.map(r => r.equipmentId).filter(Boolean))];
     const reportIds = reports.map(r => r.id);
 
-    const [clientsRes, equipmentsRes, techniciansRes] = await Promise.all([
+    const [clientsRes, equipmentsRes, techniciansRes, partsRes] = await Promise.all([
         clientIds.length > 0 ? supabase.from('clients').select('id, name').in('id', clientIds) : Promise.resolve({ data: [] }),
         equipmentIds.length > 0 ? supabase.from('equipments').select('id, brand, model').in('id', equipmentIds) : Promise.resolve({ data: [] }),
-        reportIds.length > 0 ? supabase.from('report_technicians').select('reportId, technicianId, signature').in('reportId', reportIds) : Promise.resolve({ data: [] })
+        reportIds.length > 0 ? supabase.from('report_technicians').select('reportId, technicianId, signature').in('reportId', reportIds) : Promise.resolve({ data: [] }),
+        reportIds.length > 0 ? supabase.from('report_parts').select('reportId, partId, quantity, stock_type, parts(id, reference, designation)').in('reportId', reportIds) : Promise.resolve({ data: [] })
     ]);
 
     const clientMap = new Map(clientsRes.data?.map(c => [c.id, (c as any).name]) || []);
@@ -46,6 +47,18 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
         }
     });
 
+    const partsMap = new Map<number, EnrichedPart[]>();
+    (partsRes.data as any[])?.forEach(rp => {
+        if (!partsMap.has(rp.reportId)) partsMap.set(rp.reportId, []);
+        partsMap.get(rp.reportId)!.push({
+            id: rp.parts.id,
+            reference: rp.parts.reference,
+            designation: rp.parts.designation,
+            quantity: rp.quantity,
+            stockType: rp.stock_type || StockType.GENERAL
+        });
+    });
+
     const result = reports.map(r => {
         const eq = equipmentMap.get(r.equipmentId);
         return {
@@ -54,6 +67,7 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
             equipmentBrand: (eq as any)?.brand || '',
             equipmentModel: (eq as any)?.model || '',
             technicians: techMap.get(r.id) || [],
+            parts: partsMap.get(r.id) || [],
             internalNotes: r.internal_notes
         };
     });
@@ -88,13 +102,14 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
         }
     }
 
-    const [clientRes, equipmentRes, techRes, timeBlocksRes] = await Promise.all([
+    const [clientRes, equipmentRes, techRes, timeBlocksRes, partsRes] = await Promise.all([
         supabase.from('clients').select('id, name, address, nif').eq('id', report.clientId).single(),
         supabase.from('equipments').select('id, brand, model, serialNumber').eq('id', report.equipmentId).single(),
         supabase.from('report_technicians').select('technicianId, signature').eq('reportId', report.id),
         report.scheduleId
             ? supabase.from('schedule_time_blocks').select('id, start_time, end_time').eq('schedule_id', report.scheduleId)
-            : Promise.resolve({ data: [] })
+            : Promise.resolve({ data: [] }),
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation)').eq('reportId', report.id)
     ]);
 
     const client = clientRes.data;
@@ -131,6 +146,13 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
         equipmentSerialNumber: (equipment as any)?.serialNumber || '',
         technicianName: technicianNames,
         technicians: technicians,
+        parts: (partsRes.data || []).map((rp: any) => ({
+            id: rp.parts.id,
+            reference: rp.parts.reference,
+            designation: rp.parts.designation,
+            quantity: rp.quantity,
+            stockType: rp.stock_type || StockType.GENERAL
+        })),
         internalNotes: report.internal_notes,
         timeBlocks: (timeBlocksRes as any).data?.map((tb: any) => ({
             id: tb.id,
@@ -151,10 +173,13 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
     if (error) throw new ApiError(500, 'Failed to fetch report', error.message);
     if (!report) throw new NotFoundError('Report not found');
 
-    const { data: reportTechnicians } = await supabase
-        .from('report_technicians')
-        .select('technicianId')
-        .eq('reportId', report.id);
+    const [techRes, partsRes] = await Promise.all([
+        supabase.from('report_technicians').select('technicianId').eq('reportId', report.id),
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation)').eq('reportId', report.id)
+    ]);
+
+    const reportTechnicians = techRes.data;
+    const reportParts = partsRes.data;
 
     let technicians: any[] = [];
     if (reportTechnicians && reportTechnicians.length > 0) {
@@ -170,11 +195,19 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
         }
     }
 
-    res.json({ ...report, technicians, internalNotes: (report as any).internal_notes });
+    const parts = (reportParts || []).map((rp: any) => ({
+        id: rp.parts.id,
+        reference: rp.parts.reference,
+        designation: rp.parts.designation,
+        quantity: rp.quantity,
+        stockType: rp.stock_type || StockType.GENERAL
+    }));
+
+    res.json({ ...report, technicians, parts, internalNotes: (report as any).internal_notes });
 });
 
 export const createReport = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature } = req.body;
+    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature, classification } = req.body;
 
     const { data: scheduleData } = await supabase.from('schedules').select('startDate').eq('id', scheduleId).single();
     if (!scheduleData) throw new ApiError(500, 'Erro ao obter dados do agendamento.');
@@ -201,10 +234,11 @@ export const createReport = catchAsync(async (req: AuthenticatedRequest, res: Re
     const { data: report, error: reportError } = await supabase
         .from('reports')
         .insert({
-            clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [],
+            clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '',
             report_number: newReportNumber, signature: signature || '', technician_signature: technician_signature || '',
-            includes_travel: req.body.includesTravel !== undefined ? req.body.includesTravel : false
+            includes_travel: req.body.includesTravel !== undefined ? req.body.includesTravel : false,
+            classification: classification || 'geral'
         })
         .select('id').single();
 
@@ -217,6 +251,18 @@ export const createReport = catchAsync(async (req: AuthenticatedRequest, res: Re
             signature: req.body.technicianSignatures ? req.body.technicianSignatures[techId] : null
         }));
         await supabase.from('report_technicians').insert(reportTechnicians);
+    }
+
+    if (Array.isArray(parts) && parts.length > 0) {
+        const reportParts = parts.filter(p => p.id && p.quantity > 0).map(p => ({
+            reportId: report.id,
+            partId: p.id,
+            quantity: Number(p.quantity),
+            stock_type: p.stockType || StockType.GENERAL
+        }));
+        if (reportParts.length > 0) {
+            await supabase.from('report_parts').insert(reportParts);
+        }
     }
 
     await supabase.from('schedules').update({ hasReport: true }).eq('id', scheduleId);
@@ -234,14 +280,21 @@ export const createReport = catchAsync(async (req: AuthenticatedRequest, res: Re
 
 export const updateReport = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const reportId = req.params.id;
-    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature } = req.body;
+    const { clientId, equipmentId, scheduleId, technicianIds, serviceDate, hours, parts, description, damage, serviceType, internalNotes, signature, technician_signature, classification } = req.body;
+
+    // Obter as peças antigas para reverter o abate de stock
+    const { data: oldParts } = await supabase
+        .from('report_parts')
+        .select('partId, quantity, stock_type')
+        .eq('reportId', reportId);
 
     const { data: updatedReport, error: reportError } = await supabase
         .from('reports')
         .update({
-            clientId, equipmentId, scheduleId, serviceDate, hours, parts: parts || [],
+            clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage: damage || '', serviceType: serviceType || [], internal_notes: internalNotes || '',
-            signature: signature, technician_signature: technician_signature, includes_travel: req.body.includesTravel
+            signature: signature, technician_signature: technician_signature, includes_travel: req.body.includesTravel,
+            classification: classification || 'geral'
         })
         .eq('id', reportId)
         .select('id').single();
@@ -258,6 +311,30 @@ export const updateReport = catchAsync(async (req: AuthenticatedRequest, res: Re
         await supabase.from('report_technicians').insert(reportTechnicians);
     }
 
+    // Reverter o stock antigo
+    if (oldParts && oldParts.length > 0) {
+        for (const op of oldParts) {
+            await inventoryService.abatePartInventory(supabase, op.partId, -Number(op.quantity), op.stock_type || StockType.GENERAL, true);
+        }
+    }
+
+    await supabase.from('report_parts').delete().eq('reportId', reportId);
+    if (Array.isArray(parts) && parts.length > 0) {
+        const reportParts = parts.filter(p => p.id && p.quantity > 0).map(p => ({
+            reportId: reportId,
+            partId: p.id,
+            quantity: Number(p.quantity),
+            stock_type: p.stockType || StockType.GENERAL
+        }));
+        if (reportParts.length > 0) {
+            await supabase.from('report_parts').insert(reportParts);
+            // Aplicar o novo abate
+            for (const np of reportParts) {
+                await inventoryService.abatePartInventory(supabase, np.partId, np.quantity, np.stock_type, true);
+            }
+        }
+    }
+
     res.json({ message: 'Relatório atualizado!', reportId: updatedReport.id });
 });
 
@@ -268,6 +345,7 @@ export const deleteReport = catchAsync(async (req: AuthenticatedRequest, res: Re
         await supabase.from('schedules').update({ hasReport: false }).eq('id', (report as any).scheduleId);
     }
     await supabase.from('report_technicians').delete().eq('reportId', id);
+    await supabase.from('report_parts').delete().eq('reportId', id);
     const { error } = await supabase.from('reports').delete().eq('id', id);
     if (error) throw new ApiError(500, 'Failed to delete report', error.message);
     res.sendStatus(204);

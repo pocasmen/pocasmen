@@ -135,19 +135,28 @@ export const getMyReportBySchedule = catchAsync(async (req: AuthenticatedRequest
     if (error || !report) throw new NotFoundError('Report not found.');
     if (report.clientId !== profile.client_id) throw new ForbiddenError('Forbidden.');
 
-    const [clientRes, equipmentRes, techRes, timeBlocksRes] = await Promise.all([
+    const [clientRes, equipmentRes, techRes, timeBlocksRes, partsRes] = await Promise.all([
         supabase.from('clients').select('name, address, nif').eq('id', report.clientId).single(),
         supabase.from('equipments').select('brand, model, serialNumber').eq('id', report.equipmentId).single(),
         supabase.from('report_technicians').select('technicianId').eq('reportId', report.id),
-        supabase.from('schedule_time_blocks').select('start_time, end_time').eq('schedule_id', scheduleId)
+        supabase.from('schedule_time_blocks').select('start_time, end_time').eq('schedule_id', scheduleId),
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation)').eq('reportId', report.id)
     ]);
 
     let technicians: any[] = [];
     if (techRes.data) {
         const techIds = techRes.data.map(rt => rt.technicianId);
         const { data: profiles } = await supabase.from('profiles').select('id, first_name, last_name, color').in('id', techIds);
-        if (profiles) technicians = profiles.map(p => ({ id: p.id, name: `${p.first_name} ${p.last_name}`.trim(), color: p.color }));
+        if (profiles) technicians = profiles.map(p => ({ id: p.id, name: `${p.first_name || ''} ${p.last_name || ''}`.trim(), color: p.color }));
     }
+
+    const parts = (partsRes.data || []).map((rp: any) => ({
+        id: rp.parts.id,
+        reference: rp.parts.reference,
+        designation: rp.parts.designation,
+        quantity: rp.quantity,
+        stockType: rp.stock_type || 'general'
+    }));
 
     res.json({
         ...report,
@@ -158,6 +167,7 @@ export const getMyReportBySchedule = catchAsync(async (req: AuthenticatedRequest
         equipmentModel: equipmentRes.data?.model,
         equipmentSerialNumber: equipmentRes.data?.serialNumber,
         technicians,
+        parts,
         timeBlocks: timeBlocksRes.data?.map(tb => ({ start: tb.start_time, end: tb.end_time })) || []
     });
 });

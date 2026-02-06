@@ -1,0 +1,7 @@
+-- Adiciona o campo de classificação aos agendamentos e relatórios
+ALTER TABLE public.schedules ADD COLUMN classification TEXT DEFAULT 'geral';
+ALTER TABLE public.reports ADD COLUMN classification TEXT DEFAULT 'geral';
+
+-- Atualiza os registros existentes (opcional, já que o default é 'geral')
+-- UPDATE public.schedules SET classification = 'geral' WHERE classification IS NULL;
+-- UPDATE public.reports SET classification = 'geral' WHERE classification IS NULL;

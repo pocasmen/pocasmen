@@ -31,7 +31,8 @@ CREATE TABLE schedules (
     "endDate" TIMESTAMP WITH TIME ZONE NOT NULL,
     title VARCHAR(255) NOT NULL,
     "isCompleted" BOOLEAN DEFAULT FALSE,
-    "hasReport" BOOLEAN DEFAULT FALSE
+    "hasReport" BOOLEAN DEFAULT FALSE,
+    classification TEXT DEFAULT 'geral'
 );
 
 CREATE TABLE parts (
@@ -56,7 +57,8 @@ CREATE TABLE reports (
     "isRemote" BOOLEAN DEFAULT FALSE,
     "observations" TEXT,
     "fossObservations" TEXT,
-    avaria TEXT
+    avaria TEXT,
+    classification TEXT DEFAULT 'geral'
 );
 
 CREATE TABLE users (
