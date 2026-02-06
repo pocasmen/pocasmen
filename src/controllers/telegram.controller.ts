@@ -58,6 +58,8 @@ async function processTelegramUpdate(update: any) {
         const messageId = update.callback_query.message.message_id;
 
         if (callbackData.startsWith('sch_acc_') || callbackData.startsWith('sch_rej_')) {
+            logger.info({ callbackData, chatId, messageId }, '[TELEGRAM] Button clicked');
+
             // Responder imediatamente ao callback para parar o spinner no Telegram
             await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
                 callback_query_id: callbackQueryId
@@ -77,11 +79,14 @@ async function processTelegramUpdate(update: any) {
                 logger.error(updateError, `[TELEGRAM] Erro ao atualizar agendamento ${scheduleId}:`);
                 return;
             }
+            logger.info({ scheduleId, newState }, '[TELEGRAM] Schedule status updated in DB');
 
             // Notificar o frontend de que houve uma alteração
             broadcastCalendarUpdate(supabase, scheduleId);
 
-            const { data: s } = await supabase.from('schedules').select('*, clients(name), equipments(model, serialNumber)').eq('id', scheduleId).single();
+            const { data: s, error: fetchErr } = await supabase.from('schedules').select('*, clients(name), equipments(model, serialNumber)').eq('id', scheduleId).single();
+            if (fetchErr) logger.error(fetchErr, `[TELEGRAM] Error fetching schedule ${scheduleId} for message update`);
+
             if (s) {
                 const clientName = (s.clients as any)?.name || 'Cliente';
                 const eq = (s.equipments as any);
@@ -116,14 +121,28 @@ async function syncTelegramUpdates() {
     }
 }
 
-export const fetchBotInfo = async () => {
+export const initializeTelegramBot = async () => {
     const token = process.env.TELEGRAM_BOT_TOKEN;
-    if (!token) return;
+    const url = process.env.TELEGRAM_WEBHOOK_URL;
+
+    if (!token) {
+        logger.warn('[TELEGRAM] No bot token found. Telegram features disabled.');
+        return;
+    }
+
     try {
-        const { data } = await axios.get(`https://api.telegram.org/bot${token}/getMe`);
-        botUsername = data.result.username;
+        // 1. Get Bot Info
+        const { data: me } = await axios.get(`https://api.telegram.org/bot${token}/getMe`);
+        botUsername = me.result.username;
         logger.info(`[TELEGRAM] Bot identified: @${botUsername}`);
+
+        // 2. Auto-configure Webhook if URL is provided
+        if (url) {
+            const webhookUrl = `${url}/api/telegram/webhook`;
+            await axios.post(`https://api.telegram.org/bot${token}/setWebhook`, { url: webhookUrl });
+            logger.info(`[TELEGRAM] Webhook auto-configured to: ${webhookUrl}`);
+        }
     } catch (err) {
-        logger.error(err, '[TELEGRAM] Error getting bot info:');
+        logger.error(err, '[TELEGRAM] Initialization failed:');
     }
 };

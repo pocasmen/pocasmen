@@ -25,7 +25,7 @@ import telegramRoutes from './routes/telegram.routes';
 import systemRoutes from './routes/system.routes';
 
 // Services
-import { fetchBotInfo } from './controllers/telegram.controller';
+import { initializeTelegramBot } from './controllers/telegram.controller';
 import { scheduleTicketCheck, runDailyReminders } from './services/cronService';
 
 import { logger } from './utils/logger';
@@ -73,7 +73,7 @@ if (process.env.NODE_ENV !== 'test') {
     try {
       await scheduleTicketCheck(supabase);
       cron.schedule('*/30 9-18 * * *', () => runDailyReminders(supabase), { timezone: "Europe/Lisbon" });
-      await fetchBotInfo();
+      await initializeTelegramBot();
     } catch (err) {
       logger.error(err, 'Error during background initialization:');
     }
