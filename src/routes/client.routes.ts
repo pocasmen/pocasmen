@@ -167,4 +167,6 @@ router.put('/api/clients/:id',
  */
 router.delete('/api/clients/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), clientController.deleteClient);
 
+router.get('/api/clients/:id/users', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]), clientController.getClientUsers);
+
 export default router;

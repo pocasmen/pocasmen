@@ -388,7 +388,7 @@ router.put('/api/inventory/:id',
  */
 router.delete('/api/inventory/:id',
     authenticateToken,
-    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.SUPER_ADMIN]),
     validate(commonValidation.idParamSchema),
     inventoryController.deletePart
 );

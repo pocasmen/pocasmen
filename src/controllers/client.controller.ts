@@ -64,3 +64,17 @@ export const deleteClient = catchAsync(async (req: AuthenticatedRequest, res: Re
 
     res.sendStatus(204);
 });
+
+export const getClientUsers = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, email')
+        .eq('client_id', Number(id))
+        .order('first_name', { ascending: true });
+
+    if (error) throw new ApiError(500, 'Failed to fetch client users', error.message);
+    res.json(data ?? []);
+});
+

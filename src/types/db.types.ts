@@ -666,6 +666,7 @@ export type Database = {
           created_by: string | null
           billing_status: string | null
           time_blocks: Json | null
+          client_signer_name: string | null
         }
         Insert: {
           id?: number
@@ -688,6 +689,7 @@ export type Database = {
           created_by?: string | null
           billing_status?: string | null
           time_blocks?: Json | null
+          client_signer_name?: string | null
         }
         Update: {
           id?: number
@@ -710,6 +712,7 @@ export type Database = {
           created_by?: string | null
           billing_status?: string | null
           time_blocks?: Json | null
+          client_signer_name?: string | null
         }
         Relationships: [
           {

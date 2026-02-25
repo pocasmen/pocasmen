@@ -53,12 +53,12 @@ export const deleteAttachment = catchAsync(async (req: AuthenticatedRequest, res
     const { attachmentId } = req.params;
 
     await withTransaction(req, async (db) => {
-        const { rows } = await db.query('SELECT storage_path FROM ticket_attachments WHERE id = $1', [Number(attachmentId)]);
+        const { rows } = await db.query('SELECT storage_path FROM ticket_attachments WHERE id = $1', [attachmentId]);
         const att = rows[0];
 
         if (att) {
             await supabase.storage.from(ATTACHMENTS_BUCKET).remove([att.storage_path]);
-            const { rowCount } = await db.query('DELETE FROM ticket_attachments WHERE id = $1', [Number(attachmentId)]);
+            const { rowCount } = await db.query('DELETE FROM ticket_attachments WHERE id = $1', [attachmentId]);
             if (rowCount === 0) throw new NotFoundError('Attachment not found.');
         }
     });

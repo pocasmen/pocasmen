@@ -378,8 +378,8 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
         `UPDATE schedules SET 
             title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, 
             "isCompleted" = $6, "additionalInfo" = $7, "serviceType" = $8, "ticketId" = $9,
-            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12
-        WHERE id = $13 RETURNING *`,
+            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12, "priority" = $13
+        WHERE id = $14 RETURNING *`,
         [
             generatedTitle,
             startDate || null,
@@ -393,6 +393,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
             (isCompleted) ? ScheduleStatus.COMPLETED : (originalSchedule.acknowledgementState || ScheduleStatus.PENDING),
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
+            data.priority || originalSchedule.priority || null,
             scheduleId
         ]
     );
@@ -402,11 +403,36 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
     let hasSignificantChanges = false;
     if (originalSchedule.clientId !== clientId) hasSignificantChanges = true;
     if (originalSchedule.equipmentId !== equipmentId) hasSignificantChanges = true;
-    if (getServiceTypeKey(originalSchedule.serviceType) !== getServiceTypeKey(serviceType)) hasSignificantChanges = true;
+    if (JSON.stringify(getServiceTypeKeys(originalSchedule.serviceType)) !== JSON.stringify(getServiceTypeKeys(serviceType))) hasSignificantChanges = true;
+    if (originalSchedule.includes_travel !== (includesTravel !== undefined ? includesTravel : false)) hasSignificantChanges = true;
+    if (originalSchedule.classification !== (classification || 'geral')) hasSignificantChanges = true;
+    if (originalSchedule.priority !== (data.priority || originalSchedule.priority || null)) hasSignificantChanges = true;
 
     const origStart = originalSchedule.startDate ? new Date(originalSchedule.startDate).getTime() : 0;
     const newStart = startDate ? new Date(startDate).getTime() : 0;
     if (Math.abs(origStart - newStart) > 1000) hasSignificantChanges = true;
+
+    const origEnd = originalSchedule.endDate ? new Date(originalSchedule.endDate).getTime() : 0;
+    const newEnd = endDate ? new Date(endDate).getTime() : 0;
+    if (Math.abs(origEnd - newEnd) > 1000) hasSignificantChanges = true;
+
+    // Check technician changes
+    const { rows: existingTechRows } = await db.query<ScheduleTechnician>('SELECT "technicianId" FROM schedule_technicians WHERE "scheduleId" = $1', [scheduleId]);
+    const existingTechIds = existingTechRows.map(r => String(r.technicianId)).sort();
+    const incomingTechIds = (technicianIds || []).map((id: any) => String(id)).sort();
+    if (JSON.stringify(existingTechIds) !== JSON.stringify(incomingTechIds)) hasSignificantChanges = true;
+
+    // Check parts changes
+    const { rows: existingPartRows } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
+    const existingParts = existingPartRows.map(p => ({ id: p.partId, qty: Number(p.quantity), st: p.stock_type || StockType.GENERAL })).sort((a, b) => (a.id || 0) - (b.id || 0));
+    const incomingParts = (parts || []).map((p: any) => ({ id: p.id, qty: Number(p.quantity), st: p.stockType || StockType.GENERAL })).sort((a: any, b: any) => (a.id || 0) - (b.id || 0));
+    if (JSON.stringify(existingParts) !== JSON.stringify(incomingParts)) hasSignificantChanges = true;
+
+    // Check time blocks changes
+    const { rows: existingTBRows } = await db.query<ScheduleTimeBlock>('SELECT start_time, end_time FROM schedule_time_blocks WHERE schedule_id = $1', [scheduleId]);
+    const existingTBs = existingTBRows.map(r => ({ start: new Date(r.start_time).getTime(), end: new Date(r.end_time).getTime() })).sort((a, b) => a.start - b.start);
+    const incomingTBs = (timeBlocks || []).map((tb: any) => ({ start: new Date(tb.start).getTime(), end: new Date(tb.end).getTime() })).sort((a: any, b: any) => a.start - b.start);
+    if (JSON.stringify(existingTBs) !== JSON.stringify(incomingTBs)) hasSignificantChanges = true;
 
     // Google Calendar Cleanup List
     const { rows: existingBlocksRows } = await db.query<ScheduleTimeBlock>('SELECT google_event_id FROM schedule_time_blocks WHERE schedule_id = $1 AND google_event_id IS NOT NULL', [scheduleId]);

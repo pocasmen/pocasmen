@@ -33,9 +33,14 @@ export const setWebhook = catchAsync(async (req: AuthenticatedRequest, res: Resp
 
 export const handleWebhook = catchAsync(async (req: Request, res: Response) => {
     logger.info({ body: req.body }, '[TELEGRAM] Webhook received');
+    // Envia 200 imediatamente para o Telegram não reenviar o update
     res.sendStatus(200);
-    const update = req.body;
-    await processTelegramUpdate(update);
+
+    try {
+        await processTelegramUpdate(req.body);
+    } catch (err) {
+        logger.error(err, '[TELEGRAM] Error processing update:');
+    }
 });
 
 export const syncUpdates = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
@@ -44,18 +49,22 @@ export const syncUpdates = catchAsync(async (req: AuthenticatedRequest, res: Res
 });
 
 async function processTelegramUpdate(update: any) {
-    logger.debug({ update }, '[TELEGRAM] Processing update');
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return;
+
+    // Log the event type for easier debugging
+    if (update.message) logger.debug('[TELEGRAM] Received message');
+    if (update.callback_query) logger.debug('[TELEGRAM] Received callback_query');
 
     if (update.message?.text?.startsWith('/start ')) {
         const profileId = update.message.text.split(' ')[1];
         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         if (uuidRegex.test(profileId)) {
+            logger.info({ profileId, chat_id: update.message.chat.id }, '[TELEGRAM] Associating profile');
             await withTransaction({ user: { id: profileId } }, async (db) => {
                 await db.query('UPDATE profiles SET telegramchatid = $1 WHERE id = $2', [update.message.chat.id.toString(), profileId]);
             });
-            await sendTelegramNotification('✅ Conta associada!', update.message.chat.id.toString());
+            await sendTelegramNotification('✅ Conta associada com sucesso!', update.message.chat.id.toString());
         }
     }
 
@@ -69,54 +78,65 @@ async function processTelegramUpdate(update: any) {
         if (callbackData.startsWith('sch_acc_') || callbackData.startsWith('sch_rej_')) {
             logger.info({ callbackData, chatId, messageId }, '[TELEGRAM] Button clicked');
 
-            await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
-                callback_query_id: callbackQueryId
-            }).catch(err => logger.error(err, '[TELEGRAM] Erro ao responder callback query:'));
-
             const isAccept = callbackData.startsWith('sch_acc_');
-            const scheduleId = Number(isAccept ? callbackData.replace('sch_acc_', '') : callbackData.replace('sch_rej_', ''));
+            const scheduleIdStr = isAccept ? callbackData.replace('sch_acc_', '') : callbackData.replace('sch_rej_', '');
+            const scheduleId = Number(scheduleIdStr);
             const newState = isAccept ? ScheduleStatus.ACCEPTED : ScheduleStatus.REJECTED;
 
-            await withTransaction({}, async (db) => {
-                // Tenta encontrar o perfil do técnico pelo Telegram Chat ID para injetar no log de auditoria
-                const { rows: profileRows } = await db.query('SELECT id FROM profiles WHERE telegramchatid = $1', [chatId]);
-                const technicianId = profileRows[0]?.id;
+            if (isNaN(scheduleId)) {
+                logger.error({ callbackData }, '[TELEGRAM] Invalid schedule ID in callback');
+                return;
+            }
 
-                if (technicianId) {
-                    await setAuditUser(db, technicianId);
-                }
+            // Responder ao Telegram imediatamente para silenciar o spinner
+            await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+                callback_query_id: callbackQueryId,
+                text: isAccept ? 'A aceitar agendamento...' : 'A rejeitar agendamento...'
+            }).catch(err => logger.error(err.message, '[TELEGRAM] Erro ao responder callback query:'));
 
-                const { rowCount } = await db.query(
-                    'UPDATE schedules SET "acknowledgementState" = $1 WHERE id = $2',
-                    [newState, scheduleId]
-                );
+            try {
+                await withTransaction({}, async (db) => {
+                    // Tenta encontrar o perfil do técnico pelo Telegram Chat ID
+                    const { rows: profileRows } = await db.query('SELECT id FROM profiles WHERE telegramchatid = $1', [chatId]);
+                    const technicianId = profileRows[0]?.id;
 
-                if (rowCount === 0) {
-                    logger.error(`[TELEGRAM] Agendamento ${scheduleId} não encontrado para atualização.`);
+                    if (technicianId) {
+                        await setAuditUser(db, technicianId);
+                    }
+
+                    const { rowCount } = await db.query(
+                        'UPDATE schedules SET "acknowledgementState" = $1 WHERE id = $2',
+                        [newState, scheduleId]
+                    );
+
+                    if (rowCount === 0) {
+                        throw new Error(`Agendamento ${scheduleId} não encontrado.`);
+                    }
+
+                    logger.info({ scheduleId, newState, technicianId }, '[TELEGRAM] Schedule status updated');
+                });
+
+                broadcastCalendarUpdate(supabase, scheduleId);
+
+                // Fetch info for the message update
+                const { data: sRaw, error: sError } = await supabase
+                    .from('schedules')
+                    .select('*, clients(name), equipments(brand, model, serialNumber)')
+                    .eq('id', scheduleId)
+                    .single();
+
+                if (sError || !sRaw) {
+                    logger.error(sError, '[TELEGRAM] Error fetching schedule for message update');
                     return;
                 }
 
-                logger.info({ scheduleId, newState, technicianId }, '[TELEGRAM] Schedule status updated in DB via transaction');
-            });
-
-            broadcastCalendarUpdate(supabase, scheduleId);
-
-            // Fetch info for the message update
-            const { data: sRaw } = await supabase
-                .from('schedules')
-                .select('*, clients(name), equipments(brand, model, serialNumber)')
-                .eq('id', scheduleId)
-                .single();
-
-            const s = sRaw as any;
-
-            if (s) {
+                const s = sRaw as any;
                 const { data: scheduleParts } = await supabase
                     .from('schedule_parts')
                     .select('quantity, parts(reference, designation)')
                     .eq('scheduleId', scheduleId);
 
-                const clientName = s.clients?.name || (Array.isArray(s.clients) ? s.clients[0]?.name : 'Cliente');
+                const clientName = s.clients?.name || 'Cliente';
                 const eq = s.equipments;
                 const startDate = s.startDate ? new Date(s.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
                 const endDate = s.endDate ? new Date(s.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
@@ -132,31 +152,39 @@ async function processTelegramUpdate(update: any) {
                 const statusEmoji = isAccept ? '✅' : '❌';
                 const statusText = isAccept ? 'ACEITE' : 'REJEITADO';
 
-                let updatedMsg = `${statusEmoji} *AGENDAMENTO ${statusText}*\n\n`;
-                updatedMsg += `*Tipo de Serviço:* ${serviceType}\n`;
-                updatedMsg += `*Cliente:* ${clientName}\n`;
-                updatedMsg += `*Equipamento:* ${equipmentInfo}\n`;
-                updatedMsg += `*Início:* ${startDate}\n`;
-                updatedMsg += `*Final:* ${endDate}\n`;
+                // Usar HTML para evitar problemas de parsing com Markdown
+                let updatedMsg = `${statusEmoji} <b>AGENDAMENTO ${statusText}</b>\n\n`;
+                updatedMsg += `<b>Tipo de Serviço:</b> ${serviceType}\n`;
+                updatedMsg += `<b>Cliente:</b> ${clientName}\n`;
+                updatedMsg += `<b>Equipamento:</b> ${equipmentInfo}\n`;
+                updatedMsg += `<b>Início:</b> ${startDate}\n`;
+                updatedMsg += `<b>Final:</b> ${endDate}\n`;
 
-                if (s.additionalInfo) updatedMsg += `*Notas Internas:* ${s.additionalInfo}\n`;
+                if (s.additionalInfo) updatedMsg += `<b>Notas Internas:</b> ${s.additionalInfo}\n`;
 
                 if (scheduleParts && (scheduleParts as any[]).length > 0) {
-                    updatedMsg += `\n*Peças Necessárias:*\n`;
+                    updatedMsg += `\n<b>Peças Necessárias:</b>\n`;
                     (scheduleParts as any[]).forEach((sp: any) => {
                         const p = sp.parts;
                         updatedMsg += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
                     });
                 }
 
-                updatedMsg += isAccept ? `\nObrigado por confirmar o agendamento! Bom trabalho!` : `\nO agendamento foi rejeitado. Por favor, entre em contacto com a administração se necessário.`;
+                updatedMsg += isAccept ? `\nObrigado por confirmar o agendamento! Bom trabalho!` : `\nO agendamento foi rejeitado.`;
 
                 await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
                     chat_id: chatId,
                     message_id: messageId,
                     text: updatedMsg,
-                    parse_mode: 'Markdown'
-                }).catch(err => logger.error(err, '[TELEGRAM] Erro ao editar mensagem:'));
+                    parse_mode: 'HTML'
+                }).catch(err => logger.error(err.message, '[TELEGRAM] Erro ao editar mensagem:'));
+
+            } catch (err: any) {
+                logger.error(err, '[TELEGRAM] Error in callback query processing:');
+                await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+                    chat_id: chatId,
+                    text: `❌ Erro ao processar: ${err.message}`
+                }).catch(() => { });
             }
         }
     }

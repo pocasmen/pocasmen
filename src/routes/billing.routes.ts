@@ -8,12 +8,12 @@ const router = Router();
 
 router.use(authenticateToken);
 
-// Apenas office_staff e admin podem aceder ao sistema de faturação
-router.use(authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]));
+// Permitir que técnicos também vejam as tarefas e estatisticas de faturação
+router.get('/api/billing/tasks', authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF, UserRole.TECHNICIAN]), billingController.getBillingTasks);
+router.get('/api/billing/stats', authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF, UserRole.TECHNICIAN]), billingController.getBillingStats);
 
-router.get('/api/billing/tasks', billingController.getBillingTasks);
-router.get('/api/billing/stats', billingController.getBillingStats);
-router.patch('/api/billing/tasks/:id', billingController.updateBillingTask);
+// Apenas office_staff e admin podem alterar etapas de faturação
+router.patch('/api/billing/tasks/:id', authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]), billingController.updateBillingTask);
 
 // Apenas admins podem eliminar tarefas de faturação
 router.delete(

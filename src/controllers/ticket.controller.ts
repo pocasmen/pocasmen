@@ -36,6 +36,7 @@ export const getTickets = catchAsync(async (req: AuthenticatedRequest, res: Resp
 
     const clientIds = [...new Set((tickets || []).map(t => t.client_id).filter(Boolean))] as number[];
     const equipmentIds = [...new Set((tickets || []).map(t => t.equipmentId).filter(Boolean))] as number[];
+    const userIds = [...new Set((tickets || []).map(t => t.created_by_user_id).filter(Boolean))] as string[];
 
     let clientMap = new Map<number, string>();
     if (clientIds.length > 0) {
@@ -59,11 +60,23 @@ export const getTickets = catchAsync(async (req: AuthenticatedRequest, res: Resp
         }
     }
 
+    let userMap = new Map<string, { firstName: string; lastName: string }>();
+    if (userIds.length > 0) {
+        const { data: profiles, error: profilesError } = await supabase
+            .from('profiles')
+            .select('id, first_name, last_name')
+            .in('id', userIds);
+        if (!profilesError && profiles) {
+            userMap = new Map((profiles as DbProfile[]).map(p => [p.id, { firstName: p.first_name || '', lastName: p.last_name || '' }]));
+        }
+    }
+
     const result = (tickets || []).map(t => {
         const clientName = clientMap.get(t.client_id || 0) || 'Cliente Desconhecido';
         const e = equipmentMap.get(t.equipmentId || 0);
         const equipmentInfo = e ? `${e.brand || ''} ${e.model || ''}${e.serialNumber ? ` (${e.serialNumber})` : ''}`.trim() : 'Equipamento Desconhecido';
-        return mapTicketDatabaseToResponse(t, clientName, equipmentInfo);
+        const u = userMap.get(t.created_by_user_id || '');
+        return mapTicketDatabaseToResponse(t, clientName, equipmentInfo, u?.firstName, u?.lastName);
     });
 
     res.json({

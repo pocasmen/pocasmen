@@ -69,7 +69,9 @@ export const mapScheduleDatabaseToResponse = (
 export const mapTicketDatabaseToResponse = (
     ticket: any,
     clientName: string,
-    equipmentInfo: string
+    equipmentInfo: string,
+    userFirstName: string = '',
+    userLastName: string = ''
 ) => {
     return {
         id: ticket.id,
@@ -83,6 +85,8 @@ export const mapTicketDatabaseToResponse = (
         equipmentId: ticket.equipmentId,
         clientName,
         equipmentInfo,
+        userFirstName,
+        userLastName,
         created_by_user_id: ticket.created_by_user_id,
         responsible_technician_id: ticket.responsible_technician_id,
         scheduled_at: ticket.scheduled_at,

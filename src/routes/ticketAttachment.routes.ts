@@ -11,5 +11,6 @@ const router = Router();
 router.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN, UserRole.CLIENT]), ticketAttachmentController.getAttachments);
 router.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN, UserRole.CLIENT]), upload.single('file'), ticketAttachmentController.uploadAttachment);
 router.delete('/api/attachments/:attachmentId', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), ticketAttachmentController.deleteAttachment);
+router.delete('/api/tickets/:id/attachments/:attachmentId', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), ticketAttachmentController.deleteAttachment);
 
 export default router;
