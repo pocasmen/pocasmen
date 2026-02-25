@@ -94,7 +94,8 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
         clientId, equipmentId, scheduleId, technicianIds,
         serviceDate, hours, parts, description, damage,
         serviceType, internalNotes, signature, technician_signature,
-        classification, technicianSignatures, isBillingPending, includesTravel
+        classification, technicianSignatures, isBillingPending, includesTravel,
+        timeBlocks
     } = data;
 
     const newReportNumber = await generateReportNumber(db, serviceDate, scheduleId);
@@ -104,15 +105,16 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
             "clientId", "equipmentId", "scheduleId", "serviceDate", "hours",
             "description", "damage", "serviceType", "internal_notes",
             "report_number", "signature", "technician_signature",
-            "includes_travel", "classification", "created_by"
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
+            "includes_travel", "classification", "created_by", "time_blocks"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id`,
         [
             clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage || '', JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])), internalNotes || '',
             newReportNumber, signature || '', technician_signature || '',
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
-            creatorId
+            creatorId,
+            timeBlocks ? JSON.stringify(timeBlocks) : null
         ]
     );
     const reportId = rows[0].id;
@@ -137,7 +139,8 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
         clientId, equipmentId, scheduleId, technicianIds,
         serviceDate, hours, parts, description, damage,
         serviceType, internalNotes, signature, technician_signature,
-        classification, technicianSignatures, isBillingPending, includesTravel
+        classification, technicianSignatures, isBillingPending, includesTravel,
+        timeBlocks
     } = data;
 
     const { rows: oldParts } = await db.query<ReportPart>('SELECT "partId", quantity, stock_type FROM report_parts WHERE "reportId" = $1', [reportId]);
@@ -147,13 +150,14 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
             "clientId" = $1, "equipmentId" = $2, "scheduleId" = $3, "serviceDate" = $4, "hours" = $5,
             "description" = $6, "damage" = $7, "serviceType" = $8, "internal_notes" = $9,
             "signature" = $10, "technician_signature" = $11, "includes_travel" = $12,
-            "classification" = $13
-        WHERE id = $14`,
+            "classification" = $13, "time_blocks" = $14
+        WHERE id = $15`,
         [
             clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage || '', JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])), internalNotes || '',
             signature, technician_signature, includesTravel,
             classification || 'geral',
+            timeBlocks ? JSON.stringify(timeBlocks) : null,
             reportId
         ]
     );

@@ -665,6 +665,7 @@ export type Database = {
           deleted_by: string | null
           created_by: string | null
           billing_status: string | null
+          time_blocks: Json | null
         }
         Insert: {
           id?: number
@@ -686,6 +687,7 @@ export type Database = {
           deleted_by?: string | null
           created_by?: string | null
           billing_status?: string | null
+          time_blocks?: Json | null
         }
         Update: {
           id?: number
@@ -707,6 +709,7 @@ export type Database = {
           deleted_by?: string | null
           created_by?: string | null
           billing_status?: string | null
+          time_blocks?: Json | null
         }
         Relationships: [
           {

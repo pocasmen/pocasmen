@@ -169,6 +169,7 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
             equipmentModel: eq?.model || '',
             technicians: techMap.get(r.id) || [],
             parts: partsMap.get(r.id) || [],
+            timeBlocks: r.time_blocks,
             internalNotes: r.internal_notes
         };
     });
@@ -210,7 +211,7 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
         supabase.from('clients').select('*').eq('id', Number(report.clientId)).single(),
         supabase.from('equipments').select('*').eq('id', Number(report.equipmentId)).single(),
         supabase.from('report_technicians').select('*').eq('reportId', Number(report.id)),
-        report.scheduleId
+        (!report.time_blocks && report.scheduleId)
             ? supabase.from('schedule_time_blocks').select('*').eq('schedule_id', Number(report.scheduleId))
             : Promise.resolve({ data: [] }),
         supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').eq('reportId', Number(report.id))
@@ -240,6 +241,17 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
         }
     }
 
+    let timeBlocks: any[] = [];
+    if (Array.isArray(report.time_blocks)) {
+        timeBlocks = report.time_blocks;
+    } else if (timeBlocksRes.data && timeBlocksRes.data.length > 0) {
+        timeBlocks = (timeBlocksRes.data as any[]).map((tb: any) => ({
+            id: tb.id,
+            start: tb.start_time,
+            end: tb.end_time
+        }));
+    }
+
     res.json({
         ...report,
         serviceType: scheduleService.getServiceTypeKeys(report.serviceType),
@@ -263,11 +275,7 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
             reserved_quantity_contract: rp.parts.reserved_quantity_contract
         })),
         internalNotes: report.internal_notes,
-        timeBlocks: (timeBlocksRes.data as any[] || []).map((tb: any) => ({
-            id: tb.id,
-            start: tb.start_time,
-            end: tb.end_time
-        }))
+        timeBlocks: timeBlocks
     });
 });
 
@@ -282,9 +290,12 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
     if (error) throw new ApiError(500, 'Failed to fetch report', error.message);
     if (!report) throw new NotFoundError('Report not found');
 
-    const [techRes, partsRes] = await Promise.all([
+    const [techRes, partsRes, timeBlocksRes] = await Promise.all([
         supabase.from('report_technicians').select('*').eq('reportId', report.id),
-        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').eq('reportId', report.id)
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').eq('reportId', report.id),
+        (!report.time_blocks && report.scheduleId)
+            ? supabase.from('schedule_time_blocks').select('*').eq('schedule_id', Number(report.scheduleId))
+            : Promise.resolve({ data: [] })
     ]);
 
     const reportTechnicians = techRes.data as DbReportTechnician[];
@@ -316,11 +327,23 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
         reserved_quantity_contract: rp.parts.reserved_quantity_contract
     }));
 
+    let timeBlocks: any[] = [];
+    if (Array.isArray(report.time_blocks)) {
+        timeBlocks = report.time_blocks;
+    } else if (timeBlocksRes.data && timeBlocksRes.data.length > 0) {
+        timeBlocks = (timeBlocksRes.data as any[]).map((tb: any) => ({
+            id: tb.id,
+            start: tb.start_time,
+            end: tb.end_time
+        }));
+    }
+
     res.json({
         ...report,
         serviceType: scheduleService.getServiceTypeKeys(report.serviceType),
         technicians,
         parts,
+        timeBlocks,
         internalNotes: report.internal_notes
     });
 });
