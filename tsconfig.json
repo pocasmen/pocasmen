@@ -9,9 +9,15 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
+  "include": [
+    "src/**/*"
+  ],
   "exclude": [
     "node_modules",
     "dist",
-    "scripts"
+    "scripts",
+    "check_db.ts",
+    "get_triggers.ts",
+    "get_trigger_def.ts"
   ]
 }

@@ -2,19 +2,21 @@ import { Response } from 'express';
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 import { catchAsync } from '../utils/catchAsync';
-import { ApiError, ForbiddenError, UnauthorizedError } from '../utils/ApiError';
 import { UserRole } from '../constants/enums';
+import { Profile, ProfileUpdate, Profile as DbProfile } from '../types/supabase';
+import { withTransaction } from '../config/db';
+import { ApiError, ForbiddenError, UnauthorizedError, NotFoundError } from '../utils/ApiError';
 
 export const getTechnicians = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { data, error } = await supabase
         .from('profiles')
-        .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time, phone, google_calendar_color_id')
+        .select('*')
         .in('role', [UserRole.TECHNICIAN, UserRole.ADMIN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN])
         .order('first_name', { ascending: true });
 
     if (error) throw new ApiError(500, 'Failed to fetch users', error.message);
 
-    const result = (data || []).map((p: any) => ({
+    const result = (data || []).map((p) => ({
         ...p,
         name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
     }));
@@ -27,7 +29,7 @@ export const getMe = catchAsync(async (req: AuthenticatedRequest, res: Response)
     const userId = req.user.id;
     const { data, error } = await supabase
         .from('profiles')
-        .select('id, email, role, first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time, phone')
+        .select('*')
         .eq('id', userId)
         .single();
 
@@ -35,7 +37,7 @@ export const getMe = catchAsync(async (req: AuthenticatedRequest, res: Response)
 
     res.json({
         ...data,
-        name: `${(data as any).first_name || ''} ${(data as any).last_name || ''}`.trim(),
+        name: `${data.first_name || ''} ${data.last_name || ''}`.trim(),
     });
 });
 
@@ -51,13 +53,35 @@ export const updateTechnician = catchAsync(async (req: AuthenticatedRequest, res
         throw new ForbiddenError('Forbidden');
     }
 
-    const { data, error } = await supabase
-        .from('profiles')
-        .update({ first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time, phone, google_calendar_color_id })
-        .eq('id', userId)
-        .select()
-        .single();
+    const result = await withTransaction(req, async (db) => {
+        const { rows, rowCount } = await db.query<Profile>(
+            `UPDATE profiles SET 
+                first_name = $1, 
+                last_name = $2, 
+                color = $3, 
+                telegramchatid = $4, 
+                signature = $5, 
+                daily_notifications_enabled = $6, 
+                notification_time = $7, 
+                phone = $8,
+                google_calendar_color_id = $9
+             WHERE id = $10 RETURNING *`,
+            [
+                first_name,
+                last_name,
+                color,
+                telegramchatid,
+                signature,
+                daily_notifications_enabled,
+                notification_time,
+                phone,
+                google_calendar_color_id,
+                userId
+            ]
+        );
+        if (rowCount === 0) throw new NotFoundError('Perfil não encontrado.');
+        return rows[0];
+    });
 
-    if (error) throw new ApiError(500, 'Failed to update technician', error.message);
-    res.json(data);
+    res.json(result);
 });

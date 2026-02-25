@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=4,0
 import { Router } from 'express';
 import * as inventoryController from '../controllers/inventory.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
@@ -82,7 +83,7 @@ router.get('/api/inventory', authenticateToken, authorizeRoles([UserRole.ADMIN, 
  */
 router.post('/api/inventory',
     authenticateToken,
-    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
     validate(inventoryValidation.createPartSchema),
     inventoryController.createPart
 );
@@ -125,7 +126,7 @@ router.post('/api/inventory',
  */
 router.post('/api/inventory/composed',
     authenticateToken,
-    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
     validate(inventoryValidation.createComposedPartSchema),
     inventoryController.createComposedPart
 );
@@ -177,7 +178,7 @@ router.post('/api/inventory/composed',
  */
 router.put('/api/inventory/:id/composed',
     authenticateToken,
-    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
     validate(inventoryValidation.updateComposedPartSchema),
     inventoryController.updateComposedPart
 );
@@ -359,7 +360,7 @@ router.get('/api/inventory/:id/components',
  */
 router.put('/api/inventory/:id',
     authenticateToken,
-    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
     validate(inventoryValidation.updatePartSchema),
     inventoryController.updatePart
 );
@@ -414,5 +415,31 @@ router.delete('/api/inventory/:id',
  *         description: Part not found
  */
 router.get('/api/parts/:reference', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]), inventoryController.getPartByReference);
+
+/**
+ * @swagger
+ * /api/inventory/{id}/sync:
+ *   post:
+ *     summary: Recalculate and fix reserved stock counters
+ *     tags: [Inventory]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: The part ID
+ *     responses:
+ *       200:
+ *         description: Part synchronized successfully
+ */
+router.post('/api/inventory/:id/sync',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
+    validate(commonValidation.idParamSchema),
+    inventoryController.syncPartStock
+);
 
 export default router;

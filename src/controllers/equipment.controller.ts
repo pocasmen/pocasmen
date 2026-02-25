@@ -1,9 +1,12 @@
+//Horas de desenvolvimento activo=8,0
 import { Response } from 'express';
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 import { catchAsync } from '../utils/catchAsync';
 import { ApiError, BadRequestError, ForbiddenError, NotFoundError } from '../utils/ApiError';
 import { UserRole } from '../constants/enums';
+import { withTransaction } from '../config/db';
+import { Equipment, EquipmentUpdate, EquipmentInsert, Equipment as DbEquipment, Client as DbClient, Profile as DbProfile } from '../types/supabase';
 
 export const getEquipments = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const search = req.query.search as string;
@@ -13,7 +16,18 @@ export const getEquipments = catchAsync(async (req: AuthenticatedRequest, res: R
         .order('id', { ascending: true });
 
     if (search) {
-        query = query.or(`brand.ilike.%${search}%,model.ilike.%${search}%,serialNumber.ilike.%${search}%`);
+        const { data: clients } = await supabase
+            .from('clients')
+            .select('*')
+            .ilike('name', `%${search}%`);
+
+        const clientIds = (clients || []).map(c => c.id);
+
+        let orQuery = `brand.ilike.%${search}%,model.ilike.%${search}%,serialNumber.ilike.%${search}%`;
+        if (clientIds.length > 0) {
+            orQuery += `,clientId.in.(${clientIds.join(',')})`;
+        }
+        query = query.or(orQuery);
     }
 
     const { data, error } = await query;
@@ -37,6 +51,7 @@ export const getClientEquipments = catchAsync(async (req: AuthenticatedRequest, 
         .select('id, brand, model, serialNumber, clients(name)')
         .eq('clientId', clientIdParam)
         .order('id', { ascending: true });
+
     if (error) throw new ApiError(500, 'Failed to fetch client equipments', error.message);
 
     const result = (data || []).map((e: any) => ({
@@ -52,82 +67,69 @@ export const getClientEquipments = catchAsync(async (req: AuthenticatedRequest, 
 
 export const createEquipment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { brand, model, serialNumber, clientId } = req.body;
-    const { data: existing, error: checkError } = await supabase
-        .from('equipments')
-        .select('id')
-        .eq('serialNumber', serialNumber)
-        .maybeSingle();
 
-    if (checkError) throw new ApiError(500, 'Check unique serial error', checkError.message);
-    if (existing) {
-        throw new BadRequestError('Já existe um equipamento com este número de série.');
-    }
+    const result = await withTransaction(req, async (db) => {
+        const { rows: existing } = await db.query('SELECT 1 FROM equipments WHERE "serialNumber" = $1 LIMIT 1', [serialNumber]);
+        if (existing.length > 0) {
+            throw new BadRequestError('Já existe um equipamento com este número de série.');
+        }
 
-    const { data: client, error: clientError } = await supabase
-        .from('clients')
-        .select('id')
-        .eq('id', clientId)
-        .single();
-    if (clientError || !client) throw new NotFoundError('Client not found.');
+        const { rows: clientRows } = await db.query('SELECT name FROM clients WHERE id = $1', [Number(clientId)]);
+        if (clientRows.length === 0) throw new NotFoundError('Client not found.');
+        const clientName = clientRows[0].name;
 
-    const { data, error } = await supabase
-        .from('equipments')
-        .insert({ brand, model, serialNumber, clientId })
-        .select('id, brand, model, serialNumber, clients(name)');
-    if (error) throw new ApiError(500, 'Failed to create equipment', error.message);
+        const { rows } = await db.query<Equipment>(
+            'INSERT INTO equipments (brand, model, "serialNumber", "clientId") VALUES ($1, $2, $3, $4) RETURNING *',
+            [brand, model, serialNumber, Number(clientId)]
+        );
 
-    const created = data?.[0];
-    res.status(201).json(created ? {
-        id: created.id,
-        brand: created.brand,
-        model: created.model,
-        serialNumber: created.serialNumber,
-        clientName: Array.isArray(created.clients) ? created.clients[0]?.name : (created.clients as any)?.name || 'Cliente Desconhecido',
-    } : null);
+        return {
+            ...rows[0],
+            clientName
+        };
+    });
+
+    res.status(201).json(result);
 });
 
 export const updateEquipment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
     const { brand, model, serialNumber, clientId } = req.body;
 
-    const { data: existing, error: checkError } = await supabase
-        .from('equipments')
-        .select('id')
-        .eq('serialNumber', serialNumber)
-        .neq('id', id)
-        .maybeSingle();
+    const result = await withTransaction(req, async (db) => {
+        const { rows: existing } = await db.query('SELECT 1 FROM equipments WHERE "serialNumber" = $1 AND id != $2 LIMIT 1', [serialNumber, Number(id)]);
+        if (existing.length > 0) {
+            throw new BadRequestError('Já existe um equipamento com este número de série.');
+        }
 
-    if (checkError) throw new ApiError(500, 'Check unique serial error', checkError.message);
-    if (existing) {
-        throw new BadRequestError('Já existe um equipamento com este número de série.');
-    }
+        const { rows: clientRows } = await db.query('SELECT name FROM clients WHERE id = $1', [Number(clientId)]);
+        if (clientRows.length === 0) throw new NotFoundError('Client not found.');
+        const clientName = clientRows[0].name;
 
-    const { data, error } = await supabase
-        .from('equipments')
-        .update({ brand, model, serialNumber, clientId })
-        .eq('id', id)
-        .select('id, brand, model, serialNumber, clients(name)');
+        const { rows, rowCount } = await db.query<Equipment>(
+            'UPDATE equipments SET brand = $1, model = $2, "serialNumber" = $3, "clientId" = $4 WHERE id = $5 RETURNING *',
+            [brand, model, serialNumber, Number(clientId), Number(id)]
+        );
 
-    if (error) throw new ApiError(500, 'Failed to update equipment', error.message);
+        if (rowCount === 0) throw new NotFoundError('Equipamento não encontrado.');
 
-    const updated = data?.[0];
-    res.json(updated ? {
-        id: updated.id,
-        brand: updated.brand,
-        model: updated.model,
-        serialNumber: updated.serialNumber,
-        clientName: Array.isArray(updated.clients) ? updated.clients[0]?.name : (updated.clients as any)?.name || 'Cliente Desconhecido',
-    } : null);
+        return {
+            ...rows[0],
+            clientName
+        };
+    });
+
+    res.json(result);
 });
 
 export const deleteEquipment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
-    const { error } = await supabase
-        .from('equipments')
-        .delete()
-        .eq('id', id);
 
-    if (error) throw new ApiError(500, 'Failed to delete equipment', error.message);
+    await withTransaction(req, async (db) => {
+        const { rowCount } = await db.query('DELETE FROM equipments WHERE id = $1', [Number(id)]);
+        if (rowCount === 0) throw new NotFoundError('Equipamento não encontrado.');
+    });
+
     res.sendStatus(204);
 });
 
@@ -135,7 +137,7 @@ export const getEquipmentHistory = catchAsync(async (req: AuthenticatedRequest, 
     const equipmentId = Number(req.params.id);
     const { data: equipment, error: equipmentError } = await supabase
         .from('equipments')
-        .select('id, brand, model, serialNumber, clientId')
+        .select('*')
         .eq('id', equipmentId)
         .single();
     if (equipmentError || !equipment) throw new NotFoundError('Equipment not found');
@@ -143,27 +145,27 @@ export const getEquipmentHistory = catchAsync(async (req: AuthenticatedRequest, 
     if (!req.user) throw new ApiError(401, 'Unauthorized');
     const userRole = req.user.user_metadata?.role;
     if (userRole === UserRole.CLIENT) {
-        const { data: profile } = await supabase.from('profiles').select('client_id').eq('id', req.user.id).single();
-        if (!profile || profile.client_id !== equipment.clientId) {
+        const { data: profile } = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
+        if (!profile || (profile as DbProfile).client_id !== equipment.clientId) {
             throw new ForbiddenError('Permission denied');
         }
     }
 
     const [clientRes, ticketsRes, rawSchedules, reportsRes] = await Promise.all([
-        supabase.from('clients').select('name').eq('id', equipment.clientId).single(),
-        supabase.from('tickets').select('id, createdAt, faultDescription, status').eq('equipmentId', equipmentId).order('createdAt', { ascending: false }),
+        supabase.from('clients').select('*').eq('id', equipment.clientId || 0).single(),
+        supabase.from('tickets').select('*').eq('equipmentId', equipmentId).order('createdAt', { ascending: false }),
         supabase.from('schedules').select('id, title, startDate, isCompleted, schedule_technicians(technicianId)').eq('equipmentId', equipmentId).order('startDate', { ascending: false }),
-        supabase.from('reports').select('id, serviceDate, hours, description').eq('equipmentId', equipmentId).order('serviceDate', { ascending: false })
+        supabase.from('reports').select('*').eq('equipmentId', equipmentId).is('deleted_at', null).order('serviceDate', { ascending: false })
     ]);
 
     const schedulesData = rawSchedules.data || [];
-    const technicianIds = [...new Set(schedulesData.flatMap((s: any) => s.schedule_technicians?.map((st: any) => st.technicianId) || []))];
+    const technicianIds = [...new Set(schedulesData.flatMap((s: any) => (s.schedule_technicians as any[] || []).map((st: any) => st.technicianId)))];
 
     let technicianMap = new Map<string, string>();
     if (technicianIds.length > 0) {
-        const { data: techProfiles } = await supabase.from('profiles').select('id, first_name, last_name').in('id', technicianIds);
+        const { data: techProfiles } = await supabase.from('profiles').select('*').in('id', technicianIds);
         if (techProfiles) {
-            technicianMap = new Map(techProfiles.map(p => [p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim()]));
+            technicianMap = new Map((techProfiles as DbProfile[]).map(p => [p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim()]));
         }
     }
 
@@ -172,11 +174,11 @@ export const getEquipmentHistory = catchAsync(async (req: AuthenticatedRequest, 
         title: s.title,
         startDate: s.startDate,
         isCompleted: s.isCompleted,
-        technicians: s.schedule_technicians?.map((st: any) => technicianMap.get(st.technicianId) || 'Técnico Desconhecido') || []
+        technicians: (s.schedule_technicians as any[] || []).map((st: any) => technicianMap.get(st.technicianId) || 'Técnico Desconhecido')
     }));
 
     res.json({
-        details: { ...equipment, clientName: clientRes.data?.name || 'Cliente Desconhecido' },
+        details: { ...equipment, clientName: (clientRes.data as DbClient)?.name || 'Cliente Desconhecido' },
         tickets: ticketsRes.data || [],
         schedules,
         reports: reportsRes.data || [],

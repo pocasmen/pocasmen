@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=1,5
 import { Router } from 'express';
 import * as googleController from '../controllers/google.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';

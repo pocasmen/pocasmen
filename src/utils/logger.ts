@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=1,5
 import pino from 'pino';
 
 const isDevelopment = process.env.NODE_ENV === 'development';

@@ -1,34 +1,51 @@
+//Horas de desenvolvimento activo=4,5
 import { Response } from 'express';
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
+import { AppSettingInsert } from '../types/supabase';
 
-export const getTemplates = async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const { data, error } = await supabase.from('settings').select('value').eq('key', 'email_templates').single();
-        if (error && error.code !== 'PGRST116') return res.status(500).json({ error: 'Failed' });
+import { catchAsync } from '../utils/catchAsync';
+import { withTransaction } from '../config/db';
 
-        const defaultTemplates = {
-            approval: {
-                name: 'Aprovação Cliente', from: '', subject: 'Aprovação de Conta - Project1',
-                body: '...' // Shortened for brevity, I'll use the one from index.ts usually
-            }
-        };
+export const getTemplates = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    // Table name is 'settings' according to introspection
+    const { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .eq('key', 'email_templates')
+        .maybeSingle();
 
-        let templates = defaultTemplates;
-        if (data?.value) templates = { ...defaultTemplates, ...JSON.parse(data.value) };
-        res.json(templates);
-    } catch (err: any) {
-        res.status(500).json({ error: 'Internal' });
+    if (error) return res.status(500).json({ error: 'Failed to fetch templates' });
+
+    const defaultTemplates = {
+        approval: {
+            name: 'Aprovação Cliente', from: '', subject: 'Aprovação de Conta - Project1',
+            body: '<h2>Bem-vindo ao Project1!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>'
+        }
+    };
+
+    let templates = defaultTemplates;
+    if (data?.value) {
+        try {
+            const parsedValue = typeof data.value === 'string' ? JSON.parse(data.value) : data.value;
+            templates = { ...defaultTemplates, ...parsedValue };
+        } catch (e) {
+            // Fallback if value is not valid JSON
+        }
     }
-};
+    res.json(templates);
+});
 
-export const updateTemplates = async (req: AuthenticatedRequest, res: Response) => {
-    try {
-        const templates = req.body;
-        const { error } = await supabase.from('settings').upsert({ key: 'email_templates', value: JSON.stringify(templates) }, { onConflict: 'key' });
-        if (error) return res.status(500).json({ error: 'Failed' });
-        res.json({ success: true });
-    } catch (err: any) {
-        res.status(500).json({ error: 'Internal' });
-    }
-};
+export const updateTemplates = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const templates = req.body;
+    const value = typeof templates === 'string' ? templates : JSON.stringify(templates);
+
+    await withTransaction(req, async (db) => {
+        await db.query(
+            'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+            ['email_templates', value]
+        );
+    });
+
+    res.json({ success: true });
+});

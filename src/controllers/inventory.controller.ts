@@ -1,204 +1,99 @@
+//Horas de desenvolvimento activo=8,5
 import { Response } from 'express';
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 import * as inventoryService from '../services/inventoryService';
 import { catchAsync } from '../utils/catchAsync';
 import { ApiError, BadRequestError, NotFoundError } from '../utils/ApiError';
+import { withTransaction } from '../config/db';
 import { StockType } from '../constants/enums';
+import { Part, PartComponent, PartInsert, PartUpdate } from '../types/supabase';
+
+import { pool } from '../config/db';
 
 export const getInventory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const { data: parts, error } = await supabase
-        .from('parts')
-        .select('id, reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract, is_composed')
-        .order('designation', { ascending: true });
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100)); // Default 100 parts
 
-    if (error) throw new ApiError(500, 'Failed to fetch inventory', error.message);
-
-    const { data: allComponents, error: compError } = await supabase
-        .from('part_components')
-        .select('parent_part_id, child_part_id, quantity');
-
-    if (compError) throw new ApiError(500, 'Failed to fetch components', compError.message);
-
-    const partsMap = new Map((parts || []).map(p => [p.id, p]));
-    const componentsByParent = new Map<number, any[]>();
-    (allComponents || []).forEach(c => {
-        if (!componentsByParent.has(c.parent_part_id)) componentsByParent.set(c.parent_part_id, []);
-        componentsByParent.get(c.parent_part_id)!.push(c);
-    });
-
-    const calculateVirtualStock = (partId: number, visited = new Set<number>()): number => {
-        if (visited.has(partId)) return 0;
-        visited.add(partId);
-        const part = partsMap.get(partId);
-        if (!part) return 0;
-        if (!part.is_composed) return (part.stock_quantity || 0) - (part.reserved_quantity || 0);
-        const components = componentsByParent.get(partId);
-        if (!components || components.length === 0) return 0;
-        let minPossible = Infinity;
-        for (const comp of components) {
-            const compStock = calculateVirtualStock(comp.child_part_id, new Set(visited));
-            const possible = Math.floor(compStock / (comp.quantity || 1));
-            if (possible < minPossible) minPossible = possible;
-        }
-        return minPossible === Infinity ? 0 : minPossible;
-    };
-
-    const finalResult = (parts || []).map(p => {
-        if (p.is_composed) {
-            const computeAvailableGeneral = (pid: number, v = new Set<number>()): number => {
-                if (v.has(pid)) return 0;
-                v.add(pid);
-                const pt = partsMap.get(pid);
-                if (!pt) return 0;
-                if (!pt.is_composed) return (pt.stock_quantity || 0) - (pt.reserved_quantity || 0);
-                const comps = componentsByParent.get(pid);
-                if (!comps) return 0;
-                let minP = Infinity;
-                for (const c of comps) {
-                    const possible = Math.floor(computeAvailableGeneral(c.child_part_id, new Set(v)) / (c.quantity || 1));
-                    if (possible < minP) minP = possible;
-                }
-                return minP === Infinity ? 0 : minP;
-            };
-
-            const computeAvailableContract = (pid: number, v = new Set<number>()): number => {
-                if (v.has(pid)) return 0;
-                v.add(pid);
-                const pt = partsMap.get(pid);
-                if (!pt) return 0;
-                if (!pt.is_composed) return (pt.stock_quantity_contract || 0) - (pt.reserved_quantity_contract || 0);
-                const comps = componentsByParent.get(pid);
-                if (!comps) return 0;
-                let minP = Infinity;
-                for (const c of comps) {
-                    const possible = Math.floor(computeAvailableContract(c.child_part_id, new Set(v)) / (c.quantity || 1));
-                    if (possible < minP) minP = possible;
-                }
-                return minP === Infinity ? 0 : minP;
-            };
-
-            return {
-                ...p,
-                stock_quantity: computeAvailableGeneral(p.id) + (p.reserved_quantity || 0),
-                stock_quantity_contract: computeAvailableContract(p.id) + (p.reserved_quantity_contract || 0),
-                virtual_stock: calculateVirtualStock(p.id)
-            };
-        }
-        return p;
-    });
-
+    const finalResult = await inventoryService.getEnrichedInventory(pool, page, limit);
     res.json(finalResult);
 });
 
 export const getPartReservations = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const partId = req.params.id;
-    const { data, error } = await supabase
-        .from('schedule_parts')
-        .select('quantity, stock_type, schedules(id, title, startDate, clients(name))')
-        .eq('partId', partId)
-        .eq('schedules.isCompleted', false);
-
-    if (error) throw new ApiError(500, 'Failed to fetch reservations', error.message);
-
-    const reservations = (data || [])
-        .filter((item: any) => item.schedules)
-        .map((item: any) => ({
-            scheduleId: item.schedules.id,
-            title: item.schedules.title,
-            startDate: item.schedules.startDate,
-            clientName: item.schedules.clients?.name || 'Cliente Desconhecido',
-            quantityReserved: item.quantity,
-            stockType: item.stock_type || StockType.GENERAL
-        }));
-
+    const partId = Number(req.params.id);
+    const reservations = await inventoryService.getPartReservations(supabase, partId);
     res.json(reservations);
 });
 
 export const deletePart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const partId = req.params.id;
 
-    // 1. Check schedules
-    const { count: scheduleCount, error: scheduleError } = await supabase
-        .from('schedule_parts')
-        .select('*', { count: 'exact', head: true })
-        .eq('partId', partId);
+    await withTransaction(req, async (db) => {
+        // Dependencies check
+        const { rows: scheRows } = await db.query('SELECT 1 FROM schedule_parts WHERE "partId" = $1 LIMIT 1', [Number(partId)]);
+        if (scheRows.length > 0) {
+            throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em agendamentos existentes.');
+        }
 
-    if (scheduleError) {
-        console.error('Error checking schedule_parts:', scheduleError);
-        throw new ApiError(500, 'Failed to check schedule dependencies', scheduleError.message);
-    }
-    if (scheduleCount && scheduleCount > 0) {
-        throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em agendamentos existentes.');
-    }
+        const { rows: repRows } = await db.query('SELECT 1 FROM report_parts WHERE "partId" = $1 LIMIT 1', [Number(partId)]);
+        if (repRows.length > 0) {
+            throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em relatórios existentes.');
+        }
 
-    // 2. Check reports (new table)
-    const { count: reportCount, error: reportError } = await supabase
-        .from('report_parts')
-        .select('*', { count: 'exact', head: true })
-        .eq('partId', partId);
+        const { rows: componentRows } = await db.query('SELECT 1 FROM part_components WHERE child_part_id = $1 LIMIT 1', [Number(partId)]);
+        if (componentRows.length > 0) {
+            throw new BadRequestError('Não é possível apagar a peça: Faz parte da composição de outros itens (Kits).');
+        }
 
-    if (reportError && reportError.code !== 'PGRST116' && reportError.code !== '42P01') {
-        console.error('Error checking report_parts:', reportError);
-        throw new ApiError(500, 'Failed to check report dependencies', reportError.message);
-    }
-    if (reportCount && reportCount > 0) {
-        throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em relatórios existentes.');
-    }
+        // Deletions
+        await db.query('DELETE FROM part_components WHERE parent_part_id = $1', [Number(partId)]);
+        const { rowCount } = await db.query('DELETE FROM parts WHERE id = $1', [Number(partId)]);
 
-    // 3. Check kit dependencies (is this part a component of another kit?)
-    const { count: parentCount, error: parentError } = await supabase
-        .from('part_components')
-        .select('*', { count: 'exact', head: true })
-        .eq('child_part_id', partId);
+        if (rowCount === 0) throw new NotFoundError('Peça não encontrada.');
+    });
 
-    if (parentError) {
-        console.error('Error checking part_components:', parentError);
-        throw new ApiError(500, 'Failed to check kit dependencies', parentError.message);
-    }
-    if (parentCount && parentCount > 0) {
-        throw new BadRequestError('Não é possível apagar a peça: Faz parte da composição de outros itens (Kits).');
-    }
-
-    // Clear its own composition if it's a kit
-    await supabase.from('part_components').delete().eq('parent_part_id', partId);
-
-    // Delete the part
-    const { error } = await supabase.from('parts').delete().eq('id', partId);
-
-    if (error) throw new ApiError(500, 'Failed to delete part', error.message);
     res.sendStatus(204);
 });
 
 export const getPartComponents = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const parentId = req.params.id;
-    const { data, error } = await supabase
-        .from('part_components')
-        .select(`
-            partId:child_part_id,
-            quantity,
-            parts:parts!child_part_id(reference, designation)
-        `)
-        .eq('parent_part_id', parentId);
+    const partId = req.params.id;
+    if (!partId || isNaN(Number(partId))) throw new BadRequestError('ID da peça inválido');
 
-    if (error) throw new ApiError(500, 'Failed to fetch part components', error.message);
-
-    const components = (data || []).map((c: any) => ({
-        partId: c.partId,
-        quantity: c.quantity,
-        reference: c.parts.reference,
-        designation: c.parts.designation
-    }));
-
-    res.json(components);
+    const result = await withTransaction(req, async (db) => {
+        const query = `
+          WITH RECURSIVE component_hierarchy AS (
+            SELECT parent_part_id, child_part_id, quantity, 1 as level
+            FROM part_components 
+            WHERE parent_part_id = $1
+            UNION ALL
+            SELECT pc.parent_part_id, pc.child_part_id, pc.quantity, ch.level + 1
+            FROM part_components pc
+            INNER JOIN component_hierarchy ch ON pc.parent_part_id = ch.child_part_id
+            WHERE ch.level < 10
+          )
+          SELECT ch.child_part_id as "partId", ch.quantity, ch.level, ch.parent_part_id, p.reference, p.designation
+          FROM component_hierarchy ch
+          LEFT JOIN parts p ON ch.child_part_id = p.id
+          ORDER BY level, child_part_id;
+        `;
+        const { rows } = await db.query<{
+            partId: number;
+            quantity: number;
+            level: number;
+            parent_part_id: number;
+            reference: string;
+            designation: string;
+        }>(query, [partId]);
+        return rows;
+    });
+    res.json(result);
 });
 
 export const getPartByReference = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const reference = req.params.reference;
-
     const { data, error } = await supabase
         .from('parts')
-        .select('id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract')
+        .select('*')
         .eq('reference', reference)
         .single();
 
@@ -209,124 +104,94 @@ export const getPartByReference = catchAsync(async (req: AuthenticatedRequest, r
     res.json(data);
 });
 
+
+
 export const updateComposedPart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const parentId = req.params.id;
-    const { reference, designation, components } = req.body;
-    const { data: parentPart, error: parentError } = await supabase.from('parts').update({ reference, designation }).eq('id', parentId).select().single();
-    if (parentError) throw new ApiError(500, 'Failed to update part', parentError.message);
-    await supabase.from('part_components').delete().eq('parent_part_id', parentId);
-    const componentsData = components.map((comp: any) => ({ parent_part_id: parentId, child_part_id: comp.partId, quantity: comp.quantity }));
-    if (componentsData.length > 0) await supabase.from('part_components').insert(componentsData);
-    res.json({ ...parentPart, components: componentsData });
+    const parentId = Number(req.params.id);
+
+    const result = await withTransaction(req, async (db) => {
+        return await inventoryService.updateComposedPart(db, parentId, req.body);
+    });
+    res.json(result);
 });
 
 export const updateStock = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const partId = req.params.id;
-    const { quantity, fromOrder, targetStock } = req.body;
-    const { data: currentPart, error: fetchError } = await supabase.from('parts').select('stock_quantity, ordered_quantity, stock_quantity_contract, ordered_quantity_contract').eq('id', partId).single();
-    if (fetchError || !currentPart) throw new NotFoundError('Part not found');
+    const partId = Number(req.params.id);
 
-    const result = inventoryService.processStockUpdate({
-        stock: currentPart.stock_quantity || 0,
-        ordered: currentPart.ordered_quantity || 0,
-        stockContract: currentPart.stock_quantity_contract || 0,
-        orderedContract: currentPart.ordered_quantity_contract || 0
-    }, quantity, !!fromOrder, targetStock || StockType.GENERAL);
-
-    const { data, error } = await supabase.from('parts').update({
-        stock_quantity: result.newStock,
-        ordered_quantity: result.newOrdered,
-        stock_quantity_contract: result.newStockContract,
-        ordered_quantity_contract: result.newOrderedContract
-    }).eq('id', partId).select().single();
-
-    if (error) throw new ApiError(500, 'Failed to update stock', error.message);
-    res.json(data);
+    const result = await withTransaction(req, async (db) => {
+        return await inventoryService.updatePartStock(db, partId, req.body);
+    });
+    res.json(result);
 });
 
 export const updateOrder = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const partId = req.params.id;
+    const partId = Number(req.params.id);
     const { quantity, targetStock } = req.body;
-    const { data: currentPart, error: fetchError } = await supabase.from('parts').select('ordered_quantity, ordered_quantity_contract').eq('id', partId).single();
-    if (fetchError || !currentPart) throw new NotFoundError('Part not found');
 
-    const newOrdered = inventoryService.calculateNewQuantity(
-        (targetStock === StockType.CONTRACT ? currentPart.ordered_quantity_contract : currentPart.ordered_quantity) || 0,
-        quantity
-    );
+    const result = await withTransaction(req, async (db) => {
+        const { rows: partRows } = await db.query<Part>('SELECT ordered_quantity, ordered_quantity_contract FROM parts WHERE id = $1 FOR UPDATE', [partId]);
+        if (partRows.length === 0) throw new NotFoundError('Part not found');
+        const currentPart = partRows[0];
 
-    const updateData: any = {};
-    if (targetStock === StockType.CONTRACT) updateData.ordered_quantity_contract = newOrdered;
-    else updateData.ordered_quantity = newOrdered;
+        const newOrdered = Math.max(0, ((targetStock === StockType.CONTRACT ? currentPart.ordered_quantity_contract : currentPart.ordered_quantity) || 0) + Number(quantity));
 
-    const { data, error } = await supabase.from('parts').update(updateData).eq('id', partId).select().single();
-    if (error) throw new ApiError(500, 'Failed to update order', error.message);
-    res.json(data);
+        const sql = targetStock === StockType.CONTRACT
+            ? 'UPDATE parts SET ordered_quantity_contract = $1 WHERE id = $2'
+            : 'UPDATE parts SET ordered_quantity = $1 WHERE id = $2';
+
+        await db.query(sql, [newOrdered, partId]);
+
+        const { rows: updatedRows } = await db.query('SELECT * FROM parts WHERE id = $1', [partId]);
+        return inventoryService.enrichPart(updatedRows[0]);
+    });
+    res.json(result);
 });
 
 export const createPart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { reference, designation, stock_quantity, is_composed } = req.body;
 
-    // Validate if reference already exists
-    const { data: existing } = await supabase.from('parts').select('id').eq('reference', reference).maybeSingle();
-    if (existing) throw new BadRequestError('Já existe uma peça com esta referência.');
+    const result = await withTransaction(req, async (db) => {
+        const { rows: existing } = await db.query('SELECT 1 FROM parts WHERE reference = $1', [reference]);
+        if (existing.length > 0) throw new BadRequestError('Já existe uma peça com esta referência.');
 
-    const { data, error } = await supabase.from('parts').insert({
-        reference,
-        designation,
-        stock_quantity: stock_quantity || 0,
-        is_composed: !!is_composed
-    }).select().single();
+        const { rows } = await db.query<Part>(
+            'INSERT INTO parts (reference, designation, stock_quantity, is_composed) VALUES ($1, $2, $3, $4) RETURNING *',
+            [reference, designation, stock_quantity || 0, !!is_composed]
+        );
+        return rows[0];
+    });
 
-    if (error) throw new ApiError(500, 'Failed to create part', error.message);
-    res.status(201).json(data);
+    res.status(201).json(result);
 });
 
 export const createComposedPart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const { reference, designation, components } = req.body;
-
-    // Validate if reference already exists
-    const { data: existing } = await supabase.from('parts').select('id').eq('reference', reference).maybeSingle();
-    if (existing) throw new BadRequestError('Já existe uma peça com esta referência.');
-
-    const { data: parentPart, error: parentError } = await supabase
-        .from('parts')
-        .insert({
-            reference,
-            designation,
-            is_composed: true,
-            stock_quantity: 0
-        })
-        .select()
-        .single();
-
-    if (parentError) throw new ApiError(500, 'Failed to create parent part', parentError.message);
-
-    const componentsData = components.map((comp: any) => ({
-        parent_part_id: parentPart.id,
-        child_part_id: comp.partId,
-        quantity: comp.quantity
-    }));
-
-    if (componentsData.length > 0) {
-        const { error: compError } = await supabase.from('part_components').insert(componentsData);
-        if (compError) throw new ApiError(500, 'Failed to create part components', compError.message);
-    }
-
-    res.status(201).json({ ...parentPart, components: componentsData });
+    const result = await withTransaction(req, async (db) => {
+        return await inventoryService.createComposedPart(db, req.body);
+    });
+    res.status(201).json(result);
 });
 
 export const updatePart = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
     const { reference, designation } = req.body;
 
-    const { data, error } = await supabase
-        .from('parts')
-        .update({ reference, designation })
-        .eq('id', id)
-        .select()
-        .single();
+    const result = await withTransaction(req, async (db) => {
+        const { rows, rowCount } = await db.query<Part>(
+            'UPDATE parts SET reference = $1, designation = $2 WHERE id = $3 RETURNING *',
+            [reference, designation, Number(id)]
+        );
+        if (rowCount === 0) throw new NotFoundError('Peça não encontrada.');
+        return inventoryService.enrichPart(rows[0]);
+    });
 
-    if (error) throw new ApiError(500, 'Failed to update part', error.message);
-    res.json(data);
+    res.json(result);
+});
+
+export const syncPartStock = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const partId = Number(req.params.id);
+
+    const result = await withTransaction(req, async (db) => {
+        return await inventoryService.syncPartStock(db, partId);
+    });
+    res.json(result);
 });

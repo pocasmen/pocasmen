@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=3,0
 import { Response } from 'express';
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';

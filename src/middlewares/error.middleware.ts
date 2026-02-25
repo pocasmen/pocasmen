@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=2,5
 import { Request, Response, NextFunction } from 'express';
 import { ApiError } from '../utils/ApiError';
 import { logger } from '../utils/logger';

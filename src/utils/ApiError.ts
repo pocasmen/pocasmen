@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=1,5
 export class ApiError extends Error {
     public statusCode: number;
     public details?: any;

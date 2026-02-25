@@ -1,8 +1,13 @@
+//Horas de desenvolvimento activo=7,5
+import { SupabaseClient } from '@supabase/supabase-js';
 import nodemailer from 'nodemailer';
+import { z } from 'zod';
 import { logger } from '../utils/logger';
+import { BadRequestError, InternalServerError } from '../utils/ApiError';
+
+const emailSchema = z.string().email('Endereço de email inválido');
 
 // Create a transporter using environment variables
-// These variables should be defined in your .env file
 let transporter: nodemailer.Transporter | null = null;
 
 const getTransporter = () => {
@@ -19,12 +24,18 @@ const getTransporter = () => {
                 pass: process.env.EMAIL_PASS,
             },
             tls: {
-                // Do not fail on invalid certs
-                rejectUnauthorized: false
+                // Só desabilitar verificação em desenvolvimento/ambiente local sem certs
+                // Em produção, rejectUnauthorized deve ser true
+                rejectUnauthorized: process.env.NODE_ENV === 'production'
             },
-            connectionTimeout: 10000, // 10 seconds
-            greetingTimeout: 10000,
-            socketTimeout: 10000,
+            // Pooling de conexões para melhor performance
+            pool: true,
+            maxConnections: 5,
+            maxMessages: 100,
+            // Aumentar timeouts para evitar falhas em redes lentas
+            connectionTimeout: 30000,
+            greetingTimeout: 30000,
+            socketTimeout: 30000,
         });
     }
     return transporter;
@@ -38,23 +49,41 @@ const getTransporter = () => {
  * @param from Optional custom from address
  */
 export const sendEmail = async (to: string, subject: string, html: string, from?: string) => {
-    // Check if critical SMTP config is present to avoid crashing or useless errors
+    // 1. Validar email
+    try {
+        emailSchema.parse(to);
+    } catch {
+        logger.error({ to }, 'Invalid email address provided to sendEmail');
+        throw new BadRequestError('Endereço de email inválido');
+    }
+
+    // 2. Sanitizar subject (prevenir CRLF injection)
+    const sanitizedSubject = subject.replace(/[\r\n]/g, '');
+
+    // 3. Verificar configuração
     if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER) {
         logger.warn("SMTP configuration (EMAIL_HOST or EMAIL_USER) is missing. Email skipped.");
-        return;
+        return null;
     }
 
     try {
         const info = await getTransporter().sendMail({
-            from: from || process.env.EMAIL_FROM || `"Project1 Support" <${process.env.EMAIL_USER}>`,
+            from: from || process.env.EMAIL_FROM || `"${process.env.APP_NAME || 'Project1'}" <${process.env.EMAIL_USER}>`,
             to,
-            subject,
+            subject: sanitizedSubject,
             html,
         });
-        logger.info({ to, messageId: info.messageId }, `[EmailService] Email sent`);
+
+        logger.info({
+            to,
+            subject: sanitizedSubject,
+            messageId: info.messageId
+        }, `[EmailService] Email sent successfully`);
+
         return info;
     } catch (error) {
         logger.error(error, "[EmailService] Error sending email:");
+        throw new InternalServerError('Erro ao enviar email');
     }
 };
 
@@ -62,5 +91,8 @@ export const sendEmail = async (to: string, subject: string, html: string, from?
  * Reset the transporter (useful for testing)
  */
 export const resetTransporter = () => {
+    if (transporter) {
+        transporter.close();
+    }
     transporter = null;
 };

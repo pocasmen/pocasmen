@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=1,0
 import { Router } from 'express';
 import * as settingController from '../controllers/setting.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';

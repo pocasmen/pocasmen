@@ -1,8 +1,10 @@
+//Horas de desenvolvimento activo=1,5
 import { z } from 'zod';
 
 export const createMyTicketSchema = z.object({
     body: z.object({
-        equipmentId: z.number().int().positive(),
+        equipmentId: z.number().int().positive().optional(),
+        clientId: z.number().int().positive().optional(),
         title: z.string().min(1, 'Título é obrigatório'),
         faultDescription: z.string().min(1, 'Descrição é obrigatória'),
     })

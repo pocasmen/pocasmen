@@ -1,6 +1,6 @@
-import { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification } from '../constants/enums';
+import { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification, SchedulePriority, BillingStatus } from '../constants/enums';
 
-export { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification };
+export { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification, SchedulePriority, BillingStatus };
 
 export interface Profile {
     id: string;
@@ -48,6 +48,7 @@ export interface Part {
     reserved_quantity_contract: number;
     ordered_quantity_contract: number;
     is_composed: boolean;
+    virtual_stock?: number;
 }
 
 export interface PartComponent {
@@ -59,17 +60,18 @@ export interface PartComponent {
 export interface Schedule {
     id: number;
     title: string;
-    startDate: string;
-    endDate: string;
+    startDate?: string;
+    endDate?: string;
     status: ScheduleStatus;
     isCompleted: boolean;
     hasReport: boolean;
-    clientId: number;
+    clientId: number | null;
     equipmentId?: number | null;
     serviceType: string;
     additionalInfo?: string;
     includes_travel: boolean;
     classification: ServiceClassification;
+    priority?: SchedulePriority;
 }
 
 export interface ScheduleTechnician {
@@ -132,6 +134,9 @@ export interface Report {
     technician_signature?: string;
     includes_travel: boolean;
     classification: ServiceClassification;
+    created_by?: string;
+    deleted_at?: string;
+    deleted_by?: string;
 }
 
 export interface EnrichedPart {
@@ -142,6 +147,10 @@ export interface EnrichedPart {
     isDesignationLocked?: boolean;
     stockType: StockType;
     isApplied?: boolean;
+    stock_quantity?: number;
+    reserved_quantity?: number;
+    stock_quantity_contract?: number;
+    reserved_quantity_contract?: number;
 }
 
 export interface TimeBlock {
@@ -158,10 +167,23 @@ export interface EnrichedSchedule extends Omit<Schedule, 'additionalInfo'> {
     parts: EnrichedPart[];
     timeBlocks: TimeBlock[];
     ticketId?: number | null;
+    acknowledgementState?: ScheduleStatus;
 }
 
 export interface ReportTechnician {
     reportId: number;
     technicianId: string;
     signature?: string;
+}
+
+export interface BillingTask {
+    id: number;
+    report_id: number;
+    status: BillingStatus;
+    assigned_role: UserRole;
+    notes?: string;
+    billing_notes?: string;
+    billed_at?: string;
+    created_at: string;
+    updated_at: string;
 }

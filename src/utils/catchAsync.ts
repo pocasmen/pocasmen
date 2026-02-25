@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=1,0
 import { Request, Response, NextFunction } from 'express';
 
 export const catchAsync = (fn: Function) => {

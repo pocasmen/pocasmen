@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=4,0
 import axios from 'axios';
 import { logger } from '../utils/logger';
 

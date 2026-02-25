@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=4,5
 import { google } from 'googleapis';
 import path from 'path';
 import { logger } from './logger';

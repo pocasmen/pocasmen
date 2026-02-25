@@ -1,9 +1,11 @@
+//Horas de desenvolvimento activo=2,0
 import { Router } from 'express';
 import * as clientController from '../controllers/client.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
 import { validate } from '../middlewares/validate.middleware';
 import * as clientValidation from '../validations/client.validation';
 import { UserRole } from '../constants/enums';
+import { createResourceLimiter } from '../middlewares/rateLimiter.middleware';
 
 const router = Router();
 
@@ -89,6 +91,7 @@ router.get('/api/clients', authenticateToken, authorizeRoles([UserRole.ADMIN, Us
 router.post('/api/clients',
     authenticateToken,
     authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
+    createResourceLimiter,
     validate(clientValidation.createClientSchema),
     clientController.createClient
 );

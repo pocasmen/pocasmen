@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { logger } from '../utils/logger';
+import { Database } from '../types/db.types';
 
 dotenv.config();
 
@@ -12,7 +13,7 @@ if (!supabaseUrl || !supabaseServiceKey) {
     process.exit(1);
 }
 
-export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseServiceKey);
+export const supabase = createClient<Database, 'public'>(supabaseUrl, supabaseServiceKey);
 export const ATTACHMENTS_BUCKET = process.env.SUPABASE_TICKET_ATTACHMENTS_BUCKET || 'ticket-attachments';
 
 logger.info('Supabase client initialized in config.');

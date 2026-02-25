@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=2,5
 import { Router } from 'express';
 import * as clientPortalController from '../controllers/clientPortal.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
@@ -7,6 +8,8 @@ import { UserRole } from '../constants/enums';
 
 const router = Router();
 
+router.get('/api/my-companies', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyCompanies);
+router.get('/api/my-stats', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyStats);
 router.get('/api/my-equipments', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyEquipments);
 router.get('/api/my-tickets', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyTickets);
 router.get('/api/my-schedules', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMySchedules);

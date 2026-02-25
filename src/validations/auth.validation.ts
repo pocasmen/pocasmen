@@ -1,10 +1,11 @@
+//Horas de desenvolvimento activo=1,5
 import { z } from 'zod';
 import { UserRole } from '../constants/enums';
 
 export const loginSchema = z.object({
     body: z.object({
         email: z.string().email('Email inválido'),
-        password: z.string().min(1, 'Palavra-passe é obrigatória')
+        password: z.string().min(8, 'Senha deve ter pelo menos 8 caracteres')
     })
 });
 
@@ -30,6 +31,6 @@ export const inviteUserSchema = z.object({
 export const approveUserSchema = z.object({
     body: z.object({
         userId: z.string().uuid('ID de utilizador inválido'),
-        client_id: z.number().int().positive('ID de cliente inválido')
+        client_ids: z.array(z.number().int().positive('ID de cliente inválido')).min(1, 'Selecione pelo menos uma empresa')
     })
 });

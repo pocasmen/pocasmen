@@ -1,10 +1,14 @@
+//Horas de desenvolvimento activo=3,5
 import { Router } from 'express';
 import * as reportController from '../controllers/report.controller';
+import * as reportAttachmentController from '../controllers/reportAttachment.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
 import { validate } from '../middlewares/validate.middleware';
 import * as reportValidation from '../validations/report.validation';
 import { UserRole } from '../constants/enums';
+import multer from 'multer';
 
+const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
 
 /**
@@ -309,6 +313,26 @@ router.delete('/api/reports/:id',
     authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
     validate(reportValidation.reportIdSchema),
     reportController.deleteReport
+);
+
+// Report Attachments
+router.get('/api/reports/:id/attachments',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN, UserRole.CLIENT]),
+    reportAttachmentController.getReportAttachments
+);
+
+router.post('/api/reports/:id/attachments',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.SUPER_ADMIN]),
+    upload.single('file'),
+    reportAttachmentController.uploadReportAttachment
+);
+
+router.delete('/api/reports/attachments/:attachmentId',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    reportAttachmentController.deleteReportAttachment
 );
 
 export default router;

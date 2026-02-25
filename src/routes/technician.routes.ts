@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=2,0
 import { Router } from 'express';
 import * as technicianController from '../controllers/technician.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
@@ -111,6 +112,6 @@ router.get('/api/users/me', authenticateToken, technicianController.getMe);
  *       404:
  *         description: Technician not found
  */
-router.put('/api/technicians/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), validate(technicianValidation.updateTechnicianSchema), technicianController.updateTechnician);
+router.put('/api/technicians/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.CLIENT]), validate(technicianValidation.updateTechnicianSchema), technicianController.updateTechnician);
 
 export default router;

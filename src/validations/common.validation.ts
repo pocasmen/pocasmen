@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=1,0
 import { z } from 'zod';
 
 export const idParamSchema = z.object({

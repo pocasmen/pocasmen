@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=1,5
 import { z } from 'zod';
 import { TicketStatus } from '../constants/enums';
 

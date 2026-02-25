@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=6,0
 import { Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
@@ -6,6 +7,7 @@ import { catchAsync } from '../utils/catchAsync';
 import { ApiError, ForbiddenError, NotFoundError, UnauthorizedError } from '../utils/ApiError';
 import { logger } from '../utils/logger';
 import { UserRole } from '../constants/enums';
+import { ProfileUpdate, Client as DbClient } from '../types/supabase';
 
 export const login = catchAsync(async (req: Request, res: Response) => {
     const { email, password } = req.body;
@@ -47,7 +49,11 @@ export const inviteUser = catchAsync(async (req: AuthenticatedRequest, res: Resp
 
     const inviteData: any = { role: role, must_set_password: true, ...meta };
     if (client_id) {
-        const { data: client, error: clientError } = await supabase.from('clients').select('id').eq('id', client_id).single();
+        const { data: client, error: clientError } = await supabase
+            .from('clients')
+            .select('*')
+            .eq('id', Number(client_id))
+            .single();
         if (clientError || !client) throw new NotFoundError('Client not found.');
         inviteData.client_id = client_id;
     }
@@ -65,35 +71,41 @@ export const getPendingUsers = catchAsync(async (req: AuthenticatedRequest, res:
     res.json(pendingUsers);
 });
 
+import { withTransaction } from '../config/db';
+
 export const approveUser = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const { userId, client_id } = req.body;
+    const { userId, client_ids } = req.body;
 
-    // Update profile: set client_id AND role to 'client'
-    const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-            client_id: client_id,
-            role: UserRole.CLIENT
-        })
-        .eq('id', userId);
+    const updatedUser = await withTransaction(req, async (db) => {
+        const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
 
-    if (profileError) {
-        throw new ApiError(500, `Failed to associate user with client: ${profileError.message}`);
-    }
+        const { rowCount } = await db.query(
+            'UPDATE profiles SET client_id = $1, role = $2 WHERE id = $3',
+            [primaryClientId, UserRole.CLIENT, userId]
+        );
+        if (rowCount === 0) throw new NotFoundError('Perfil não encontrado.');
 
-    // Update auth.users metadata - clear must_set_password and set role to client
-    const { data: updatedUser, error: userError } = await supabase.auth.admin.updateUserById(
-        userId,
-        { user_metadata: { role: UserRole.CLIENT, must_set_password: false } }
-    );
+        if (Array.isArray(client_ids)) {
+            for (const id of client_ids) {
+                await db.query(`
+                    INSERT INTO client_users (user_id, client_id) 
+                    VALUES ($1, $2)
+                    ON CONFLICT (user_id, client_id) DO NOTHING
+                `, [userId, Number(id)]);
+            }
+        }
 
-    if (userError) {
-        throw new ApiError(500, `Failed to update user role: ${userError.message}`);
-    }
+        const { data: user, error: userError } = await supabase.auth.admin.updateUserById(
+            userId,
+            { user_metadata: { role: UserRole.CLIENT, must_set_password: false } }
+        );
+
+        if (userError) throw new ApiError(500, `Failed to update user role: ${userError.message}`);
+        return user;
+    });
 
     res.status(200).json({ message: 'User approved and associated successfully.', user: updatedUser });
 
-    // Send confirmation email
     if (updatedUser.user && updatedUser.user.email) {
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
         const loginUrl = `${frontendUrl}/login`;
@@ -117,11 +129,10 @@ export const approveUser = catchAsync(async (req: AuthenticatedRequest, res: Res
       `;
 
         let emailFrom = undefined;
-        // Try to fetch custom template
         try {
-            const { data: settingsData } = await supabase.from('settings').select('value').eq('key', 'email_templates').single();
-            if (settingsData && settingsData.value) {
-                const templates = JSON.parse(settingsData.value);
+            const { data: settingsData } = await supabase.from('settings').select('*').eq('id', 1).single(); // Assuming settings table for email templates
+            if (settingsData && (settingsData as any).email_templates) {
+                const templates = (settingsData as any).email_templates;
                 if (templates.approval) {
                     emailSubject = templates.approval.subject || emailSubject;
                     emailFrom = templates.approval.from || undefined;

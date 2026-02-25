@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=3,5
 import { SupabaseClient } from '@supabase/supabase-js';
 import { logger } from '../utils/logger';
 

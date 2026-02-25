@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=2,0
 import { Request, Response, NextFunction } from 'express';
 import { z, ZodError } from 'zod';
 import { BadRequestError } from '../utils/ApiError';

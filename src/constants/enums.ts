@@ -16,6 +16,7 @@ export enum TicketStatus {
 }
 
 export enum ScheduleStatus {
+    PENDING_SCHEDULING = 'pending_scheduling',
     PENDING = 'pending',
     ACCEPTED = 'accepted',
     REJECTED = 'rejected',
@@ -45,3 +46,15 @@ export enum ServiceClassification {
     OFERTA = 'oferta'
 }
 
+export enum SchedulePriority {
+    HIGH = 'high',
+    MEDIUM = 'medium',
+    LOW = 'low'
+}
+
+export enum BillingStatus {
+    PENDING_COMPLETION = 'pending_completion',
+    REPORT_ISSUED = 'report_issued',
+    READY_FOR_BILLING = 'ready_for_billing',
+    BILLED = 'billed'
+}

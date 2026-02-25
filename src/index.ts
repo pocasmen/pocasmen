@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=4,5
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
@@ -23,6 +24,8 @@ import dashboardRoutes from './routes/dashboard.routes';
 import emailTemplateRoutes from './routes/emailTemplate.routes';
 import telegramRoutes from './routes/telegram.routes';
 import systemRoutes from './routes/system.routes';
+import billingRoutes from './routes/billing.routes';
+import taskRoutes from './routes/task.routes';
 
 // Services
 import { initializeTelegramBot } from './controllers/telegram.controller';
@@ -30,14 +33,25 @@ import { scheduleTicketCheck, runDailyReminders } from './services/cronService';
 
 import { logger } from './utils/logger';
 import pinoHttp from 'pino-http';
+import { apiLimiter } from './middlewares/rateLimiter.middleware';
 
 const app = express();
 const port = process.env.PORT || 5001;
 
 app.use(pinoHttp({ logger }));
-app.use(cors());
-app.use(bodyParser.json({ limit: '50mb' }));
-app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
+app.use(apiLimiter);
+
+// CORS restrito ao frontend (segurança)
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
+// Body parser com limite reduzido (prevenir DoS)
+app.use(bodyParser.json({ limit: '1mb' }));
+app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
@@ -59,6 +73,8 @@ app.use('/', dashboardRoutes);
 app.use('/', emailTemplateRoutes);
 app.use('/', telegramRoutes);
 app.use('/', systemRoutes);
+app.use('/', billingRoutes);
+app.use('/api/tasks', taskRoutes);
 
 // Global Error Handler
 import { errorHandler } from './middlewares/error.middleware';

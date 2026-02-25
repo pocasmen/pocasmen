@@ -1,9 +1,11 @@
+//Horas de desenvolvimento activo=2,5
 import { Router } from 'express';
 import * as authController from '../controllers/auth.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
 import { validate } from '../middlewares/validate.middleware';
 import * as authValidation from '../validations/auth.validation';
 import { UserRole } from '../constants/enums';
+import { authLimiter } from '../middlewares/rateLimiter.middleware';
 
 const router = Router();
 
@@ -41,7 +43,7 @@ const router = Router();
  *       401:
  *         description: Invalid credentials
  */
-router.post('/auth/login', validate(authValidation.loginSchema), authController.login);
+router.post('/auth/login', authLimiter, validate(authValidation.loginSchema), authController.login);
 
 /**
  * @swagger
@@ -74,7 +76,7 @@ router.post('/auth/login', validate(authValidation.loginSchema), authController.
  *       201:
  *         description: Registration request submitted
  */
-router.post('/auth/self-register', validate(authValidation.selfRegisterSchema), authController.selfRegister);
+router.post('/auth/self-register', authLimiter, validate(authValidation.selfRegisterSchema), authController.selfRegister);
 
 /**
  * @swagger

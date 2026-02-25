@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=3,5
 import { z } from 'zod';
 import { StockType } from '../constants/enums';
 
@@ -10,8 +11,8 @@ export const scheduleIdSchema = z.object({
 export const createScheduleSchema = z.object({
     body: z.object({
         title: z.string().optional(),
-        startDate: z.string().min(1, 'Data de início é obrigatória'),
-        endDate: z.string().min(1, 'Data de fim é obrigatória'),
+        startDate: z.string().min(1, 'Data de início é obrigatória').optional(),
+        endDate: z.string().min(1, 'Data de fim é obrigatória').optional(),
         clientId: z.number().int().positive('ID do cliente inválido'),
         equipmentId: z.number().int().positive('ID do equipamento inválido'),
         technicianIds: z.array(z.string()).min(1, 'Pelo menos um técnico é obrigatório'),
@@ -30,7 +31,10 @@ export const createScheduleSchema = z.object({
             start: z.string(),
             end: z.string()
         })).optional(),
-        includesTravel: z.boolean().optional()
+        includesTravel: z.boolean().optional(),
+        classification: z.string().optional(),
+        acknowledgementState: z.string().optional(),
+        priority: z.string().nullable().optional()
     })
 });
 
@@ -61,6 +65,9 @@ export const updateScheduleSchema = z.object({
             start: z.string(),
             end: z.string()
         })).optional(),
-        includesTravel: z.boolean().optional()
+        includesTravel: z.boolean().optional(),
+        classification: z.string().optional(),
+        acknowledgementState: z.string().optional(),
+        priority: z.string().nullable().optional()
     })
 });

@@ -1,7 +1,10 @@
+//Horas de desenvolvimento activo=28,5
 import { SupabaseClient } from '@supabase/supabase-js';
 import { getCalendarClient } from '../utils/googleAuth';
 import { logger } from '../utils/logger';
-import { SERVICE_TYPE_MAP } from './scheduleService';
+import { formatServiceType } from './scheduleService';
+import { Database } from '../types/db.types';
+import { Profile as DbProfile } from '../types/supabase';
 
 const calendar = getCalendarClient();
 
@@ -47,9 +50,6 @@ export const mapHexToGoogleColor = (hex: string): string => {
 export const googleCalendarService = {
     /**
      * Create an event in Google Calendar
-     * @param calendarId The ID of the calendar to sync with
-     * @param eventDetails Details of the appointment
-     * @returns The created Google Event ID
      */
     async createEvent(calendarId: string, eventDetails: {
         title: string;
@@ -101,9 +101,6 @@ export const googleCalendarService = {
 
     /**
      * Update an existing event in Google Calendar
-     * @param calendarId The ID of the calendar
-     * @param eventId The Google Event ID
-     * @param eventDetails Updated details
      */
     async updateEvent(calendarId: string, eventId: string, eventDetails: {
         title: string;
@@ -154,8 +151,6 @@ export const googleCalendarService = {
 
     /**
      * Delete an event from Google Calendar
-     * @param calendarId The ID of the calendar
-     * @param eventId The Google Event ID
      */
     async deleteEvent(calendarId: string, eventId: string) {
         try {
@@ -178,25 +173,26 @@ export const googleCalendarService = {
     },
 
     /**
-     * Delete all Google Calendar events associated with a schedule (blocks and legacy main event)
+     * Delete all Google Calendar events associated with a schedule
      */
-    async deleteScheduleEvents(supabase: SupabaseClient, calendarId: string, scheduleId: number) {
+    async deleteScheduleEvents(supabase: SupabaseClient<Database>, calendarId: string, scheduleId: number, specificEventIds?: string[]) {
         try {
-            // 1. Fetch blocks
-            const { data: blocks } = await supabase
-                .from('schedule_time_blocks')
-                .select('google_event_id')
-                .eq('schedule_id', scheduleId)
-                .not('google_event_id', 'is', null);
+            let eventIdsToClear = specificEventIds || [];
 
-            for (const b of blocks || []) {
-                if (b.google_event_id) {
-                    await this.deleteEvent(calendarId, b.google_event_id);
-                }
+            if (eventIdsToClear.length === 0) {
+                const { data: blocks } = await supabase
+                    .from('schedule_time_blocks')
+                    .select('google_event_id')
+                    .eq('schedule_id', scheduleId)
+                    .not('google_event_id', 'is', null);
+
+                eventIdsToClear = (blocks || []).map(b => b.google_event_id).filter((id): id is string => !!id);
             }
 
-            // 2. Fetch main record (legacy/fallback)
-            // No longer fetching from 'schedules' table as googleEventId is being removed.
+            for (const eventId of eventIdsToClear) {
+                await this.deleteEvent(calendarId, eventId);
+            }
+
             return true;
         } catch (err) {
             logger.error(err, `[SYNC] Error deleting schedule events for ${scheduleId}:`);
@@ -206,15 +202,12 @@ export const googleCalendarService = {
 
     /**
      * Unified function to sync a single schedule to Google Calendar.
-     * Fetches all necessary data and formats the title/description consistently.
-     * Supports multiple time blocks by creating separate events for each.
      */
-    async syncSchedule(supabase: SupabaseClient, calendarId: string, scheduleId: number) {
+    async syncSchedule(supabase: SupabaseClient<Database>, calendarId: string, scheduleId: number) {
         try {
             if (!calendarId) return null;
 
-            // 1. Fetch schedule with all necessary fields, including time blocks
-            const { data: s, error: sErr } = await supabase
+            const { data: sRaw, error: sErr } = await supabase
                 .from('schedules')
                 .select(`
                     id, 
@@ -232,48 +225,44 @@ export const googleCalendarService = {
                 .eq('id', scheduleId)
                 .single();
 
-            if (sErr || !s) {
+            if (sErr || !sRaw) {
                 logger.error(sErr, `[SYNC] Error fetching schedule ${scheduleId}:`);
                 return null;
             }
+            const s = sRaw as any; // Nested objects
 
-            // 2. Fetch Client Name
             let clientName = 'Cliente Desconhecido';
             if (s.clientId) {
                 const { data: client } = await supabase.from('clients').select('name').eq('id', s.clientId).maybeSingle();
                 if (client?.name) clientName = client.name;
             }
 
-            // 3. Fetch Equipment
             let equipInfo = 'Modelo Desconhecido';
             if (s.equipmentId) {
                 const { data: equip } = await supabase.from('equipments').select('model').eq('id', s.equipmentId).maybeSingle();
                 if (equip?.model) equipInfo = equip.model;
             }
 
-            // 4. Fetch Technician Infos (for initials and color)
             let colorId = '9';
             let techInitials = '??';
-            const techIds = (s.schedule_technicians as any[]).map(t => t.technicianId);
+            const techIds = (s.schedule_technicians || []).map((t: any) => t.technicianId);
 
             if (techIds.length > 0) {
-                // Fetch all technicians in the schedule
                 const { data: techs } = await supabase
                     .from('profiles')
                     .select('id, first_name, last_name, color, google_calendar_color_id')
                     .in('id', techIds);
 
                 if (techs && techs.length > 0) {
-                    // 4a. Initials: Join all initials with " + "
-                    const initialsArray = techs.map(t => {
+                    const typedTechs = techs as DbProfile[];
+                    const initialsArray = typedTechs.map(t => {
                         const first = (t.first_name || '').trim().charAt(0).toUpperCase();
                         const last = (t.last_name || '').trim().charAt(0).toUpperCase();
                         return `${first}${last}` || '?';
                     });
                     techInitials = initialsArray.join(' + ');
 
-                    // 4b. Color: Use the google_calendar_color_id of the first technician in the schedule list
-                    const primaryTech = techs.find(t => (t as any).id === techIds[0]) || techs[0];
+                    const primaryTech = typedTechs.find(t => t.id === techIds[0]) || typedTechs[0];
 
                     if (primaryTech.google_calendar_color_id) {
                         colorId = primaryTech.google_calendar_color_id;
@@ -283,8 +272,7 @@ export const googleCalendarService = {
                 }
             }
 
-            // 5. Preparation & Formatting
-            const typeLabel = SERVICE_TYPE_MAP[s.serviceType] || s.serviceType || 'Serviço';
+            const typeLabel = formatServiceType(s.serviceType);
             let formattedTitlePrefix = `${techInitials} - ${typeLabel} - ${equipInfo} - ${clientName}`;
             if (s.isCompleted) formattedTitlePrefix += ' (CONCLUÍDO)';
 
@@ -292,17 +280,12 @@ export const googleCalendarService = {
 
             const blocks = s.schedule_time_blocks || [];
 
-            // 6. Handle Synchronization based on blocks
             if (blocks.length > 0) {
                 logger.info({ scheduleId, blockCount: blocks.length }, `[SYNC] Syncing schedule blocks`);
-
-                // If there were legacy single events, they should have been migrated or deleted by now.
-                // We no longer check or update googleEventId on the schedules table.
 
                 const results = [];
                 for (let i = 0; i < blocks.length; i++) {
                     const b = blocks[i];
-                    // If multiple blocks, add [1/N] [2/N] to distinguish
                     const blockTitle = blocks.length > 1 ? `${formattedTitlePrefix} [${i + 1}/${blocks.length}]` : formattedTitlePrefix;
 
                     const eventDetails = {
@@ -313,7 +296,7 @@ export const googleCalendarService = {
                         colorId: colorId
                     };
 
-                    let blockEventId = (b as any).google_event_id;
+                    let blockEventId = b.google_event_id;
                     if (blockEventId) {
                         const updated = await this.updateEvent(calendarId, blockEventId, eventDetails);
                         if (!updated) {
@@ -323,15 +306,13 @@ export const googleCalendarService = {
                         blockEventId = await this.createEvent(calendarId, eventDetails);
                     }
 
-                    if (blockEventId && blockEventId !== (b as any).google_event_id) {
+                    if (blockEventId && blockEventId !== b.google_event_id) {
                         await supabase.from('schedule_time_blocks').update({ google_event_id: blockEventId }).eq('id', b.id);
                     }
                     results.push(blockEventId);
                 }
                 return results[0] || 'OK';
             } else {
-                // FALLBACK: If no blocks exist, we don't sync anything to Google Calendar anymore.
-                // This shouldn't happen with the current architecture where a default block is created.
                 logger.warn({ scheduleId }, `[SYNC] Schedule has no time blocks. Skipping sync.`);
                 return null;
             }
@@ -344,10 +325,9 @@ export const googleCalendarService = {
     /**
      * Synchronizes all unsynced schedules to Google Calendar
      */
-    async syncAllUnsynced(supabase: SupabaseClient, calendarId: string) {
+    async syncAllUnsynced(supabase: SupabaseClient<Database>, calendarId: string) {
         logger.info('[SYNC] Starting full synchronization of unsynced schedules...');
 
-        // Fetch schedules that are not synced OR have blocks that are not synced
         const { data: schedules, error } = await supabase
             .from('schedules')
             .select(`
@@ -361,7 +341,6 @@ export const googleCalendarService = {
         }
 
         const unsyncedSchedules = (schedules || []).filter(s => {
-            // Unsynced if blocks exist but any block lacks an ID
             if (s.schedule_time_blocks && (s.schedule_time_blocks as any[]).length > 0) {
                 return (s.schedule_time_blocks as any[]).some(b => !b.google_event_id);
             }
@@ -385,14 +364,13 @@ export const googleCalendarService = {
     /**
      * Deletes all events from Google Calendar that are linked to schedules or blocks
      */
-    async clearAllSyncedEvents(supabase: SupabaseClient, calendarId: string) {
+    async clearAllSyncedEvents(supabase: SupabaseClient<Database>, calendarId: string) {
         logger.info('[SYNC] Starting full deletion of synced schedules from Google Calendar...');
 
         let successCount = 0;
         let failCount = 0;
 
         try {
-            // 1. Clear individual blocks
             const { data: blocks, error: bError } = await supabase
                 .from('schedule_time_blocks')
                 .select('id, google_event_id')
@@ -415,42 +393,9 @@ export const googleCalendarService = {
                             failCount++;
                         }
                     }
-                    // Always clear the ID in database regardless of Google success
                     await supabase.from('schedule_time_blocks').update({ google_event_id: null }).eq('id', b.id);
                 }
             }
-
-            // 2. Main schedule records (legacy)
-            // Attempt to clear legacy googleEventId if column still exists
-            try {
-                // Using any to avoid TS errors if column is being removed
-                const { data: legacySchedules, error: lError } = await supabase
-                    .from('schedules')
-                    .select('id, googleEventId' as any)
-                    .not('googleEventId' as any, 'is', null);
-
-                if (!lError && legacySchedules && legacySchedules.length > 0) {
-                    logger.info({ count: legacySchedules.length }, `[SYNC] Found legacy schedules to clear.`);
-                    for (let i = 0; i < legacySchedules.length; i++) {
-                        const s = legacySchedules[i];
-                        const gId = (s as any).googleEventId;
-                        if (gId) {
-                            logger.info({ legacyIndex: i + 1, total: legacySchedules.length, googleId: gId }, `[SYNC] Deleting legacy event`);
-                            const deleted = await this.deleteEvent(calendarId, gId);
-                            if (deleted) {
-                                successCount++;
-                            } else {
-                                failCount++;
-                            }
-                            await supabase.from('schedules').update({ googleEventId: null } as any).eq('id', (s as any).id);
-                        }
-                    }
-                }
-            } catch (legacyErr) {
-                // Column probably doesn't exist
-                logger.debug('[SYNC] Legacy column check skipped (likely already removed).');
-            }
-
         } catch (err: any) {
             logger.error(err, '[SYNC] Severe error during full deletion:');
         }

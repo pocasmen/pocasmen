@@ -1,3 +1,4 @@
+//Horas de desenvolvimento activo=2,0
 import { Router } from 'express';
 import * as ticketAttachmentController from '../controllers/ticketAttachment.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';

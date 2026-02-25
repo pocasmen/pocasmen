@@ -1,11 +1,12 @@
+//Horas de desenvolvimento activo=2,5
 import { z } from 'zod';
 import { StockType } from '../constants/enums';
 
 export const createPartSchema = z.object({
     body: z.object({
-        reference: z.string().min(1, 'Referência é obrigatória'),
-        designation: z.string().min(1, 'Designação é obrigatória'),
-        stock_quantity: z.number().int().min(0).optional(),
+        reference: z.string().min(1, 'Referência é obrigatória').max(50, 'Referência muito longa'),
+        designation: z.string().min(1, 'Designação é obrigatória').max(200, 'Designação muito longa'),
+        stock_quantity: z.number().int().min(0, 'Quantidade não pode ser negativa').optional(),
         is_composed: z.boolean().optional()
     })
 });
@@ -15,8 +16,8 @@ export const updatePartSchema = z.object({
         id: z.string().regex(/^\d+$/, 'ID inválido')
     }),
     body: z.object({
-        reference: z.string().min(1, 'Referência é obrigatória'),
-        designation: z.string().min(1, 'Designação é obrigatória')
+        reference: z.string().min(1, 'Referência é obrigatória').max(50).optional(),
+        designation: z.string().min(1, 'Designação é obrigatória').max(200).optional()
     })
 });
 
