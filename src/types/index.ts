@@ -67,7 +67,7 @@ export interface Schedule {
     hasReport: boolean;
     clientId: number | null;
     equipmentId?: number | null;
-    serviceType: string;
+    serviceType: string | string[];
     additionalInfo?: string;
     includes_travel: boolean;
     classification: ServiceClassification;

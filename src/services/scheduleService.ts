@@ -336,9 +336,9 @@ export async function createFullSchedule(db: PoolClient, data: any) {
             internalNotes,
             JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])),
             ticketId,
-            (classification === ScheduleStatus.PENDING_SCHEDULING || !startDate) ? ScheduleStatus.PENDING_SCHEDULING : ScheduleStatus.PENDING,
+            (!startDate) ? ScheduleStatus.PENDING_SCHEDULING : ScheduleStatus.PENDING,
             includesTravel !== undefined ? includesTravel : false,
-            (classification && classification !== ScheduleStatus.PENDING_SCHEDULING) ? classification : 'geral',
+            classification || 'geral',
             priority || null
         ]
     );
@@ -390,7 +390,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
             internalNotes,
             JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])),
             ticketId,
-            (isCompleted) ? ScheduleStatus.COMPLETED : (originalSchedule.acknowledgementState || ScheduleStatus.PENDING),
+            (isCompleted) ? ScheduleStatus.COMPLETED : (originalSchedule.acknowledgementState === ScheduleStatus.PENDING_SCHEDULING && startDate ? ScheduleStatus.PENDING : (originalSchedule.acknowledgementState || ScheduleStatus.PENDING)),
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
             data.priority || originalSchedule.priority || null,

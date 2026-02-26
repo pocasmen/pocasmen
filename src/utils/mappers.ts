@@ -45,7 +45,7 @@ export const mapScheduleDatabaseToResponse = (
         internalNotes: schedule.additionalInfo || undefined,
 
         // Service Type standardization
-        serviceType: scheduleService.getServiceTypeKey(schedule.serviceType),
+        serviceType: scheduleService.getServiceTypeKeys(schedule.serviceType),
 
         ticketId: schedule.ticketId || undefined,
         clientId: schedule.clientId,

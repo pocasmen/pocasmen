@@ -17,7 +17,7 @@ export const createBillingTask = async (db: PoolClient, reportId: number, isPend
     return result.rows[0];
 };
 
-export const updateBillingTaskStatus = async (db: PoolClient, taskId: number, status: BillingStatus, notes?: string): Promise<BillingTask | undefined> => {
+export const updateBillingTaskStatus = async (db: PoolClient, taskId: number, status: BillingStatus, notes?: string, invoiceNumber?: string): Promise<BillingTask | undefined> => {
     const updatedAt = new Date().toISOString();
     let billedAt: string | null = null;
     if (status === BillingStatus.BILLED) billedAt = new Date().toISOString();
@@ -35,6 +35,12 @@ export const updateBillingTaskStatus = async (db: PoolClient, taskId: number, st
     if (billedAt) {
         querySets.push(`billed_at = $${nextIdx}`);
         values.push(billedAt);
+        nextIdx++;
+    }
+
+    if (invoiceNumber !== undefined) {
+        querySets.push(`invoice_number = $${nextIdx}`);
+        values.push(invoiceNumber);
         nextIdx++;
     }
 
@@ -108,6 +114,7 @@ export const getBillingTasksRaw = async (db: PoolClient): Promise<any[]> => {
             assigned_role: row.assigned_role,
             notes: row.notes,
             billing_notes: row.billing_notes,
+            invoice_number: row.invoice_number,
             billed_at: row.billed_at,
             created_at: row.created_at,
             updated_at: row.updated_at,

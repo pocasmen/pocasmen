@@ -22,14 +22,14 @@ export const getBillingTasks = catchAsync(async (req: AuthenticatedRequest, res:
 
 export const updateBillingTask = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
-    const { status, billing_notes } = req.body;
+    const { status, billing_notes, invoice_number } = req.body;
 
     if (!Object.values(BillingStatus).includes(status)) {
         throw new ApiError(400, 'Estado de faturação inválido.');
     }
 
     const task = await withTransaction(req, async (db) => {
-        return await billingService.updateBillingTaskStatus(db, Number(id), status, billing_notes);
+        return await billingService.updateBillingTaskStatus(db, Number(id), status, billing_notes, invoice_number);
     });
 
     res.json(task);
