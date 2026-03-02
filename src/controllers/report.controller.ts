@@ -6,6 +6,7 @@ import * as inventoryService from '../services/inventoryService';
 import * as scheduleService from '../services/scheduleService';
 import * as billingService from '../services/billingService';
 import * as reportService from '../services/reportService';
+import { broadcastCalendarUpdate } from '../services/realtimeService';
 import { catchAsync } from '../utils/catchAsync';
 import { ApiError, ForbiddenError, NotFoundError, UnauthorizedError, BadRequestError } from '../utils/ApiError';
 import { UserRole, StockType, EnrichedPart, BillingStatus } from '../types';
@@ -105,7 +106,7 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
         clientIds.length > 0 ? supabase.from('clients').select('*').in('id', clientIds) : Promise.resolve({ data: [] }),
         equipmentIds.length > 0 ? supabase.from('equipments').select('*').in('id', equipmentIds) : Promise.resolve({ data: [] }),
         reportIds.length > 0 ? supabase.from('report_technicians').select('*').in('reportId', reportIds) : Promise.resolve({ data: [] }),
-        reportIds.length > 0 ? supabase.from('report_parts').select('reportId, partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').in('reportId', reportIds) : Promise.resolve({ data: [] }),
+        reportIds.length > 0 ? supabase.from('report_parts').select('reportId, partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss)').in('reportId', reportIds) : Promise.resolve({ data: [] }),
     ]);
 
     const clientsData = clientsRes.data as DbClient[] || [];
@@ -145,8 +146,8 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
             stockType: rp.stock_type || StockType.GENERAL,
             stock_quantity: rp.parts.stock_quantity,
             reserved_quantity: rp.parts.reserved_quantity,
-            stock_quantity_contract: rp.parts.stock_quantity_contract,
-            reserved_quantity_contract: rp.parts.reserved_quantity_contract
+            stock_quantity_foss: rp.parts.stock_quantity_foss,
+            reserved_quantity_foss: rp.parts.reserved_quantity_foss
         });
     });
 
@@ -214,7 +215,7 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
         (!report.time_blocks && report.scheduleId)
             ? supabase.from('schedule_time_blocks').select('*').eq('schedule_id', Number(report.scheduleId))
             : Promise.resolve({ data: [] }),
-        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').eq('reportId', Number(report.id))
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss)').eq('reportId', Number(report.id))
     ]);
 
     const client = clientRes.data as DbClient | null;
@@ -271,8 +272,8 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
             stockType: rp.stock_type || StockType.GENERAL,
             stock_quantity: rp.parts.stock_quantity,
             reserved_quantity: rp.parts.reserved_quantity,
-            stock_quantity_contract: rp.parts.stock_quantity_contract,
-            reserved_quantity_contract: rp.parts.reserved_quantity_contract
+            stock_quantity_foss: rp.parts.stock_quantity_foss,
+            reserved_quantity_foss: rp.parts.reserved_quantity_foss
         })),
         internalNotes: report.internal_notes,
         timeBlocks: timeBlocks
@@ -292,7 +293,7 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
 
     const [techRes, partsRes, timeBlocksRes] = await Promise.all([
         supabase.from('report_technicians').select('*').eq('reportId', report.id),
-        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').eq('reportId', report.id),
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss)').eq('reportId', report.id),
         (!report.time_blocks && report.scheduleId)
             ? supabase.from('schedule_time_blocks').select('*').eq('schedule_id', Number(report.scheduleId))
             : Promise.resolve({ data: [] })
@@ -323,8 +324,8 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
         stockType: rp.stock_type || StockType.GENERAL,
         stock_quantity: rp.parts.stock_quantity,
         reserved_quantity: rp.parts.reserved_quantity,
-        stock_quantity_contract: rp.parts.stock_quantity_contract,
-        reserved_quantity_contract: rp.parts.reserved_quantity_contract
+        stock_quantity_foss: rp.parts.stock_quantity_foss,
+        reserved_quantity_foss: rp.parts.reserved_quantity_foss
     }));
 
     let timeBlocks: any[] = [];
@@ -357,6 +358,8 @@ export const createReport = catchAsync(async (req: AuthenticatedRequest, res: Re
         return await reportService.createFullReport(db, req.body, req.user!.id);
     });
 
+    broadcastCalendarUpdate(supabase);
+
     res.status(201).json({ message: 'Relatório criado com sucesso!', reportId });
 });
 
@@ -367,6 +370,8 @@ export const updateReport = catchAsync(async (req: AuthenticatedRequest, res: Re
     await withTransaction(req, async (db) => {
         await reportService.updateFullReport(db, reportId, req.body);
     });
+
+    broadcastCalendarUpdate(supabase);
 
     res.json({ message: 'Relatório atualizado!', reportId });
 });
@@ -381,6 +386,8 @@ export const deleteReport = catchAsync(async (req: AuthenticatedRequest, res: Re
     await withTransaction(req, async (db) => {
         await reportService.deleteFullReport(db, reportId, userId, restoreParts);
     });
+
+    broadcastCalendarUpdate(supabase);
 
     res.status(200).json({ message: 'Relatório removido com sucesso.' });
 });

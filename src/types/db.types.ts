@@ -296,9 +296,9 @@ export type Database = {
           reserved_quantity: number
           ordered_quantity: number
           is_composed: boolean | null
-          stock_quantity_contract: number | null
-          reserved_quantity_contract: number | null
-          ordered_quantity_contract: number | null
+          stock_quantity_foss: number | null
+          reserved_quantity_foss: number | null
+          ordered_quantity_foss: number | null
         }
         Insert: {
           id?: number
@@ -308,9 +308,9 @@ export type Database = {
           reserved_quantity?: number
           ordered_quantity?: number
           is_composed?: boolean | null
-          stock_quantity_contract?: number | null
-          reserved_quantity_contract?: number | null
-          ordered_quantity_contract?: number | null
+          stock_quantity_foss?: number | null
+          reserved_quantity_foss?: number | null
+          ordered_quantity_foss?: number | null
         }
         Update: {
           id?: number
@@ -320,9 +320,9 @@ export type Database = {
           reserved_quantity?: number
           ordered_quantity?: number
           is_composed?: boolean | null
-          stock_quantity_contract?: number | null
-          reserved_quantity_contract?: number | null
-          ordered_quantity_contract?: number | null
+          stock_quantity_foss?: number | null
+          reserved_quantity_foss?: number | null
+          ordered_quantity_foss?: number | null
         }
         Relationships: []
       }

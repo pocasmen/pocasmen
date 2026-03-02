@@ -27,7 +27,9 @@ export enum StockType {
     GENERAL = 'general',
     CONTRACT = 'contract',
     CLIENT = 'client',
-    WARRANTY = 'warranty'
+    WARRANTY = 'warranty',
+    FOSS = 'foss',
+    MSD = 'msd'
 }
 
 export enum ServiceType {
@@ -43,7 +45,9 @@ export enum ServiceClassification {
     GERAL = 'geral',
     CONTRATO = 'contrato',
     GARANTIA = 'garantia',
-    OFERTA = 'oferta'
+    OFERTA = 'oferta',
+    FOSS = 'foss',
+    MSD = 'msd'
 }
 
 export enum SchedulePriority {

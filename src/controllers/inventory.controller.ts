@@ -129,14 +129,14 @@ export const updateOrder = catchAsync(async (req: AuthenticatedRequest, res: Res
     const { quantity, targetStock } = req.body;
 
     const result = await withTransaction(req, async (db) => {
-        const { rows: partRows } = await db.query<Part>('SELECT ordered_quantity, ordered_quantity_contract FROM parts WHERE id = $1 FOR UPDATE', [partId]);
+        const { rows: partRows } = await db.query<Part>('SELECT ordered_quantity, ordered_quantity_foss FROM parts WHERE id = $1 FOR UPDATE', [partId]);
         if (partRows.length === 0) throw new NotFoundError('Part not found');
         const currentPart = partRows[0];
 
-        const newOrdered = Math.max(0, ((targetStock === StockType.CONTRACT ? currentPart.ordered_quantity_contract : currentPart.ordered_quantity) || 0) + Number(quantity));
+        const newOrdered = Math.max(0, ((targetStock === StockType.FOSS ? currentPart.ordered_quantity_foss : currentPart.ordered_quantity) || 0) + Number(quantity));
 
-        const sql = targetStock === StockType.CONTRACT
-            ? 'UPDATE parts SET ordered_quantity_contract = $1 WHERE id = $2'
+        const sql = targetStock === StockType.FOSS
+            ? 'UPDATE parts SET ordered_quantity_foss = $1 WHERE id = $2'
             : 'UPDATE parts SET ordered_quantity = $1 WHERE id = $2';
 
         await db.query(sql, [newOrdered, partId]);

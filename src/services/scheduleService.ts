@@ -260,10 +260,14 @@ export async function syncTechnicians(db: PoolClient, scheduleId: number, techni
 /**
  * Syncs parts and updates reservations
  */
-export async function syncPartsAndReservations(db: PoolClient, scheduleId: number, parts: any[], isCompleted: boolean) {
-    // 1. Get current state from DB to decide if we should release reservations
-    const { rows: currentStatus } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
-    const wasAlreadyCompleted = currentStatus.length > 0 && currentStatus[0].isCompleted;
+export async function syncPartsAndReservations(db: PoolClient, scheduleId: number, parts: any[], isCompleted: boolean, wasAlreadyCompletedParam?: boolean) {
+    let wasAlreadyCompleted = wasAlreadyCompletedParam;
+
+    if (wasAlreadyCompleted === undefined) {
+        // Fallback: Get current state from DB if not provided
+        const { rows: currentStatus } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
+        wasAlreadyCompleted = currentStatus.length > 0 && currentStatus[0].isCompleted;
+    }
 
     const { rows: originalParts } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
 
@@ -285,7 +289,7 @@ export async function syncPartsAndReservations(db: PoolClient, scheduleId: numbe
                     partId = existingPartRows[0].id;
                 } else {
                     const { rows: newPartRows } = await db.query<Part>(
-                        'INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract, is_composed) VALUES ($1, $2, 0, 0, 0, 0, 0, 0, false) RETURNING id',
+                        'INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, is_composed) VALUES ($1, $2, 0, 0, 0, 0, 0, 0, false) RETURNING id',
                         [p.reference, p.designation]
                     );
                     partId = newPartRows[0].id;
@@ -347,7 +351,7 @@ export async function createFullSchedule(db: PoolClient, data: any) {
 
     await syncTimeBlocks(db, scheduleId, timeBlocks, startDate, endDate);
     await syncTechnicians(db, scheduleId, technicianIds);
-    await syncPartsAndReservations(db, scheduleId, parts, false);
+    await syncPartsAndReservations(db, scheduleId, parts, false, false);
 
     if (ticketId) {
         await db.query<Ticket>('UPDATE tickets SET "scheduleId" = $1, status = $2 WHERE id = $3', [scheduleId, TicketStatus.SCHEDULED, ticketId]);
@@ -369,8 +373,9 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
     const { rows: originalRows } = await db.query<Schedule>('SELECT title, "startDate", "endDate", "clientId", "equipmentId", "serviceType", "acknowledgementState", "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
     if (originalRows.length === 0) throw new Error('Schedule not found');
     const originalSchedule = originalRows[0];
+    const wasAlreadyCompleted = originalSchedule.isCompleted;
 
-    if (originalSchedule.isCompleted) throw new Error('Não é possível editar um agendamento já concluído.');
+    if (wasAlreadyCompleted) throw new Error('Não é possível editar um agendamento já concluído.');
 
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
@@ -440,7 +445,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
 
     await syncTimeBlocks(db, scheduleId, timeBlocks, startDate, endDate);
     await syncTechnicians(db, scheduleId, technicianIds);
-    await syncPartsAndReservations(db, scheduleId, parts, isCompleted);
+    await syncPartsAndReservations(db, scheduleId, parts, isCompleted, !!wasAlreadyCompleted);
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, isCompleted ? TicketStatus.CLOSED : TicketStatus.SCHEDULED, startDate, ticketId]);
@@ -459,6 +464,9 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
         timeBlocks, includesTravel
     } = data;
 
+    const { rows: origRows } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
+    const wasAlreadyCompleted = origRows.length > 0 && origRows[0].isCompleted;
+
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
     const { rows } = await db.query<Schedule>(
@@ -472,7 +480,7 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
 
     await syncTimeBlocks(db, scheduleId, timeBlocks, startDate, endDate);
     await syncTechnicians(db, scheduleId, technicianIds);
-    await syncPartsAndReservations(db, scheduleId, parts, true); // isCompleted = true
+    await syncPartsAndReservations(db, scheduleId, parts, true, !!wasAlreadyCompleted); // isCompleted = true
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, TicketStatus.CLOSED, startDate, ticketId]);

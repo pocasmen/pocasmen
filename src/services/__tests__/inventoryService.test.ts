@@ -19,7 +19,7 @@ describe('Inventory Service', () => {
     describe('processStockUpdate', () => {
         test('should update stock and ordered quantity when receiving an order (general)', () => {
             const result = processStockUpdate(
-                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                { stock: 10, ordered: 5, stockFoss: 0, orderedFoss: 0 },
                 3,
                 true,
                 StockType.GENERAL
@@ -30,18 +30,18 @@ describe('Inventory Service', () => {
 
         test('should update contract stock and ordered quantity when receiving an order (contract)', () => {
             const result = processStockUpdate(
-                { stock: 0, ordered: 0, stockContract: 10, orderedContract: 5 },
+                { stock: 0, ordered: 0, stockFoss: 10, orderedFoss: 5 },
                 3,
                 true,
-                StockType.CONTRACT
+                StockType.FOSS
             );
-            expect(result.newStockContract).toBe(13);
-            expect(result.newOrderedContract).toBe(2);
+            expect(result.newStockFoss).toBe(13);
+            expect(result.newOrderedFoss).toBe(2);
         });
 
         test('should not decrease ordered quantity below zero', () => {
             const result = processStockUpdate(
-                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                { stock: 10, ordered: 5, stockFoss: 0, orderedFoss: 0 },
                 10,
                 true,
                 StockType.GENERAL
@@ -51,7 +51,7 @@ describe('Inventory Service', () => {
 
         test('should only update stock when not from order', () => {
             const result = processStockUpdate(
-                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                { stock: 10, ordered: 5, stockFoss: 0, orderedFoss: 0 },
                 3,
                 false,
                 StockType.GENERAL

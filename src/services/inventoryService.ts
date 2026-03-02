@@ -7,64 +7,64 @@ import { Database } from '../types/db.types';
 import { Part, PartUpdate, PartComponent } from '../types/supabase';
 
 export const calculateNewQuantity = (current: number, change: number): number => {
-    return current + change;
+    return Math.max(0, current + change);
 };
 
 export interface PartUpdateResult {
     newStock: number;
     newReserved: number;
     newOrdered: number;
-    newStockContract: number;
-    newReservedContract: number;
-    newOrderedContract: number;
+    newStockFoss: number;
+    newReservedFoss: number;
+    newOrderedFoss: number;
 }
 
 export const enrichPart = (p: any) => {
     const rawStock = Number(p.stock_quantity || 0);
     const rawReserved = Number(p.reserved_quantity || 0);
-    const rawStockContract = Number(p.stock_quantity_contract || 0);
-    const rawReservedContract = Number(p.reserved_quantity_contract || 0);
+    const rawStockFoss = Number(p.stock_quantity_foss || 0);
+    const rawReservedFoss = Number(p.reserved_quantity_foss || 0);
 
     const isComposed = !!p.is_composed;
     const virtualStock = Number(p.virtual_stock || 0);
-    const virtualStockContract = Number(p.virtual_stock_contract || 0);
+    const virtualStockFoss = Number(p.virtual_stock_foss || 0);
 
     return {
         ...p,
         // stock_quantity deve ser o total (físico ou potencial máximo)
         stock_quantity: isComposed ? virtualStock : rawStock,
-        stock_quantity_contract: isComposed ? virtualStockContract : rawStockContract,
+        stock_quantity_foss: isComposed ? virtualStockFoss : rawStockFoss,
 
         // Campos novos para disponibilidade real
         available_quantity: isComposed
             ? (virtualStock - rawReserved)
             : (rawStock - rawReserved),
-        available_quantity_contract: isComposed
-            ? (virtualStockContract - rawReservedContract)
-            : (rawStockContract - rawReservedContract),
+        available_quantity_foss: isComposed
+            ? (virtualStockFoss - rawReservedFoss)
+            : (rawStockFoss - rawReservedFoss),
 
         reserved_quantity: rawReserved,
-        reserved_quantity_contract: rawReservedContract,
+        reserved_quantity_foss: rawReservedFoss,
         raw_stock_quantity: rawStock,
-        raw_stock_contract: rawStockContract
+        raw_stock_foss: rawStockFoss
     };
 };
 
 export const processStockUpdate = (
-    current: { stock: number; ordered: number; stockContract: number; orderedContract: number },
+    current: { stock: number; ordered: number; stockFoss: number; orderedFoss: number },
     change: number,
     isFromOrder: boolean,
-    targetStock: StockType.GENERAL | StockType.CONTRACT
-): { newStock: number; newOrdered: number; newStockContract: number; newOrderedContract: number } => {
+    targetStock: StockType.GENERAL | StockType.FOSS
+): { newStock: number; newOrdered: number; newStockFoss: number; newOrderedFoss: number } => {
     let newStock = current.stock;
-    let newStockContract = current.stockContract;
+    let newStockFoss = current.stockFoss;
     let newOrdered = current.ordered;
-    let newOrderedContract = current.orderedContract;
+    let newOrderedFoss = current.orderedFoss;
 
-    if (targetStock === StockType.CONTRACT) {
-        newStockContract = Math.max(0, current.stockContract + change);
+    if (targetStock === StockType.FOSS) {
+        newStockFoss = Math.max(0, current.stockFoss + change);
         if (isFromOrder && change > 0) {
-            newOrderedContract = Math.max(0, current.orderedContract - change);
+            newOrderedFoss = Math.max(0, current.orderedFoss - change);
         }
     } else {
         newStock = Math.max(0, current.stock + change);
@@ -73,7 +73,7 @@ export const processStockUpdate = (
         }
     }
 
-    return { newStock, newOrdered, newStockContract, newOrderedContract };
+    return { newStock, newOrdered, newStockFoss, newOrderedFoss };
 };
 
 export const hasEnoughStock = (stock: number, reserved: number, requested: number): boolean => {
@@ -81,22 +81,22 @@ export const hasEnoughStock = (stock: number, reserved: number, requested: numbe
 };
 
 export const processReportAbate = (
-    current: { stock: number; reserved: number; stockContract: number; reservedContract: number },
+    current: { stock: number; reserved: number; stockFoss: number; reservedFoss: number },
     quantityUsed: number,
     stockType: StockType,
     skipReserved: boolean = false
-): { newStock: number; newReserved: number; newStockContract: number; newReservedContract: number } => {
+): { newStock: number; newReserved: number; newStockFoss: number; newReservedFoss: number } => {
     let newStock = current.stock;
     let newReserved = current.reserved;
-    let newStockContract = current.stockContract;
-    let newReservedContract = current.reservedContract;
+    let newStockFoss = current.stockFoss;
+    let newReservedFoss = current.reservedFoss;
 
-    if (stockType === StockType.CONTRACT) {
-        newStockContract = current.stockContract - quantityUsed; // Permite negativo
+    if (stockType === StockType.FOSS) {
+        newStockFoss = current.stockFoss - quantityUsed; // Permite negativo
         if (!skipReserved) {
-            newReservedContract = Math.max(0, current.reservedContract - quantityUsed);
+            newReservedFoss = Math.max(0, current.reservedFoss - quantityUsed);
         }
-    } else if (stockType === StockType.GENERAL) {
+    } else if (stockType === StockType.GENERAL || stockType === StockType.CONTRACT || stockType === StockType.MSD) {
         newStock = current.stock - quantityUsed; // Permite negativo
         if (!skipReserved) {
             newReserved = Math.max(0, current.reserved - quantityUsed);
@@ -106,8 +106,8 @@ export const processReportAbate = (
     return {
         newStock,
         newReserved,
-        newStockContract,
-        newReservedContract
+        newStockFoss,
+        newReservedFoss
     };
 };
 
@@ -118,7 +118,7 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
     }
 
     const { rows } = await db.query<Part>(
-        'SELECT stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract, designation, is_composed FROM parts WHERE id = $1',
+        'SELECT stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss, designation, is_composed FROM parts WHERE id = $1 FOR UPDATE',
         [partId]
     );
 
@@ -143,13 +143,32 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
                 }
             }
         }
+
+        // Even for composed parts, we should update the parent's reservation if not skipReserved
+        if (!skipReserved) {
+            const result = processReportAbate(
+                {
+                    stock: 0, // Kit has no physical stock
+                    reserved: currentPart.reserved_quantity || 0,
+                    stockFoss: 0,
+                    reservedFoss: currentPart.reserved_quantity_foss || 0
+                },
+                quantity,
+                stockType,
+                false
+            );
+            await db.query(
+                'UPDATE parts SET reserved_quantity = $1, reserved_quantity_foss = $2 WHERE id = $3',
+                [result.newReserved, result.newReservedFoss, partId]
+            );
+        }
     } else {
         const result = processReportAbate(
             {
                 stock: currentPart.stock_quantity || 0,
                 reserved: currentPart.reserved_quantity || 0,
-                stockContract: currentPart.stock_quantity_contract || 0,
-                reservedContract: currentPart.reserved_quantity_contract || 0
+                stockFoss: currentPart.stock_quantity_foss || 0,
+                reservedFoss: currentPart.reserved_quantity_foss || 0
             },
             quantity,
             stockType,
@@ -161,13 +180,13 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
             designation: currentPart.designation,
             stockType,
             skipReserved,
-            old: { stock: currentPart.stock_quantity, contract: currentPart.stock_quantity_contract, reserved: currentPart.reserved_quantity },
-            new: { stock: result.newStock, contract: result.newStockContract, reserved: result.newReserved }
+            old: { stock: currentPart.stock_quantity, foss: currentPart.stock_quantity_foss, reserved: currentPart.reserved_quantity },
+            new: { stock: result.newStock, foss: result.newStockFoss, reserved: result.newReserved }
         }, `[DEBUG_INV] Abating Part Inventory`);
 
         await db.query(
-            'UPDATE parts SET stock_quantity = $1, reserved_quantity = $2, stock_quantity_contract = $3, reserved_quantity_contract = $4 WHERE id = $5',
-            [result.newStock, result.newReserved, result.newStockContract, result.newReservedContract, partId]
+            'UPDATE parts SET stock_quantity = $1, reserved_quantity = $2, stock_quantity_foss = $3, reserved_quantity_foss = $4 WHERE id = $5',
+            [result.newStock, result.newReserved, result.newStockFoss, result.newReservedFoss, partId]
         );
     }
 }
@@ -179,7 +198,7 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
     }
 
     const { rows } = await db.query<Part>(
-        'SELECT reserved_quantity, reserved_quantity_contract, designation, is_composed FROM parts WHERE id = $1',
+        'SELECT reserved_quantity, reserved_quantity_foss, designation, is_composed FROM parts WHERE id = $1 FOR UPDATE',
         [partId]
     );
 
@@ -193,18 +212,18 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
     let sqlSet = [];
     let sqlParams = [];
 
-    if (stockType === StockType.CONTRACT) {
-        const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity_contract || 0) + change);
-        sqlSet.push('reserved_quantity_contract = GREATEST(0, $1)');
+    if (stockType === StockType.FOSS) {
+        const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity_foss || 0) + change);
+        sqlSet.push('reserved_quantity_foss = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
         logger.debug({
             partId,
             designation: currentPart.designation,
-            old: currentPart.reserved_quantity_contract,
+            old: currentPart.reserved_quantity_foss,
             change,
             new: newReservedQuantity
-        }, `[DEBUG_INV] Updating Part Reservation (CONTRACT)`);
-    } else {
+        }, `[DEBUG_INV] Updating Part Reservation (FOSS)`);
+    } else if (stockType === StockType.GENERAL || stockType === StockType.CONTRACT || stockType === StockType.MSD) {
         const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity || 0) + change);
         sqlSet.push('reserved_quantity = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
@@ -247,7 +266,7 @@ export async function createComposedPart(db: PoolClient, data: any): Promise<any
     if (existingRows.length > 0) throw new Error('Já existe uma peça com esta referência.');
 
     const { rows } = await db.query<Part>(
-        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract) 
+        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss) 
          VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0) RETURNING *`,
         [reference, designation]
     );
@@ -301,7 +320,7 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any)
     const { quantity, fromOrder, targetStock } = data;
 
     const { rows: fetchRows } = await db.query<Part>(
-        'SELECT stock_quantity, ordered_quantity, stock_quantity_contract, ordered_quantity_contract, is_composed FROM parts WHERE id = $1 FOR UPDATE',
+        'SELECT stock_quantity, ordered_quantity, stock_quantity_foss, ordered_quantity_foss, is_composed FROM parts WHERE id = $1 FOR UPDATE',
         [partId]
     );
     if (fetchRows.length === 0) throw new Error('Peça não encontrada');
@@ -314,13 +333,13 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any)
     const updateResult = processStockUpdate({
         stock: currentPart.stock_quantity || 0,
         ordered: currentPart.ordered_quantity || 0,
-        stockContract: currentPart.stock_quantity_contract || 0,
-        orderedContract: currentPart.ordered_quantity_contract || 0
+        stockFoss: currentPart.stock_quantity_foss || 0,
+        orderedFoss: currentPart.ordered_quantity_foss || 0
     }, quantity, !!fromOrder, targetStock || StockType.GENERAL);
 
     const { rows } = await db.query<Part>(
-        `UPDATE parts SET stock_quantity = $1, ordered_quantity = $2, stock_quantity_contract = $3, ordered_quantity_contract = $4 WHERE id = $5 RETURNING *`,
-        [updateResult.newStock, updateResult.newOrdered, updateResult.newStockContract, updateResult.newOrderedContract, partId]
+        `UPDATE parts SET stock_quantity = $1, ordered_quantity = $2, stock_quantity_foss = $3, ordered_quantity_foss = $4 WHERE id = $5 RETURNING *`,
+        [updateResult.newStock, updateResult.newOrdered, updateResult.newStockFoss, updateResult.newOrderedFoss, partId]
     );
     return enrichPart(rows[0]);
 }
@@ -367,16 +386,16 @@ export async function syncPartStock(db: PoolClient, partId: number): Promise<Par
     );
 
     let generalReserved = 0;
-    let contractReserved = 0;
+    let fossReserved = 0;
 
     rows.forEach((item: { total: number; stock_type: string }) => {
-        if (item.stock_type === StockType.CONTRACT) contractReserved = Number(item.total);
-        else generalReserved = Number(item.total);
+        if (item.stock_type === StockType.FOSS) fossReserved = Number(item.total);
+        else generalReserved += Number(item.total);
     });
 
     const { rows: updatedRows } = await db.query<Part>(
-        `UPDATE parts SET reserved_quantity = GREATEST(0, $1), reserved_quantity_contract = GREATEST(0, $2) WHERE id = $3 RETURNING *`,
-        [generalReserved, contractReserved, partId]
+        `UPDATE parts SET reserved_quantity = GREATEST(0, $1), reserved_quantity_foss = GREATEST(0, $2) WHERE id = $3 RETURNING *`,
+        [generalReserved, fossReserved, partId]
     );
     return enrichPart(updatedRows[0]);
 }

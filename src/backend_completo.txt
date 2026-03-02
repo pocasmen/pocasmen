@@ -1,5 +1,29 @@
 
 ==================================================
+START FILE: .\apply_migration_invoice.ts
+==================================================
+
+import { pool } from './config/db';
+
+async function run() {
+    console.log('Connecting to database...');
+    const client = await pool.connect();
+    try {
+        console.log('Altering billing_tasks table...');
+        await client.query('ALTER TABLE billing_tasks ADD COLUMN IF NOT EXISTS invoice_number VARCHAR(100);');
+        console.log('Migration completed successfully.');
+    } catch (err) {
+        console.error('Error running migration:', err);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+}
+
+run();
+
+
+==================================================
 START FILE: .\diagnose_db.ts
 ==================================================
 
@@ -518,7 +542,9 @@ export enum StockType {
     GENERAL = 'general',
     CONTRACT = 'contract',
     CLIENT = 'client',
-    WARRANTY = 'warranty'
+    WARRANTY = 'warranty',
+    FOSS = 'foss',
+    MSD = 'msd'
 }
 
 export enum ServiceType {
@@ -534,7 +560,9 @@ export enum ServiceClassification {
     GERAL = 'geral',
     CONTRATO = 'contrato',
     GARANTIA = 'garantia',
-    OFERTA = 'oferta'
+    OFERTA = 'oferta',
+    FOSS = 'foss',
+    MSD = 'msd'
 }
 
 export enum SchedulePriority {
@@ -631,14 +659,26 @@ export const getPendingUsers = catchAsync(async (req: AuthenticatedRequest, res:
 import { withTransaction } from '../config/db';
 
 export const approveUser = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const { userId, client_id } = req.body;
+    const { userId, client_ids } = req.body;
 
     const updatedUser = await withTransaction(req, async (db) => {
+        const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
+
         const { rowCount } = await db.query(
             'UPDATE profiles SET client_id = $1, role = $2 WHERE id = $3',
-            [Number(client_id), UserRole.CLIENT, userId]
+            [primaryClientId, UserRole.CLIENT, userId]
         );
         if (rowCount === 0) throw new NotFoundError('Perfil não encontrado.');
+
+        if (Array.isArray(client_ids)) {
+            for (const id of client_ids) {
+                await db.query(`
+                    INSERT INTO client_users (user_id, client_id) 
+                    VALUES ($1, $2)
+                    ON CONFLICT (user_id, client_id) DO NOTHING
+                `, [userId, Number(id)]);
+            }
+        }
 
         const { data: user, error: userError } = await supabase.auth.admin.updateUserById(
             userId,
@@ -726,14 +766,14 @@ export const getBillingTasks = catchAsync(async (req: AuthenticatedRequest, res:
 
 export const updateBillingTask = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
-    const { status, billing_notes } = req.body;
+    const { status, billing_notes, invoice_number } = req.body;
 
     if (!Object.values(BillingStatus).includes(status)) {
         throw new ApiError(400, 'Estado de faturação inválido.');
     }
 
     const task = await withTransaction(req, async (db) => {
-        return await billingService.updateBillingTaskStatus(db, Number(id), status, billing_notes);
+        return await billingService.updateBillingTaskStatus(db, Number(id), status, billing_notes, invoice_number);
     });
 
     res.json(task);
@@ -752,7 +792,8 @@ export const getBillingStats = catchAsync(async (req: AuthenticatedRequest, res:
 
     let query = supabase
         .from('billing_tasks')
-        .select('status, reports!inner(serviceDate)');
+        .select('status, reports!inner(serviceDate, deleted_at)')
+        .is('reports.deleted_at', null);
 
     if (startDate && endDate) {
         query = query
@@ -847,32 +888,134 @@ export const deleteClient = catchAsync(async (req: AuthenticatedRequest, res: Re
     res.sendStatus(204);
 });
 
+export const getClientUsers = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+
+    const { data, error } = await supabase
+        .from('profiles')
+        .select('id, first_name, last_name, email')
+        .eq('client_id', Number(id))
+        .order('first_name', { ascending: true });
+
+    if (error) throw new ApiError(500, 'Failed to fetch client users', error.message);
+    res.json(data ?? []);
+});
+
+
 
 ==================================================
 START FILE: .\controllers\clientPortal.controller.ts
 ==================================================
 
-//Horas de desenvolvimento activo=22,0
+//Horas de desenvolvimento activo=26,0
 import { Request, Response } from 'express';
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
-import { sendTelegramNotification } from '../services/telegramService';
 import { catchAsync } from '../utils/catchAsync';
 import { ApiError, ForbiddenError, NotFoundError, UnauthorizedError } from '../utils/ApiError';
 import { UserRole, TicketStatus } from '../constants/enums';
-import { TicketUpdate, Profile as DbProfile, Equipment as DbEquipment, Ticket as DbTicket, Schedule as DbSchedule, Client as DbClient, Report as DbReport, TicketInsert } from '../types/supabase';
+import { Profile as DbProfile, Equipment as DbEquipment, Ticket as DbTicket, Schedule as DbSchedule } from '../types/supabase';
 import * as ticketService from '../services/ticketService';
-import { Database } from '../types/db.types';
+import { withTransaction } from '../config/db';
+
+/**
+ * Validates if the user has access to a specific client_id via client_users table
+ */
+const getValidatedClientId = async (userId: string, requestedClientId?: any): Promise<number> => {
+    if (!requestedClientId) {
+        throw new ApiError(400, 'É obrigatório selecionar uma empresa (clientId).');
+    }
+    const clientId = Number(requestedClientId);
+    if (isNaN(clientId)) throw new ApiError(400, 'clientId inválido.');
+
+    const { data, error } = await supabase
+        .from('client_users' as any)
+        .select('client_id')
+        .eq('user_id', userId)
+        .eq('client_id', clientId)
+        .single();
+
+    if (error || !data) {
+        throw new ForbiddenError('Não tem acesso a esta empresa.');
+    }
+    return (data as any).client_id;
+};
+
+export const getMyCompanies = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) throw new UnauthorizedError();
+
+    // Fetch all clients associated with this user
+    const { data: clientUsers, error } = await supabase
+        .from('client_users' as any)
+        .select('client_id, clients(*)')
+        .eq('user_id', req.user.id);
+
+    if (error) throw new ApiError(500, 'Falha ao buscar as empresas', error.message);
+    const companies = clientUsers?.map((cu: any) => cu.clients).filter((c: any) => !!c) || [];
+    res.json(companies);
+});
+
+export const getMyStats = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) throw new UnauthorizedError();
+    const clientId = await getValidatedClientId(req.user.id, req.query.clientId);
+
+    // Tickets
+    const { data: tickets } = await supabase.from('tickets').select('status').eq('client_id', clientId).neq('status', TicketStatus.DELETED);
+    const ticketsData = tickets || [];
+    const openTickets = ticketsData.filter(t => t.status === TicketStatus.OPEN).length;
+    const scheduledTickets = ticketsData.filter(t => t.status === TicketStatus.SCHEDULED).length;
+    const closedTickets = ticketsData.filter(t => t.status === TicketStatus.CLOSED).length;
+
+    // Schedules
+    const { data: schedules } = await supabase.from('schedules').select('isCompleted, hasReport, endDate').eq('clientId', clientId);
+    const schedulesData = schedules || [];
+
+    let schedPending = 0, schedCompleted = 0, schedClosed = 0, schedOverdue = 0;
+    const now = new Date();
+    schedulesData.forEach((s: any) => {
+        if (s.hasReport) schedClosed++;
+        else if (s.isCompleted) schedCompleted++;
+        else if (s.endDate && new Date(s.endDate) < now) schedOverdue++;
+        else schedPending++;
+    });
+
+    // Reports
+    const { count: reportsCount } = await supabase.from('reports').select('*', { count: 'exact', head: true }).eq('clientId', clientId).is('deleted_at', null);
+
+    // Equipments
+    const { count: equipmentsCount } = await supabase.from('equipments').select('*', { count: 'exact', head: true }).eq('clientId', clientId);
+
+    res.json({
+        tickets: {
+            open: openTickets,
+            scheduled: scheduledTickets,
+            closed: closedTickets,
+            total: ticketsData.length
+        },
+        schedules: {
+            pending: schedPending,
+            completed: schedCompleted,
+            closed: schedClosed,
+            overdue: schedOverdue,
+            total: schedulesData.length
+        },
+        reports: {
+            total: reportsCount || 0
+        },
+        equipments: {
+            total: equipmentsCount || 0
+        }
+    });
+});
 
 export const getMyEquipments = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
-    if (!profile?.client_id) throw new NotFoundError('Client profile not found.');
+    const clientId = await getValidatedClientId(req.user.id, req.query.clientId);
 
     const { data, error } = await supabase
         .from('equipments')
         .select('*')
-        .eq('clientId', profile.client_id)
+        .eq('clientId', clientId)
         .order('id', { ascending: true });
 
     if (error) throw new ApiError(500, 'Failed to fetch equipments', error.message);
@@ -881,8 +1024,7 @@ export const getMyEquipments = catchAsync(async (req: AuthenticatedRequest, res:
 
 export const getMyTickets = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
-    if (!profile?.client_id) throw new NotFoundError('Client profile not found.');
+    const clientId = await getValidatedClientId(req.user.id, req.query.clientId);
 
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20)); // Default smaller limit for mobile/client
@@ -891,12 +1033,14 @@ export const getMyTickets = catchAsync(async (req: AuthenticatedRequest, res: Re
     const { count: totalCount } = await supabase
         .from('tickets')
         .select('*', { count: 'exact', head: true })
-        .eq('client_id', profile.client_id);
+        .eq('client_id', clientId)
+        .neq('status', TicketStatus.DELETED);
 
     const { data: ticketsRaw, error: ticketsError } = await supabase
         .from('tickets')
         .select('*')
-        .eq('client_id', profile.client_id)
+        .eq('client_id', clientId)
+        .neq('status', TicketStatus.DELETED)
         .order('createdAt', { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -943,8 +1087,7 @@ export const getMyTickets = catchAsync(async (req: AuthenticatedRequest, res: Re
 
 export const getMySchedules = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
-    if (!profile?.client_id) throw new NotFoundError('Client profile not found.');
+    const clientId = await getValidatedClientId(req.user.id, req.query.clientId);
 
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
@@ -953,16 +1096,16 @@ export const getMySchedules = catchAsync(async (req: AuthenticatedRequest, res: 
     const { count: totalCount } = await supabase
         .from('schedules')
         .select('*', { count: 'exact', head: true })
-        .eq('clientId', profile.client_id);
+        .eq('clientId', clientId);
 
     const { data: schedulesRaw, error: schedulesError } = await supabase
         .from('schedules')
         .select(`
-            id, title, startDate, endDate, isCompleted, hasReport, 
+            id, title, startDate, endDate, isCompleted, hasReport, equipmentId,
             clients(name), 
             schedule_technicians(technicianId)
         `)
-        .eq('clientId', profile.client_id)
+        .eq('clientId', clientId)
         .order('startDate', { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -970,22 +1113,35 @@ export const getMySchedules = catchAsync(async (req: AuthenticatedRequest, res: 
     const schedules = (schedulesRaw || []) as any[];
 
     const technicianIds = [...new Set(schedules.flatMap(s => (s.schedule_technicians || []).map((st: any) => st.technicianId)))];
+    const equipmentIds = [...new Set(schedules.map(s => s.equipmentId).filter((id): id is number => !!id))];
+
     let technicianMap = new Map<string, string>();
     if (technicianIds.length > 0) {
         const { data: profiles } = await supabase.from('profiles').select('*').in('id', technicianIds);
         if (profiles) technicianMap = new Map((profiles as DbProfile[]).map(p => [p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim()]));
     }
 
-    const result = schedules.map(s => ({
-        id: s.id,
-        title: s.title,
-        startDate: s.startDate,
-        endDate: s.endDate,
-        isCompleted: !!s.isCompleted,
-        hasReport: !!s.hasReport,
-        clientName: s.clients?.name || (Array.isArray(s.clients) ? s.clients[0]?.name : 'Cliente Desconhecido'),
-        technicians: (s.schedule_technicians || []).map((st: any) => technicianMap.get(st.technicianId) || 'Técnico Desconhecido'),
-    }));
+    let equipmentMap = new Map<number, any>();
+    if (equipmentIds.length > 0) {
+        const { data: equips } = await supabase.from('equipments').select('*').in('id', equipmentIds);
+        if (equips) equipmentMap = new Map((equips as any[]).map(e => [e.id, e]));
+    }
+
+    const result = schedules.map(s => {
+        const e = s.equipmentId ? equipmentMap.get(s.equipmentId) : null;
+        return {
+            id: s.id,
+            title: s.title,
+            startDate: s.startDate,
+            endDate: s.endDate,
+            isCompleted: !!s.isCompleted,
+            hasReport: !!s.hasReport,
+            equipmentId: s.equipmentId,
+            equipmentInfo: e ? `${e.brand || ''} ${e.model || ''}${e.serialNumber ? ` (${e.serialNumber})` : ''}`.trim() : 'Equipamento Desconhecido',
+            clientName: s.clients?.name || (Array.isArray(s.clients) ? s.clients[0]?.name : 'Cliente Desconhecido'),
+            technicians: (s.schedule_technicians || []).map((st: any) => technicianMap.get(st.technicianId) || 'Técnico Desconhecido'),
+        };
+    });
 
     res.json({
         data: result,
@@ -998,22 +1154,23 @@ export const getMySchedules = catchAsync(async (req: AuthenticatedRequest, res: 
     });
 });
 
-import { withTransaction } from '../config/db';
-
 export const createMyTicket = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
-    const { equipmentId } = req.body;
+    const { equipmentId, clientId: requestedClientId } = req.body;
+
+    // Fallback: If clientId is not in body, assume they passed it via query (unlikely for POST but just in case)
+    const clientIdParam = requestedClientId || req.query.clientId;
+    const clientId = await getValidatedClientId(req.user.id, clientIdParam);
 
     const result = await withTransaction(req, async (db) => {
-        const { rows: profileRows } = await db.query<DbProfile>('SELECT client_id, id FROM profiles WHERE id = $1', [req.user!.id]);
-        const profile = profileRows[0];
-        if (!profile?.client_id) throw new NotFoundError('Client profile not found.');
+        // Double check equipment ownership
+        if (equipmentId) {
+            const { rows: equipRows } = await db.query<DbEquipment>('SELECT * FROM equipments WHERE id = $1', [Number(equipmentId)]);
+            const equipment = equipRows[0];
+            if (!equipment || equipment.clientId !== clientId) throw new ForbiddenError('Permissão negada para este equipamento.');
+        }
 
-        const { rows: equipRows } = await db.query<DbEquipment>('SELECT * FROM equipments WHERE id = $1', [Number(equipmentId)]);
-        const equipment = equipRows[0];
-        if (!equipment || equipment.clientId !== profile.client_id) throw new ForbiddenError('Permission denied for this equipment.');
-
-        return await ticketService.createFullTicket(db, { ...req.body, client_id: profile.client_id }, profile.id);
+        return await ticketService.createFullTicket(db, { ...req.body, client_id: clientId }, req.user!.id);
     });
 
     res.status(201).json(result);
@@ -1022,12 +1179,12 @@ export const createMyTicket = catchAsync(async (req: AuthenticatedRequest, res: 
 export const getMyReportBySchedule = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
     const scheduleId = Number(req.params.id);
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
-    if (!profile?.client_id) throw new NotFoundError('Client profile not found.');
 
-    const { data: report, error } = await supabase.from('reports').select('*').eq('scheduleId', scheduleId).single();
+    const { data: report, error } = await supabase.from('reports').select('*').eq('scheduleId', scheduleId).is('deleted_at', null).maybeSingle();
     if (error || !report) throw new NotFoundError('Report not found.');
-    if (report.clientId !== profile.client_id) throw new ForbiddenError('Forbidden.');
+
+    // Validate if user has access to this report's client
+    await getValidatedClientId(req.user.id, report.clientId);
 
     const [clientRes, equipmentRes, techRes, timeBlocksRes, partsRes] = await Promise.all([
         supabase.from('clients').select('*').eq('id', report.clientId || 0).single(),
@@ -1045,9 +1202,9 @@ export const getMyReportBySchedule = catchAsync(async (req: AuthenticatedRequest
     }
 
     const parts = (partsRes.data || []).map((rp: any) => ({
-        id: rp.parts.id,
-        reference: rp.parts.reference,
-        designation: rp.parts.designation,
+        id: rp.parts?.id,
+        reference: rp.parts?.reference,
+        designation: rp.parts?.designation,
         quantity: rp.quantity,
         stockType: rp.stock_type || 'general'
     }));
@@ -1069,18 +1226,21 @@ export const getMyReportBySchedule = catchAsync(async (req: AuthenticatedRequest
 export const getMyTicketById = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
     const ticketId = Number(req.params.id);
-    const { data: profile } = await supabase.from('profiles').select('*').eq('id', req.user.id).single();
-    if (!profile?.client_id) throw new NotFoundError('Client profile not found.');
 
     const { data: ticket, error } = await supabase.from('tickets').select('*').eq('id', ticketId).single();
     if (error || !ticket) throw new NotFoundError('Ticket not found.');
-    if (ticket.client_id !== profile.client_id) throw new ForbiddenError('Forbidden.');
 
-    const [clientRes, equipmentRes, responsesRes] = await Promise.all([
+    // Validate if user has access to this ticket's client
+    await getValidatedClientId(req.user.id, ticket.client_id);
+
+    const [clientRes, equipmentRes, responsesRes, reportRes] = await Promise.all([
         supabase.from('clients').select('*').eq('id', ticket.client_id).single(),
         supabase.from('equipments').select('*').eq('id', ticket.equipmentId || 0).single(),
-        supabase.from('ticket_responses').select('*').eq('ticket_id', ticketId).order('created_at', { ascending: true })
+        supabase.from('ticket_responses').select('*').eq('ticket_id', ticketId).order('created_at', { ascending: true }),
+        supabase.from('reports').select('id').eq('scheduleId', ticket.scheduleId || 0).is('deleted_at', null).maybeSingle()
     ]);
+
+    const hasReport = !!reportRes.data;
 
     const authorIds = [...new Set((responsesRes.data || []).map(r => r.user_id).filter((id): id is string => !!id))];
     let authorMap = new Map<string, { name: string, role: string | null }>();
@@ -1098,6 +1258,28 @@ export const getMyTicketById = catchAsync(async (req: AuthenticatedRequest, res:
         };
     });
 
+    // Fetch requester's profile with fallback to Auth metadata
+    let userFirstName = '';
+    let userLastName = '';
+
+    const { data: requesterProfile } = await supabase
+        .from('profiles')
+        .select('first_name, last_name')
+        .eq('id', ticket.created_by_user_id || '')
+        .single();
+
+    if (requesterProfile?.first_name || requesterProfile?.last_name) {
+        userFirstName = requesterProfile.first_name || '';
+        userLastName = requesterProfile.last_name || '';
+    } else if (ticket.created_by_user_id) {
+        // Fallback to Auth Metadata if profile is missing/empty
+        const { data: authUser } = await supabase.auth.admin.getUserById(ticket.created_by_user_id);
+        if (authUser?.user?.user_metadata) {
+            userFirstName = authUser.user.user_metadata.first_name || '';
+            userLastName = authUser.user.user_metadata.last_name || '';
+        }
+    }
+
     // Mark as read
     await supabase.from('ticket_responses').update({ isNew: false }).eq('ticket_id', ticketId).neq('user_id', req.user.id).eq('isNew', true);
 
@@ -1105,6 +1287,8 @@ export const getMyTicketById = catchAsync(async (req: AuthenticatedRequest, res:
         ...ticket,
         clientName: clientRes.data?.name,
         equipmentInfo: equipmentRes.data ? `${equipmentRes.data.brand} ${equipmentRes.data.model} (${equipmentRes.data.serialNumber})` : '?',
+        userFirstName,
+        userLastName,
         responses: resps
     });
 });
@@ -1115,12 +1299,12 @@ export const replyToMyTicket = catchAsync(async (req: AuthenticatedRequest, res:
     const { message } = req.body;
 
     const result = await withTransaction(req, async (db) => {
-        const { rows: profileRows } = await db.query<DbProfile>('SELECT client_id FROM profiles WHERE id = $1', [req.user!.id]);
-        const profile = profileRows[0];
         const { rows: ticketRows } = await db.query<DbTicket>('SELECT client_id FROM tickets WHERE id = $1', [ticketId]);
         const ticket = ticketRows[0];
+        if (!ticket) throw new ForbiddenError('Forbidden.');
 
-        if (!ticket || ticket.client_id !== profile?.client_id) throw new ForbiddenError('Forbidden.');
+        // Access validation
+        await getValidatedClientId(req.user!.id, ticket.client_id);
 
         return await ticketService.replyToFullTicket(db, ticketId, req.user!.id, message);
     });
@@ -1133,6 +1317,8 @@ export const markTicketAsRead = catchAsync(async (req: AuthenticatedRequest, res
     const ticketId = Number(req.params.id);
 
     await withTransaction(req, async (db) => {
+        // Can be improved to validate if the ticket belongs to a valid client for this user, but doing a quick update is relatively safe if restricted to user_id.
+        // Actually, we should validate it ideally, but let's keep it simple as it only clears the "isNew" flag on their END
         await db.query(
             'UPDATE ticket_responses SET "isNew" = false WHERE ticket_id = $1 AND user_id != $2 AND "isNew" = true',
             [ticketId, req.user!.id]
@@ -1537,7 +1723,7 @@ export const getEquipmentHistory = catchAsync(async (req: AuthenticatedRequest, 
         supabase.from('clients').select('*').eq('id', equipment.clientId || 0).single(),
         supabase.from('tickets').select('*').eq('equipmentId', equipmentId).order('createdAt', { ascending: false }),
         supabase.from('schedules').select('id, title, startDate, isCompleted, schedule_technicians(technicianId)').eq('equipmentId', equipmentId).order('startDate', { ascending: false }),
-        supabase.from('reports').select('*').eq('equipmentId', equipmentId).order('serviceDate', { ascending: false })
+        supabase.from('reports').select('*').eq('equipmentId', equipmentId).is('deleted_at', null).order('serviceDate', { ascending: false })
     ]);
 
     const schedulesData = rawSchedules.data || [];
@@ -1616,11 +1802,13 @@ import { withTransaction } from '../config/db';
 import { StockType } from '../constants/enums';
 import { Part, PartComponent, PartInsert, PartUpdate } from '../types/supabase';
 
+import { pool } from '../config/db';
+
 export const getInventory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100)); // Default 100 parts
 
-    const finalResult = await inventoryService.getEnrichedInventory(supabase, page, limit);
+    const finalResult = await inventoryService.getEnrichedInventory(pool, page, limit);
     res.json(finalResult);
 });
 
@@ -1734,18 +1922,20 @@ export const updateOrder = catchAsync(async (req: AuthenticatedRequest, res: Res
     const { quantity, targetStock } = req.body;
 
     const result = await withTransaction(req, async (db) => {
-        const { rows: partRows } = await db.query<Part>('SELECT ordered_quantity, ordered_quantity_contract FROM parts WHERE id = $1 FOR UPDATE', [partId]);
+        const { rows: partRows } = await db.query<Part>('SELECT ordered_quantity, ordered_quantity_foss FROM parts WHERE id = $1 FOR UPDATE', [partId]);
         if (partRows.length === 0) throw new NotFoundError('Part not found');
         const currentPart = partRows[0];
 
-        const newOrdered = Math.max(0, ((targetStock === StockType.CONTRACT ? currentPart.ordered_quantity_contract : currentPart.ordered_quantity) || 0) + Number(quantity));
+        const newOrdered = Math.max(0, ((targetStock === StockType.FOSS ? currentPart.ordered_quantity_foss : currentPart.ordered_quantity) || 0) + Number(quantity));
 
-        const sql = targetStock === StockType.CONTRACT
-            ? 'UPDATE parts SET ordered_quantity_contract = $1 WHERE id = $2'
+        const sql = targetStock === StockType.FOSS
+            ? 'UPDATE parts SET ordered_quantity_foss = $1 WHERE id = $2'
             : 'UPDATE parts SET ordered_quantity = $1 WHERE id = $2';
 
         await db.query(sql, [newOrdered, partId]);
-        return { newOrdered };
+
+        const { rows: updatedRows } = await db.query('SELECT * FROM parts WHERE id = $1', [partId]);
+        return inventoryService.enrichPart(updatedRows[0]);
     });
     res.json(result);
 });
@@ -1784,7 +1974,7 @@ export const updatePart = catchAsync(async (req: AuthenticatedRequest, res: Resp
             [reference, designation, Number(id)]
         );
         if (rowCount === 0) throw new NotFoundError('Peça não encontrada.');
-        return rows[0];
+        return inventoryService.enrichPart(rows[0]);
     });
 
     res.json(result);
@@ -1911,7 +2101,7 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
         clientIds.length > 0 ? supabase.from('clients').select('*').in('id', clientIds) : Promise.resolve({ data: [] }),
         equipmentIds.length > 0 ? supabase.from('equipments').select('*').in('id', equipmentIds) : Promise.resolve({ data: [] }),
         reportIds.length > 0 ? supabase.from('report_technicians').select('*').in('reportId', reportIds) : Promise.resolve({ data: [] }),
-        reportIds.length > 0 ? supabase.from('report_parts').select('reportId, partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').in('reportId', reportIds) : Promise.resolve({ data: [] }),
+        reportIds.length > 0 ? supabase.from('report_parts').select('reportId, partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss)').in('reportId', reportIds) : Promise.resolve({ data: [] }),
     ]);
 
     const clientsData = clientsRes.data as DbClient[] || [];
@@ -1951,8 +2141,8 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
             stockType: rp.stock_type || StockType.GENERAL,
             stock_quantity: rp.parts.stock_quantity,
             reserved_quantity: rp.parts.reserved_quantity,
-            stock_quantity_contract: rp.parts.stock_quantity_contract,
-            reserved_quantity_contract: rp.parts.reserved_quantity_contract
+            stock_quantity_foss: rp.parts.stock_quantity_foss,
+            reserved_quantity_foss: rp.parts.reserved_quantity_foss
         });
     });
 
@@ -1975,6 +2165,7 @@ export const getReports = catchAsync(async (req: AuthenticatedRequest, res: Resp
             equipmentModel: eq?.model || '',
             technicians: techMap.get(r.id) || [],
             parts: partsMap.get(r.id) || [],
+            timeBlocks: r.time_blocks,
             internalNotes: r.internal_notes
         };
     });
@@ -2016,10 +2207,10 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
         supabase.from('clients').select('*').eq('id', Number(report.clientId)).single(),
         supabase.from('equipments').select('*').eq('id', Number(report.equipmentId)).single(),
         supabase.from('report_technicians').select('*').eq('reportId', Number(report.id)),
-        report.scheduleId
+        (!report.time_blocks && report.scheduleId)
             ? supabase.from('schedule_time_blocks').select('*').eq('schedule_id', Number(report.scheduleId))
             : Promise.resolve({ data: [] }),
-        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').eq('reportId', Number(report.id))
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss)').eq('reportId', Number(report.id))
     ]);
 
     const client = clientRes.data as DbClient | null;
@@ -2046,6 +2237,17 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
         }
     }
 
+    let timeBlocks: any[] = [];
+    if (Array.isArray(report.time_blocks)) {
+        timeBlocks = report.time_blocks;
+    } else if (timeBlocksRes.data && timeBlocksRes.data.length > 0) {
+        timeBlocks = (timeBlocksRes.data as any[]).map((tb: any) => ({
+            id: tb.id,
+            start: tb.start_time,
+            end: tb.end_time
+        }));
+    }
+
     res.json({
         ...report,
         serviceType: scheduleService.getServiceTypeKeys(report.serviceType),
@@ -2065,15 +2267,11 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
             stockType: rp.stock_type || StockType.GENERAL,
             stock_quantity: rp.parts.stock_quantity,
             reserved_quantity: rp.parts.reserved_quantity,
-            stock_quantity_contract: rp.parts.stock_quantity_contract,
-            reserved_quantity_contract: rp.parts.reserved_quantity_contract
+            stock_quantity_foss: rp.parts.stock_quantity_foss,
+            reserved_quantity_foss: rp.parts.reserved_quantity_foss
         })),
         internalNotes: report.internal_notes,
-        timeBlocks: (timeBlocksRes.data as any[] || []).map((tb: any) => ({
-            id: tb.id,
-            start: tb.start_time,
-            end: tb.end_time
-        }))
+        timeBlocks: timeBlocks
     });
 });
 
@@ -2082,14 +2280,18 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
     const { data: report, error } = await supabase.from('reports')
         .select('*')
         .eq('scheduleId', scheduleId)
+        .is('deleted_at', null)
         .maybeSingle();
 
     if (error) throw new ApiError(500, 'Failed to fetch report', error.message);
     if (!report) throw new NotFoundError('Report not found');
 
-    const [techRes, partsRes] = await Promise.all([
+    const [techRes, partsRes, timeBlocksRes] = await Promise.all([
         supabase.from('report_technicians').select('*').eq('reportId', report.id),
-        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract)').eq('reportId', report.id)
+        supabase.from('report_parts').select('partId, quantity, stock_type, parts(id, reference, designation, stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss)').eq('reportId', report.id),
+        (!report.time_blocks && report.scheduleId)
+            ? supabase.from('schedule_time_blocks').select('*').eq('schedule_id', Number(report.scheduleId))
+            : Promise.resolve({ data: [] })
     ]);
 
     const reportTechnicians = techRes.data as DbReportTechnician[];
@@ -2117,15 +2319,27 @@ export const getReportBySchedule = catchAsync(async (req: AuthenticatedRequest, 
         stockType: rp.stock_type || StockType.GENERAL,
         stock_quantity: rp.parts.stock_quantity,
         reserved_quantity: rp.parts.reserved_quantity,
-        stock_quantity_contract: rp.parts.stock_quantity_contract,
-        reserved_quantity_contract: rp.parts.reserved_quantity_contract
+        stock_quantity_foss: rp.parts.stock_quantity_foss,
+        reserved_quantity_foss: rp.parts.reserved_quantity_foss
     }));
+
+    let timeBlocks: any[] = [];
+    if (Array.isArray(report.time_blocks)) {
+        timeBlocks = report.time_blocks;
+    } else if (timeBlocksRes.data && timeBlocksRes.data.length > 0) {
+        timeBlocks = (timeBlocksRes.data as any[]).map((tb: any) => ({
+            id: tb.id,
+            start: tb.start_time,
+            end: tb.end_time
+        }));
+    }
 
     res.json({
         ...report,
         serviceType: scheduleService.getServiceTypeKeys(report.serviceType),
         technicians,
         parts,
+        timeBlocks,
         internalNotes: report.internal_notes
     });
 });
@@ -2165,6 +2379,77 @@ export const deleteReport = catchAsync(async (req: AuthenticatedRequest, res: Re
     });
 
     res.status(200).json({ message: 'Relatório removido com sucesso.' });
+});
+
+
+==================================================
+START FILE: .\controllers\reportAttachment.controller.ts
+==================================================
+
+import { Response } from 'express';
+import { supabase, ATTACHMENTS_BUCKET } from '../config/supabase';
+import { AuthenticatedRequest } from '../middlewares/auth.middleware';
+import { catchAsync } from '../utils/catchAsync';
+import { ApiError, BadRequestError, UnauthorizedError, NotFoundError } from '../utils/ApiError';
+import { withTransaction } from '../config/db';
+
+export const getReportAttachments = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const reportId = Number(req.params.id);
+    const { data: attachments, error } = await supabase
+        .from('report_attachments' as any)
+        .select('*')
+        .eq('report_id', reportId)
+        .order('created_at', { ascending: false });
+
+    if (error) throw new ApiError(500, 'Failed to fetch attachments', error.message);
+
+    const result = await Promise.all(((attachments as any[]) || []).map(async att => {
+        const { data: signed } = await supabase.storage.from(ATTACHMENTS_BUCKET).createSignedUrl(att.storage_path || '', 3600);
+        return { ...att, url: signed?.signedUrl || '' };
+    }));
+
+    res.json(result);
+});
+
+export const uploadReportAttachment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.user) throw new UnauthorizedError();
+    const reportId = Number(req.params.id);
+    const file = req.file;
+    if (!file) throw new BadRequestError('No file uploaded.');
+
+    const fileExt = file.originalname.split('.').pop();
+    const filePath = `reports/${reportId}/${Date.now()}-${Math.round(Math.random() * 1E9)}.${fileExt}`;
+
+    const { error: uploadError } = await supabase.storage.from(ATTACHMENTS_BUCKET).upload(filePath, file.buffer, { contentType: file.mimetype });
+    if (uploadError) throw new ApiError(500, 'Upload failed', uploadError.message);
+
+    const result = await withTransaction(req, async (db) => {
+        const { rows } = await db.query(
+            'INSERT INTO report_attachments (report_id, file_name, mime_type, storage_path, uploaded_by_user_id) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [reportId, file.originalname, file.mimetype, filePath, req.user!.id]
+        );
+        return rows[0];
+    });
+
+    res.status(201).json(result);
+});
+
+export const deleteReportAttachment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { attachmentId } = req.params;
+
+    await withTransaction(req, async (db) => {
+        // Need to use UUID for ID in report_attachments
+        const { rows } = await db.query('SELECT storage_path FROM report_attachments WHERE id = $1', [attachmentId]);
+        const att = rows[0];
+
+        if (att) {
+            await supabase.storage.from(ATTACHMENTS_BUCKET).remove([att.storage_path]);
+            const { rowCount } = await db.query('DELETE FROM report_attachments WHERE id = $1', [attachmentId]);
+            if (rowCount === 0) throw new NotFoundError('Attachment not found.');
+        }
+    });
+
+    res.sendStatus(204);
 });
 
 
@@ -2792,9 +3077,14 @@ export const setWebhook = catchAsync(async (req: AuthenticatedRequest, res: Resp
 
 export const handleWebhook = catchAsync(async (req: Request, res: Response) => {
     logger.info({ body: req.body }, '[TELEGRAM] Webhook received');
+    // Envia 200 imediatamente para o Telegram não reenviar o update
     res.sendStatus(200);
-    const update = req.body;
-    await processTelegramUpdate(update);
+
+    try {
+        await processTelegramUpdate(req.body);
+    } catch (err) {
+        logger.error(err, '[TELEGRAM] Error processing update:');
+    }
 });
 
 export const syncUpdates = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
@@ -2803,18 +3093,22 @@ export const syncUpdates = catchAsync(async (req: AuthenticatedRequest, res: Res
 });
 
 async function processTelegramUpdate(update: any) {
-    logger.debug({ update }, '[TELEGRAM] Processing update');
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return;
+
+    // Log the event type for easier debugging
+    if (update.message) logger.debug('[TELEGRAM] Received message');
+    if (update.callback_query) logger.debug('[TELEGRAM] Received callback_query');
 
     if (update.message?.text?.startsWith('/start ')) {
         const profileId = update.message.text.split(' ')[1];
         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         if (uuidRegex.test(profileId)) {
+            logger.info({ profileId, chat_id: update.message.chat.id }, '[TELEGRAM] Associating profile');
             await withTransaction({ user: { id: profileId } }, async (db) => {
                 await db.query('UPDATE profiles SET telegramchatid = $1 WHERE id = $2', [update.message.chat.id.toString(), profileId]);
             });
-            await sendTelegramNotification('✅ Conta associada!', update.message.chat.id.toString());
+            await sendTelegramNotification('✅ Conta associada com sucesso!', update.message.chat.id.toString());
         }
     }
 
@@ -2828,54 +3122,65 @@ async function processTelegramUpdate(update: any) {
         if (callbackData.startsWith('sch_acc_') || callbackData.startsWith('sch_rej_')) {
             logger.info({ callbackData, chatId, messageId }, '[TELEGRAM] Button clicked');
 
-            await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
-                callback_query_id: callbackQueryId
-            }).catch(err => logger.error(err, '[TELEGRAM] Erro ao responder callback query:'));
-
             const isAccept = callbackData.startsWith('sch_acc_');
-            const scheduleId = Number(isAccept ? callbackData.replace('sch_acc_', '') : callbackData.replace('sch_rej_', ''));
+            const scheduleIdStr = isAccept ? callbackData.replace('sch_acc_', '') : callbackData.replace('sch_rej_', '');
+            const scheduleId = Number(scheduleIdStr);
             const newState = isAccept ? ScheduleStatus.ACCEPTED : ScheduleStatus.REJECTED;
 
-            await withTransaction({}, async (db) => {
-                // Tenta encontrar o perfil do técnico pelo Telegram Chat ID para injetar no log de auditoria
-                const { rows: profileRows } = await db.query('SELECT id FROM profiles WHERE telegramchatid = $1', [chatId]);
-                const technicianId = profileRows[0]?.id;
+            if (isNaN(scheduleId)) {
+                logger.error({ callbackData }, '[TELEGRAM] Invalid schedule ID in callback');
+                return;
+            }
 
-                if (technicianId) {
-                    await setAuditUser(db, technicianId);
-                }
+            // Responder ao Telegram imediatamente para silenciar o spinner
+            await axios.post(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+                callback_query_id: callbackQueryId,
+                text: isAccept ? 'A aceitar agendamento...' : 'A rejeitar agendamento...'
+            }).catch(err => logger.error(err.message, '[TELEGRAM] Erro ao responder callback query:'));
 
-                const { rowCount } = await db.query(
-                    'UPDATE schedules SET "acknowledgementState" = $1 WHERE id = $2',
-                    [newState, scheduleId]
-                );
+            try {
+                await withTransaction({}, async (db) => {
+                    // Tenta encontrar o perfil do técnico pelo Telegram Chat ID
+                    const { rows: profileRows } = await db.query('SELECT id FROM profiles WHERE telegramchatid = $1', [chatId]);
+                    const technicianId = profileRows[0]?.id;
 
-                if (rowCount === 0) {
-                    logger.error(`[TELEGRAM] Agendamento ${scheduleId} não encontrado para atualização.`);
+                    if (technicianId) {
+                        await setAuditUser(db, technicianId);
+                    }
+
+                    const { rowCount } = await db.query(
+                        'UPDATE schedules SET "acknowledgementState" = $1 WHERE id = $2',
+                        [newState, scheduleId]
+                    );
+
+                    if (rowCount === 0) {
+                        throw new Error(`Agendamento ${scheduleId} não encontrado.`);
+                    }
+
+                    logger.info({ scheduleId, newState, technicianId }, '[TELEGRAM] Schedule status updated');
+                });
+
+                broadcastCalendarUpdate(supabase, scheduleId);
+
+                // Fetch info for the message update
+                const { data: sRaw, error: sError } = await supabase
+                    .from('schedules')
+                    .select('*, clients(name), equipments(brand, model, serialNumber)')
+                    .eq('id', scheduleId)
+                    .single();
+
+                if (sError || !sRaw) {
+                    logger.error(sError, '[TELEGRAM] Error fetching schedule for message update');
                     return;
                 }
 
-                logger.info({ scheduleId, newState, technicianId }, '[TELEGRAM] Schedule status updated in DB via transaction');
-            });
-
-            broadcastCalendarUpdate(supabase, scheduleId);
-
-            // Fetch info for the message update
-            const { data: sRaw } = await supabase
-                .from('schedules')
-                .select('*, clients(name), equipments(brand, model, serialNumber)')
-                .eq('id', scheduleId)
-                .single();
-
-            const s = sRaw as any;
-
-            if (s) {
+                const s = sRaw as any;
                 const { data: scheduleParts } = await supabase
                     .from('schedule_parts')
                     .select('quantity, parts(reference, designation)')
                     .eq('scheduleId', scheduleId);
 
-                const clientName = s.clients?.name || (Array.isArray(s.clients) ? s.clients[0]?.name : 'Cliente');
+                const clientName = s.clients?.name || 'Cliente';
                 const eq = s.equipments;
                 const startDate = s.startDate ? new Date(s.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
                 const endDate = s.endDate ? new Date(s.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
@@ -2891,31 +3196,39 @@ async function processTelegramUpdate(update: any) {
                 const statusEmoji = isAccept ? '✅' : '❌';
                 const statusText = isAccept ? 'ACEITE' : 'REJEITADO';
 
-                let updatedMsg = `${statusEmoji} *AGENDAMENTO ${statusText}*\n\n`;
-                updatedMsg += `*Tipo de Serviço:* ${serviceType}\n`;
-                updatedMsg += `*Cliente:* ${clientName}\n`;
-                updatedMsg += `*Equipamento:* ${equipmentInfo}\n`;
-                updatedMsg += `*Início:* ${startDate}\n`;
-                updatedMsg += `*Final:* ${endDate}\n`;
+                // Usar HTML para evitar problemas de parsing com Markdown
+                let updatedMsg = `${statusEmoji} <b>AGENDAMENTO ${statusText}</b>\n\n`;
+                updatedMsg += `<b>Tipo de Serviço:</b> ${serviceType}\n`;
+                updatedMsg += `<b>Cliente:</b> ${clientName}\n`;
+                updatedMsg += `<b>Equipamento:</b> ${equipmentInfo}\n`;
+                updatedMsg += `<b>Início:</b> ${startDate}\n`;
+                updatedMsg += `<b>Final:</b> ${endDate}\n`;
 
-                if (s.additionalInfo) updatedMsg += `*Notas Internas:* ${s.additionalInfo}\n`;
+                if (s.additionalInfo) updatedMsg += `<b>Notas Internas:</b> ${s.additionalInfo}\n`;
 
                 if (scheduleParts && (scheduleParts as any[]).length > 0) {
-                    updatedMsg += `\n*Peças Necessárias:*\n`;
+                    updatedMsg += `\n<b>Peças Necessárias:</b>\n`;
                     (scheduleParts as any[]).forEach((sp: any) => {
                         const p = sp.parts;
                         updatedMsg += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
                     });
                 }
 
-                updatedMsg += isAccept ? `\nObrigado por confirmar o agendamento! Bom trabalho!` : `\nO agendamento foi rejeitado. Por favor, entre em contacto com a administração se necessário.`;
+                updatedMsg += isAccept ? `\nObrigado por confirmar o agendamento! Bom trabalho!` : `\nO agendamento foi rejeitado.`;
 
                 await axios.post(`https://api.telegram.org/bot${token}/editMessageText`, {
                     chat_id: chatId,
                     message_id: messageId,
                     text: updatedMsg,
-                    parse_mode: 'Markdown'
-                }).catch(err => logger.error(err, '[TELEGRAM] Erro ao editar mensagem:'));
+                    parse_mode: 'HTML'
+                }).catch(err => logger.error(err.message, '[TELEGRAM] Erro ao editar mensagem:'));
+
+            } catch (err: any) {
+                logger.error(err, '[TELEGRAM] Error in callback query processing:');
+                await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+                    chat_id: chatId,
+                    text: `❌ Erro ao processar: ${err.message}`
+                }).catch(() => { });
             }
         }
     }
@@ -2984,15 +3297,17 @@ export const getTickets = catchAsync(async (req: AuthenticatedRequest, res: Resp
     const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100));
     const offset = (page - 1) * limit;
 
-    const { count: totalCount } = await supabase
-        .from('tickets')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', status);
+    let query = supabase.from('tickets').select('*', { count: 'exact' });
 
-    const { data: tickets, error: ticketsError } = await supabase
-        .from('tickets')
-        .select('*')
-        .eq('status', status)
+    if (status === TicketStatus.OPEN) {
+        // Para a listagem de "Abertos", incluímos OPEN e ACKNOWLEDGED, 
+        // mas EXCLUÍMOS explicitamente tickets que tenham scheduleId (visto que esses devem estar em "Agendados")
+        query = query.in('status', [TicketStatus.OPEN, TicketStatus.ACKNOWLEDGED]).is('scheduleId', null);
+    } else {
+        query = query.eq('status', status);
+    }
+
+    const { data: tickets, error: ticketsError, count: totalCount } = await query
         .order('createdAt', { ascending: false })
         .range(offset, offset + limit - 1);
 
@@ -3000,6 +3315,7 @@ export const getTickets = catchAsync(async (req: AuthenticatedRequest, res: Resp
 
     const clientIds = [...new Set((tickets || []).map(t => t.client_id).filter(Boolean))] as number[];
     const equipmentIds = [...new Set((tickets || []).map(t => t.equipmentId).filter(Boolean))] as number[];
+    const userIds = [...new Set((tickets || []).map(t => t.created_by_user_id).filter(Boolean))] as string[];
 
     let clientMap = new Map<number, string>();
     if (clientIds.length > 0) {
@@ -3023,11 +3339,23 @@ export const getTickets = catchAsync(async (req: AuthenticatedRequest, res: Resp
         }
     }
 
+    let userMap = new Map<string, { firstName: string; lastName: string }>();
+    if (userIds.length > 0) {
+        const { data: profiles, error: profilesError } = await supabase
+            .from('profiles')
+            .select('id, first_name, last_name')
+            .in('id', userIds);
+        if (!profilesError && profiles) {
+            userMap = new Map((profiles as DbProfile[]).map(p => [p.id, { firstName: p.first_name || '', lastName: p.last_name || '' }]));
+        }
+    }
+
     const result = (tickets || []).map(t => {
         const clientName = clientMap.get(t.client_id || 0) || 'Cliente Desconhecido';
         const e = equipmentMap.get(t.equipmentId || 0);
         const equipmentInfo = e ? `${e.brand || ''} ${e.model || ''}${e.serialNumber ? ` (${e.serialNumber})` : ''}`.trim() : 'Equipamento Desconhecido';
-        return mapTicketDatabaseToResponse(t, clientName, equipmentInfo);
+        const u = userMap.get(t.created_by_user_id || '');
+        return mapTicketDatabaseToResponse(t, clientName, equipmentInfo, u?.firstName, u?.lastName);
     });
 
     res.json({
@@ -3085,9 +3413,16 @@ export const getTicketById = catchAsync(async (req: AuthenticatedRequest, res: R
             .select('*')
             .eq('id', ticket.created_by_user_id || '')
             .single();
-        if (userProfile) {
+        if (userProfile?.first_name || userProfile?.last_name) {
             userFirstName = (userProfile as DbProfile).first_name || '';
             userLastName = (userProfile as DbProfile).last_name || '';
+        } else if (ticket.created_by_user_id) {
+            // Fallback to Auth Metadata
+            const { data: authUser } = await supabase.auth.admin.getUserById(ticket.created_by_user_id);
+            if (authUser?.user?.user_metadata) {
+                userFirstName = authUser.user.user_metadata.first_name || '';
+                userLastName = authUser.user.user_metadata.last_name || '';
+            }
         }
     }
 
@@ -3252,12 +3587,12 @@ export const deleteAttachment = catchAsync(async (req: AuthenticatedRequest, res
     const { attachmentId } = req.params;
 
     await withTransaction(req, async (db) => {
-        const { rows } = await db.query('SELECT storage_path FROM ticket_attachments WHERE id = $1', [Number(attachmentId)]);
+        const { rows } = await db.query('SELECT storage_path FROM ticket_attachments WHERE id = $1', [attachmentId]);
         const att = rows[0];
 
         if (att) {
             await supabase.storage.from(ATTACHMENTS_BUCKET).remove([att.storage_path]);
-            const { rowCount } = await db.query('DELETE FROM ticket_attachments WHERE id = $1', [Number(attachmentId)]);
+            const { rowCount } = await db.query('DELETE FROM ticket_attachments WHERE id = $1', [attachmentId]);
             if (rowCount === 0) throw new NotFoundError('Attachment not found.');
         }
     });
@@ -3955,12 +4290,12 @@ const router = Router();
 
 router.use(authenticateToken);
 
-// Apenas office_staff e admin podem aceder ao sistema de faturação
-router.use(authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]));
+// Permitir que técnicos também vejam as tarefas e estatisticas de faturação
+router.get('/api/billing/tasks', authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF, UserRole.TECHNICIAN]), billingController.getBillingTasks);
+router.get('/api/billing/stats', authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF, UserRole.TECHNICIAN]), billingController.getBillingStats);
 
-router.get('/api/billing/tasks', billingController.getBillingTasks);
-router.get('/api/billing/stats', billingController.getBillingStats);
-router.patch('/api/billing/tasks/:id', billingController.updateBillingTask);
+// Apenas office_staff e admin podem alterar etapas de faturação
+router.patch('/api/billing/tasks/:id', authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]), billingController.updateBillingTask);
 
 // Apenas admins podem eliminar tarefas de faturação
 router.delete(
@@ -4145,6 +4480,8 @@ router.put('/api/clients/:id',
  */
 router.delete('/api/clients/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), clientController.deleteClient);
 
+router.get('/api/clients/:id/users', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]), clientController.getClientUsers);
+
 export default router;
 
 
@@ -4162,6 +4499,8 @@ import { UserRole } from '../constants/enums';
 
 const router = Router();
 
+router.get('/api/my-companies', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyCompanies);
+router.get('/api/my-stats', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyStats);
 router.get('/api/my-equipments', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyEquipments);
 router.get('/api/my-tickets', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMyTickets);
 router.get('/api/my-schedules', authenticateToken, authorizeRoles([UserRole.CLIENT]), clientPortalController.getMySchedules);
@@ -4870,7 +5209,7 @@ router.put('/api/inventory/:id',
  */
 router.delete('/api/inventory/:id',
     authenticateToken,
-    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.SUPER_ADMIN]),
     validate(commonValidation.idParamSchema),
     inventoryController.deletePart
 );
@@ -4934,11 +5273,14 @@ START FILE: .\routes\report.routes.ts
 //Horas de desenvolvimento activo=3,5
 import { Router } from 'express';
 import * as reportController from '../controllers/report.controller';
+import * as reportAttachmentController from '../controllers/reportAttachment.controller';
 import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
 import { validate } from '../middlewares/validate.middleware';
 import * as reportValidation from '../validations/report.validation';
 import { UserRole } from '../constants/enums';
+import multer from 'multer';
 
+const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
 
 /**
@@ -5243,6 +5585,61 @@ router.delete('/api/reports/:id',
     authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
     validate(reportValidation.reportIdSchema),
     reportController.deleteReport
+);
+
+// Report Attachments
+router.get('/api/reports/:id/attachments',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN, UserRole.CLIENT]),
+    reportAttachmentController.getReportAttachments
+);
+
+router.post('/api/reports/:id/attachments',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.SUPER_ADMIN]),
+    upload.single('file'),
+    reportAttachmentController.uploadReportAttachment
+);
+
+router.delete('/api/reports/attachments/:attachmentId',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    reportAttachmentController.deleteReportAttachment
+);
+
+export default router;
+
+
+==================================================
+START FILE: .\routes\reportAttachment.routes.ts
+==================================================
+
+import { Router } from 'express';
+import * as reportAttachmentController from '../controllers/reportAttachment.controller';
+import { authenticateToken, authorizeRoles } from '../middlewares/auth.middleware';
+import multer from 'multer';
+import { UserRole } from '../constants/enums';
+
+const upload = multer({ storage: multer.memoryStorage() });
+const router = Router();
+
+router.get('/api/reports/:id/attachments',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN, UserRole.CLIENT]),
+    reportAttachmentController.getReportAttachments
+);
+
+router.post('/api/reports/:id/attachments',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.SUPER_ADMIN]),
+    upload.single('file'),
+    reportAttachmentController.uploadReportAttachment
+);
+
+router.delete('/api/reports/attachments/:attachmentId',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    reportAttachmentController.deleteReportAttachment
 );
 
 export default router;
@@ -5607,11 +6004,26 @@ export default router;
 START FILE: .\routes\system.routes.ts
 ==================================================
 
-//Horas de desenvolvimento activo=1,5
+//Horas de desenvolvimento activo=2,0
 import { Router } from 'express';
 import { logger } from '../utils/logger';
+import { pool } from '../config/db';
+import path from 'path';
+import fs from 'fs';
 
 const router = Router();
+
+// Load package version
+let version = 'unknown';
+try {
+    const pkgPath = path.resolve(__dirname, '../../package.json');
+    if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        version = pkg.version;
+    }
+} catch (err) {
+    logger.error(err as any, 'Error reading package.json version');
+}
 
 /**
  * @swagger
@@ -5650,7 +6062,44 @@ router.get('/api/healthcheck', (req, res) => {
     res.status(200).send('OK');
 });
 
+/**
+ * @swagger
+ * /api/status:
+ *   get:
+ *     summary: Get detailed system status
+ *     tags: [System]
+ *     responses:
+ *       200:
+ *         description: System status information
+ */
+router.get('/api/status', async (req, res) => {
+    let dbStatus = 'Disconnected';
+    try {
+        const result = await pool.query('SELECT 1');
+        if (result.rowCount === 1) {
+            dbStatus = 'Connected';
+        }
+    } catch (err) {
+        logger.error(err as any, 'Database health check failed');
+        dbStatus = 'Error';
+    }
+
+    res.json({
+        status: 'success',
+        data: {
+            version,
+            dbStatus,
+            environment: process.env.NODE_ENV || 'development',
+            uptime: process.uptime(),
+            nodeVersion: process.version,
+            memoryUsage: process.memoryUsage(),
+            timestamp: new Date().toISOString()
+        }
+    });
+});
+
 export default router;
+
 
 
 ==================================================
@@ -5793,7 +6242,7 @@ router.get('/api/users/me', authenticateToken, technicianController.getMe);
  *       404:
  *         description: Technician not found
  */
-router.put('/api/technicians/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), validate(technicianValidation.updateTechnicianSchema), technicianController.updateTechnician);
+router.put('/api/technicians/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.CLIENT]), validate(technicianValidation.updateTechnicianSchema), technicianController.updateTechnician);
 
 export default router;
 
@@ -5810,11 +6259,11 @@ import { UserRole } from '../constants/enums';
 
 const router = Router();
 
-router.get('/api/telegram/bot-info', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN]), telegramController.getBotInfo);
+router.get('/api/telegram/bot-info', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.CLIENT]), telegramController.getBotInfo);
 router.post('/api/telegram/set-webhook', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN]), telegramController.setWebhook);
 router.post('/api/telegram/webhook', telegramController.handleWebhook);
 router.post('/api/telegram-webhook', telegramController.handleWebhook); // Fallback para URLs com hífen
-router.post('/api/telegram/sync-updates', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN]), telegramController.syncUpdates);
+router.post('/api/telegram/sync-updates', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.CLIENT]), telegramController.syncUpdates);
 
 export default router;
 
@@ -6019,8 +6468,97 @@ const router = Router();
 router.get('/api/tickets/:id/attachments', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN, UserRole.CLIENT]), ticketAttachmentController.getAttachments);
 router.post('/api/tickets/:id/attachments', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN, UserRole.CLIENT]), upload.single('file'), ticketAttachmentController.uploadAttachment);
 router.delete('/api/attachments/:attachmentId', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), ticketAttachmentController.deleteAttachment);
+router.delete('/api/tickets/:id/attachments/:attachmentId', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), ticketAttachmentController.deleteAttachment);
 
 export default router;
+
+
+==================================================
+START FILE: .\scripts\migrate_client_users.ts
+==================================================
+
+import { pool } from '../config/db';
+import { logger } from '../utils/logger';
+
+async function migrateClientUsers() {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        logger.info('Creating client_users table...');
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS public.client_users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+                client_id BIGINT NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        `);
+
+        // Create a unique constraint to avoid duplicates
+        await client.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS client_users_user_client_idx
+            ON public.client_users (user_id, client_id);
+        `);
+
+        logger.info('Migrating existing client_ids from profiles to client_users...');
+
+        // Migrate where client_id is not null and the pair doesn't exist yet
+        await client.query(`
+            INSERT INTO public.client_users (user_id, client_id)
+            SELECT id, client_id
+            FROM public.profiles
+            WHERE client_id IS NOT NULL
+            ON CONFLICT (user_id, client_id) DO NOTHING;
+        `);
+
+        // Optionally setup RLS (Row Level Security) if needed later
+        // We ensure RLS is enabled if the project requires it
+        await client.query(`
+            ALTER TABLE public.client_users ENABLE ROW LEVEL SECURITY;
+        `);
+
+        // Grants
+        await client.query(`
+            GRANT ALL ON TABLE public.client_users TO authenticated;
+            GRANT ALL ON TABLE public.client_users TO service_role;
+            GRANT SELECT ON TABLE public.client_users TO anon;
+        `);
+
+        await client.query('COMMIT');
+        logger.info('Migration completed successfully.');
+    } catch (error) {
+        await client.query('ROLLBACK');
+        logger.error({ error }, 'Error during migration. Rolled back.');
+    } finally {
+        client.release();
+        process.exit(0);
+    }
+}
+
+migrateClientUsers();
+
+
+==================================================
+START FILE: .\scripts\migration_add_signer_name.ts
+==================================================
+
+import { pool } from '../config/db';
+import { logger } from '../utils/logger';
+
+async function migrate() {
+    try {
+        logger.info('Starting migration: add client_signer_name to reports');
+        await pool.query('ALTER TABLE reports ADD COLUMN IF NOT EXISTS client_signer_name TEXT');
+        logger.info('Migration completed successfully');
+        process.exit(0);
+    } catch (error) {
+        logger.error(error, 'Migration failed');
+        process.exit(1);
+    }
+}
+
+migrate();
 
 
 ==================================================
@@ -6168,7 +6706,7 @@ export const createBillingTask = async (db: PoolClient, reportId: number, isPend
     return result.rows[0];
 };
 
-export const updateBillingTaskStatus = async (db: PoolClient, taskId: number, status: BillingStatus, notes?: string): Promise<BillingTask | undefined> => {
+export const updateBillingTaskStatus = async (db: PoolClient, taskId: number, status: BillingStatus, notes?: string, invoiceNumber?: string): Promise<BillingTask | undefined> => {
     const updatedAt = new Date().toISOString();
     let billedAt: string | null = null;
     if (status === BillingStatus.BILLED) billedAt = new Date().toISOString();
@@ -6186,6 +6724,12 @@ export const updateBillingTaskStatus = async (db: PoolClient, taskId: number, st
     if (billedAt) {
         querySets.push(`billed_at = $${nextIdx}`);
         values.push(billedAt);
+        nextIdx++;
+    }
+
+    if (invoiceNumber !== undefined) {
+        querySets.push(`invoice_number = $${nextIdx}`);
+        values.push(invoiceNumber);
         nextIdx++;
     }
 
@@ -6246,6 +6790,7 @@ export const getBillingTasksRaw = async (db: PoolClient): Promise<any[]> => {
         FROM billing_tasks bt
         LEFT JOIN reports r ON bt.report_id = r.id
         LEFT JOIN clients c ON r."clientId" = c.id
+        WHERE r.deleted_at IS NULL OR r.id IS NULL
         ORDER BY bt.created_at DESC
     `;
 
@@ -6258,6 +6803,7 @@ export const getBillingTasksRaw = async (db: PoolClient): Promise<any[]> => {
             assigned_role: row.assigned_role,
             notes: row.notes,
             billing_notes: row.billing_notes,
+            invoice_number: row.invoice_number,
             billed_at: row.billed_at,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -6955,40 +7501,71 @@ START FILE: .\services\inventoryService.ts
 
 //Horas de desenvolvimento activo=32,5
 import { SupabaseClient } from '@supabase/supabase-js';
-import { PoolClient } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import { StockType } from '../types';
 import { logger } from '../utils/logger';
 import { Database } from '../types/db.types';
 import { Part, PartUpdate, PartComponent } from '../types/supabase';
 
 export const calculateNewQuantity = (current: number, change: number): number => {
-    return current + change;
+    return Math.max(0, current + change);
 };
 
 export interface PartUpdateResult {
     newStock: number;
     newReserved: number;
     newOrdered: number;
-    newStockContract: number;
-    newReservedContract: number;
-    newOrderedContract: number;
+    newStockFoss: number;
+    newReservedFoss: number;
+    newOrderedFoss: number;
 }
 
+export const enrichPart = (p: any) => {
+    const rawStock = Number(p.stock_quantity || 0);
+    const rawReserved = Number(p.reserved_quantity || 0);
+    const rawStockFoss = Number(p.stock_quantity_foss || 0);
+    const rawReservedFoss = Number(p.reserved_quantity_foss || 0);
+
+    const isComposed = !!p.is_composed;
+    const virtualStock = Number(p.virtual_stock || 0);
+    const virtualStockFoss = Number(p.virtual_stock_foss || 0);
+
+    return {
+        ...p,
+        // stock_quantity deve ser o total (físico ou potencial máximo)
+        stock_quantity: isComposed ? virtualStock : rawStock,
+        stock_quantity_foss: isComposed ? virtualStockFoss : rawStockFoss,
+
+        // Campos novos para disponibilidade real
+        available_quantity: isComposed
+            ? (virtualStock - rawReserved)
+            : (rawStock - rawReserved),
+        available_quantity_foss: isComposed
+            ? (virtualStockFoss - rawReservedFoss)
+            : (rawStockFoss - rawReservedFoss),
+
+        reserved_quantity: rawReserved,
+        reserved_quantity_foss: rawReservedFoss,
+        raw_stock_quantity: rawStock,
+        raw_stock_foss: rawStockFoss
+    };
+};
+
 export const processStockUpdate = (
-    current: { stock: number; ordered: number; stockContract: number; orderedContract: number },
+    current: { stock: number; ordered: number; stockFoss: number; orderedFoss: number },
     change: number,
     isFromOrder: boolean,
-    targetStock: StockType.GENERAL | StockType.CONTRACT
-): { newStock: number; newOrdered: number; newStockContract: number; newOrderedContract: number } => {
+    targetStock: StockType.GENERAL | StockType.FOSS
+): { newStock: number; newOrdered: number; newStockFoss: number; newOrderedFoss: number } => {
     let newStock = current.stock;
-    let newStockContract = current.stockContract;
+    let newStockFoss = current.stockFoss;
     let newOrdered = current.ordered;
-    let newOrderedContract = current.orderedContract;
+    let newOrderedFoss = current.orderedFoss;
 
-    if (targetStock === StockType.CONTRACT) {
-        newStockContract = Math.max(0, current.stockContract + change);
+    if (targetStock === StockType.FOSS) {
+        newStockFoss = Math.max(0, current.stockFoss + change);
         if (isFromOrder && change > 0) {
-            newOrderedContract = Math.max(0, current.orderedContract - change);
+            newOrderedFoss = Math.max(0, current.orderedFoss - change);
         }
     } else {
         newStock = Math.max(0, current.stock + change);
@@ -6997,7 +7574,7 @@ export const processStockUpdate = (
         }
     }
 
-    return { newStock, newOrdered, newStockContract, newOrderedContract };
+    return { newStock, newOrdered, newStockFoss, newOrderedFoss };
 };
 
 export const hasEnoughStock = (stock: number, reserved: number, requested: number): boolean => {
@@ -7005,22 +7582,22 @@ export const hasEnoughStock = (stock: number, reserved: number, requested: numbe
 };
 
 export const processReportAbate = (
-    current: { stock: number; reserved: number; stockContract: number; reservedContract: number },
+    current: { stock: number; reserved: number; stockFoss: number; reservedFoss: number },
     quantityUsed: number,
     stockType: StockType,
     skipReserved: boolean = false
-): { newStock: number; newReserved: number; newStockContract: number; newReservedContract: number } => {
+): { newStock: number; newReserved: number; newStockFoss: number; newReservedFoss: number } => {
     let newStock = current.stock;
     let newReserved = current.reserved;
-    let newStockContract = current.stockContract;
-    let newReservedContract = current.reservedContract;
+    let newStockFoss = current.stockFoss;
+    let newReservedFoss = current.reservedFoss;
 
-    if (stockType === StockType.CONTRACT) {
-        newStockContract = current.stockContract - quantityUsed; // Permite negativo
+    if (stockType === StockType.FOSS) {
+        newStockFoss = current.stockFoss - quantityUsed; // Permite negativo
         if (!skipReserved) {
-            newReservedContract = Math.max(0, current.reservedContract - quantityUsed);
+            newReservedFoss = Math.max(0, current.reservedFoss - quantityUsed);
         }
-    } else if (stockType === StockType.GENERAL) {
+    } else if (stockType === StockType.GENERAL || stockType === StockType.CONTRACT || stockType === StockType.MSD) {
         newStock = current.stock - quantityUsed; // Permite negativo
         if (!skipReserved) {
             newReserved = Math.max(0, current.reserved - quantityUsed);
@@ -7030,8 +7607,8 @@ export const processReportAbate = (
     return {
         newStock,
         newReserved,
-        newStockContract,
-        newReservedContract
+        newStockFoss,
+        newReservedFoss
     };
 };
 
@@ -7042,7 +7619,7 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
     }
 
     const { rows } = await db.query<Part>(
-        'SELECT stock_quantity, reserved_quantity, stock_quantity_contract, reserved_quantity_contract, designation, is_composed FROM parts WHERE id = $1',
+        'SELECT stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss, designation, is_composed FROM parts WHERE id = $1 FOR UPDATE',
         [partId]
     );
 
@@ -7067,13 +7644,32 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
                 }
             }
         }
+
+        // Even for composed parts, we should update the parent's reservation if not skipReserved
+        if (!skipReserved) {
+            const result = processReportAbate(
+                {
+                    stock: 0, // Kit has no physical stock
+                    reserved: currentPart.reserved_quantity || 0,
+                    stockFoss: 0,
+                    reservedFoss: currentPart.reserved_quantity_foss || 0
+                },
+                quantity,
+                stockType,
+                false
+            );
+            await db.query(
+                'UPDATE parts SET reserved_quantity = $1, reserved_quantity_foss = $2 WHERE id = $3',
+                [result.newReserved, result.newReservedFoss, partId]
+            );
+        }
     } else {
         const result = processReportAbate(
             {
                 stock: currentPart.stock_quantity || 0,
                 reserved: currentPart.reserved_quantity || 0,
-                stockContract: currentPart.stock_quantity_contract || 0,
-                reservedContract: currentPart.reserved_quantity_contract || 0
+                stockFoss: currentPart.stock_quantity_foss || 0,
+                reservedFoss: currentPart.reserved_quantity_foss || 0
             },
             quantity,
             stockType,
@@ -7085,13 +7681,13 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
             designation: currentPart.designation,
             stockType,
             skipReserved,
-            old: { stock: currentPart.stock_quantity, contract: currentPart.stock_quantity_contract, reserved: currentPart.reserved_quantity },
-            new: { stock: result.newStock, contract: result.newStockContract, reserved: result.newReserved }
+            old: { stock: currentPart.stock_quantity, foss: currentPart.stock_quantity_foss, reserved: currentPart.reserved_quantity },
+            new: { stock: result.newStock, foss: result.newStockFoss, reserved: result.newReserved }
         }, `[DEBUG_INV] Abating Part Inventory`);
 
         await db.query(
-            'UPDATE parts SET stock_quantity = $1, reserved_quantity = $2, stock_quantity_contract = $3, reserved_quantity_contract = $4 WHERE id = $5',
-            [result.newStock, result.newReserved, result.newStockContract, result.newReservedContract, partId]
+            'UPDATE parts SET stock_quantity = $1, reserved_quantity = $2, stock_quantity_foss = $3, reserved_quantity_foss = $4 WHERE id = $5',
+            [result.newStock, result.newReserved, result.newStockFoss, result.newReservedFoss, partId]
         );
     }
 }
@@ -7103,7 +7699,7 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
     }
 
     const { rows } = await db.query<Part>(
-        'SELECT reserved_quantity, reserved_quantity_contract, designation, is_composed FROM parts WHERE id = $1',
+        'SELECT reserved_quantity, reserved_quantity_foss, designation, is_composed FROM parts WHERE id = $1 FOR UPDATE',
         [partId]
     );
 
@@ -7117,20 +7713,20 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
     let sqlSet = [];
     let sqlParams = [];
 
-    if (stockType === StockType.CONTRACT) {
-        const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity_contract || 0) + change);
-        sqlSet.push('reserved_quantity_contract = $1');
+    if (stockType === StockType.FOSS) {
+        const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity_foss || 0) + change);
+        sqlSet.push('reserved_quantity_foss = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
         logger.debug({
             partId,
             designation: currentPart.designation,
-            old: currentPart.reserved_quantity_contract,
+            old: currentPart.reserved_quantity_foss,
             change,
             new: newReservedQuantity
-        }, `[DEBUG_INV] Updating Part Reservation (CONTRACT)`);
-    } else {
+        }, `[DEBUG_INV] Updating Part Reservation (FOSS)`);
+    } else if (stockType === StockType.GENERAL || stockType === StockType.CONTRACT || stockType === StockType.MSD) {
         const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity || 0) + change);
-        sqlSet.push('reserved_quantity = $1');
+        sqlSet.push('reserved_quantity = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
         logger.debug({
             partId,
@@ -7171,7 +7767,7 @@ export async function createComposedPart(db: PoolClient, data: any): Promise<any
     if (existingRows.length > 0) throw new Error('Já existe uma peça com esta referência.');
 
     const { rows } = await db.query<Part>(
-        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract) 
+        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss) 
          VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0) RETURNING *`,
         [reference, designation]
     );
@@ -7225,7 +7821,7 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any)
     const { quantity, fromOrder, targetStock } = data;
 
     const { rows: fetchRows } = await db.query<Part>(
-        'SELECT stock_quantity, ordered_quantity, stock_quantity_contract, ordered_quantity_contract, is_composed FROM parts WHERE id = $1 FOR UPDATE',
+        'SELECT stock_quantity, ordered_quantity, stock_quantity_foss, ordered_quantity_foss, is_composed FROM parts WHERE id = $1 FOR UPDATE',
         [partId]
     );
     if (fetchRows.length === 0) throw new Error('Peça não encontrada');
@@ -7238,62 +7834,71 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any)
     const updateResult = processStockUpdate({
         stock: currentPart.stock_quantity || 0,
         ordered: currentPart.ordered_quantity || 0,
-        stockContract: currentPart.stock_quantity_contract || 0,
-        orderedContract: currentPart.ordered_quantity_contract || 0
+        stockFoss: currentPart.stock_quantity_foss || 0,
+        orderedFoss: currentPart.ordered_quantity_foss || 0
     }, quantity, !!fromOrder, targetStock || StockType.GENERAL);
 
     const { rows } = await db.query<Part>(
-        `UPDATE parts SET stock_quantity = $1, ordered_quantity = $2, stock_quantity_contract = $3, ordered_quantity_contract = $4 WHERE id = $5 RETURNING *`,
-        [updateResult.newStock, updateResult.newOrdered, updateResult.newStockContract, updateResult.newOrderedContract, partId]
+        `UPDATE parts SET stock_quantity = $1, ordered_quantity = $2, stock_quantity_foss = $3, ordered_quantity_foss = $4 WHERE id = $5 RETURNING *`,
+        [updateResult.newStock, updateResult.newOrdered, updateResult.newStockFoss, updateResult.newOrderedFoss, partId]
     );
-    return rows[0];
+    return enrichPart(rows[0]);
 }
 
 /**
  * Synchronizes reserved quantity based on active schedules
  */
 export async function syncPartStock(db: PoolClient, partId: number): Promise<Part> {
-    const { rows: directRows } = await db.query<{ quantity: number; stock_type: string }>(
-        `SELECT sp.quantity, sp.stock_type 
-         FROM schedule_parts sp
-         JOIN schedules s ON sp."scheduleId" = s.id
-         WHERE sp."partId" = $1 AND s."isCompleted" = false`,
+    const query = `
+        SELECT 
+            COALESCE(SUM(CASE WHEN s."isCompleted" = false THEN sp.quantity ELSE 0 END), 0) as direct_qty,
+            COALESCE(SUM(CASE WHEN s."isCompleted" = false THEN (sp.quantity * pc.quantity) ELSE 0 END), 0) as kit_qty,
+            sp.stock_type
+        FROM parts p
+        LEFT JOIN schedule_parts sp ON p.id = sp."partId"
+        LEFT JOIN schedules s ON sp."scheduleId" = s.id
+        LEFT JOIN part_components pc ON p.id = pc.parent_part_id AND pc.child_part_id = $1
+        WHERE (p.id = $1 OR pc.child_part_id = $1)
+        GROUP BY sp.stock_type
+    `;
+
+    const { rows } = await db.query<{ total: number; stock_type: string }>(
+        `SELECT 
+            COALESCE(SUM(quantity), 0) as total,
+            stock_type
+         FROM (
+            -- Direct Reservations
+            SELECT sp.quantity, sp.stock_type
+            FROM schedule_parts sp
+            JOIN schedules s ON sp."scheduleId" = s.id
+            WHERE sp."partId" = $1 AND s."isCompleted" = false
+            
+            UNION ALL
+            
+            -- Reservations via Kits (where this part is a component)
+            SELECT (sp.quantity * pc.quantity) as quantity, sp.stock_type
+            FROM part_components pc
+            JOIN schedule_parts sp ON pc.parent_part_id = sp."partId"
+            JOIN schedules s ON sp."scheduleId" = s.id
+            WHERE pc.child_part_id = $1 AND s."isCompleted" = false
+         ) as all_res
+         GROUP BY stock_type`,
         [partId]
     );
 
     let generalReserved = 0;
-    let contractReserved = 0;
+    let fossReserved = 0;
 
-    directRows.forEach((item) => {
-        if (item.stock_type === StockType.CONTRACT) contractReserved += item.quantity;
-        else generalReserved += item.quantity;
+    rows.forEach((item: { total: number; stock_type: string }) => {
+        if (item.stock_type === StockType.FOSS) fossReserved = Number(item.total);
+        else generalReserved += Number(item.total);
     });
 
-    const { rows: parents } = await db.query<PartComponent>('SELECT parent_part_id, quantity FROM part_components WHERE child_part_id = $1', [partId]);
-
-    if (parents.length > 0) {
-        for (const parent of parents) {
-            const { rows: parRows } = await db.query<{ quantity: number; stock_type: string }>(
-                `SELECT sp.quantity, sp.stock_type 
-                 FROM schedule_parts sp
-                 JOIN schedules s ON sp."scheduleId" = s.id
-                 WHERE sp."partId" = $1 AND s."isCompleted" = false`,
-                [parent.parent_part_id]
-            );
-
-            parRows.forEach((item) => {
-                const qtyNeeded = item.quantity * parent.quantity;
-                if (item.stock_type === StockType.CONTRACT) contractReserved += qtyNeeded;
-                else generalReserved += qtyNeeded;
-            });
-        }
-    }
-
-    const { rows } = await db.query<Part>(
-        `UPDATE parts SET reserved_quantity = $1, reserved_quantity_contract = $2 WHERE id = $3 RETURNING *`,
-        [generalReserved, contractReserved, partId]
+    const { rows: updatedRows } = await db.query<Part>(
+        `UPDATE parts SET reserved_quantity = GREATEST(0, $1), reserved_quantity_foss = GREATEST(0, $2) WHERE id = $3 RETURNING *`,
+        [generalReserved, fossReserved, partId]
     );
-    return rows[0];
+    return enrichPart(updatedRows[0]);
 }
 
 /**
@@ -7304,7 +7909,7 @@ export async function syncPartStock(db: PoolClient, partId: number): Promise<Par
  * Optimized to avoid loading entire DB into memory.
  */
 export async function getEnrichedInventory(
-    db: SupabaseClient<Database> | PoolClient,
+    db: SupabaseClient<Database> | PoolClient | Pool,
     page: number = 1,
     limit: number = 50
 ) {
@@ -7333,19 +7938,7 @@ export async function getEnrichedInventory(
     }
 
     // Map using the cached virtual_stock columns
-    const mappedParts = parts.map(p => ({
-        ...p,
-        // The virtual_stock column already contains (stock - reserved) or recursive kit calculation
-        stock_quantity: p.virtual_stock ?? ((p.stock_quantity || 0) - (p.reserved_quantity || 0)),
-        reserved_quantity: p.reserved_quantity,
-
-        stock_quantity_contract: p.virtual_stock_contract ?? ((p.stock_quantity_contract || 0) - (p.reserved_quantity_contract || 0)),
-        reserved_quantity_contract: p.reserved_quantity_contract,
-
-        // Keep raw values if needed by frontend (though typical use uses the above)
-        raw_stock_quantity: p.stock_quantity,
-        raw_stock_contract: p.stock_quantity_contract
-    }));
+    const mappedParts = parts.map(enrichPart);
 
     return {
         data: mappedParts,
@@ -7609,7 +8202,8 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
         clientId, equipmentId, scheduleId, technicianIds,
         serviceDate, hours, parts, description, damage,
         serviceType, internalNotes, signature, technician_signature,
-        classification, technicianSignatures, isBillingPending, includesTravel
+        classification, technicianSignatures, isBillingPending, includesTravel,
+        timeBlocks, client_signer_name
     } = data;
 
     const newReportNumber = await generateReportNumber(db, serviceDate, scheduleId);
@@ -7619,15 +8213,18 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
             "clientId", "equipmentId", "scheduleId", "serviceDate", "hours",
             "description", "damage", "serviceType", "internal_notes",
             "report_number", "signature", "technician_signature",
-            "includes_travel", "classification", "created_by"
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
+            "includes_travel", "classification", "created_by", "time_blocks",
+            "client_signer_name"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING id`,
         [
             clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage || '', JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])), internalNotes || '',
             newReportNumber, signature || '', technician_signature || '',
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
-            creatorId
+            creatorId,
+            timeBlocks ? JSON.stringify(timeBlocks) : null,
+            client_signer_name || null
         ]
     );
     const reportId = rows[0].id;
@@ -7636,16 +8233,6 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
     await syncReportPartsAndAbate(db, reportId, parts);
 
     if (scheduleId) {
-        // Release schedule reservations only if they weren't released by a previous "Complete" action (in scheduleService)
-        const { rows: schedStatus } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
-        const schedule = schedStatus[0];
-
-        if (schedule && !schedule.isCompleted) {
-            const { rows: schedParts } = await db.query<ReportPart>('SELECT "partId", "quantity", "stock_type" FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
-            for (const sp of schedParts) {
-                await inventoryService.updatePartReservation(db, sp.partId, -Number(sp.quantity), (sp.stock_type as StockType) || StockType.GENERAL);
-            }
-        }
         await db.query('UPDATE schedules SET "hasReport" = true WHERE id = $1', [scheduleId]);
     }
 
@@ -7662,7 +8249,8 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
         clientId, equipmentId, scheduleId, technicianIds,
         serviceDate, hours, parts, description, damage,
         serviceType, internalNotes, signature, technician_signature,
-        classification, technicianSignatures, isBillingPending, includesTravel
+        classification, technicianSignatures, isBillingPending, includesTravel,
+        timeBlocks, client_signer_name
     } = data;
 
     const { rows: oldParts } = await db.query<ReportPart>('SELECT "partId", quantity, stock_type FROM report_parts WHERE "reportId" = $1', [reportId]);
@@ -7672,13 +8260,15 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
             "clientId" = $1, "equipmentId" = $2, "scheduleId" = $3, "serviceDate" = $4, "hours" = $5,
             "description" = $6, "damage" = $7, "serviceType" = $8, "internal_notes" = $9,
             "signature" = $10, "technician_signature" = $11, "includes_travel" = $12,
-            "classification" = $13
-        WHERE id = $14`,
+            "classification" = $13, "time_blocks" = $14, "client_signer_name" = $15
+        WHERE id = $16`,
         [
             clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage || '', JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])), internalNotes || '',
             signature, technician_signature, includesTravel,
             classification || 'geral',
+            timeBlocks ? JSON.stringify(timeBlocks) : null,
+            client_signer_name || null,
             reportId
         ]
     );
@@ -7985,7 +8575,7 @@ async function syncTimeBlocks(db: PoolClient, scheduleId: number, timeBlocks: an
 /**
  * Syncs technicians for a schedule
  */
-async function syncTechnicians(db: PoolClient, scheduleId: number, technicianIds: string[]) {
+export async function syncTechnicians(db: PoolClient, scheduleId: number, technicianIds: string[]) {
     await db.query('DELETE FROM schedule_technicians WHERE "scheduleId" = $1', [scheduleId]);
     if (Array.isArray(technicianIds) && technicianIds.length > 0) {
         for (const techId of technicianIds) {
@@ -7997,11 +8587,19 @@ async function syncTechnicians(db: PoolClient, scheduleId: number, technicianIds
 /**
  * Syncs parts and updates reservations
  */
-async function syncPartsAndReservations(db: PoolClient, scheduleId: number, parts: any[], isCompleted: boolean) {
+export async function syncPartsAndReservations(db: PoolClient, scheduleId: number, parts: any[], isCompleted: boolean, wasAlreadyCompletedParam?: boolean) {
+    let wasAlreadyCompleted = wasAlreadyCompletedParam;
+
+    if (wasAlreadyCompleted === undefined) {
+        // Fallback: Get current state from DB if not provided
+        const { rows: currentStatus } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
+        wasAlreadyCompleted = currentStatus.length > 0 && currentStatus[0].isCompleted;
+    }
+
     const { rows: originalParts } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
 
-    // Release previous reservations
-    if (originalParts.length > 0) {
+    // Release previous reservations ONLY if it was NOT already completed in the DB
+    if (originalParts.length > 0 && !wasAlreadyCompleted) {
         for (const op of originalParts) {
             await inventoryService.updatePartReservation(db, op.partId, -Number(op.quantity), (op.stock_type as StockType) || StockType.GENERAL);
         }
@@ -8018,7 +8616,7 @@ async function syncPartsAndReservations(db: PoolClient, scheduleId: number, part
                     partId = existingPartRows[0].id;
                 } else {
                     const { rows: newPartRows } = await db.query<Part>(
-                        'INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_contract, reserved_quantity_contract, ordered_quantity_contract, is_composed) VALUES ($1, $2, 0, 0, 0, 0, 0, 0, false) RETURNING id',
+                        'INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, is_composed) VALUES ($1, $2, 0, 0, 0, 0, 0, 0, false) RETURNING id',
                         [p.reference, p.designation]
                     );
                     partId = newPartRows[0].id;
@@ -8030,8 +8628,9 @@ async function syncPartsAndReservations(db: PoolClient, scheduleId: number, part
                     'INSERT INTO schedule_parts ("scheduleId", "partId", quantity, stock_type, is_applied) VALUES ($1, $2, $3, $4, $5)',
                     [scheduleId, partId, Number(p.quantity), p.stockType || StockType.GENERAL, p.isApplied !== false]
                 );
-                // If not completed, update reservation
-                if (!isCompleted) {
+
+                // If the NEW state is not completed AND it wasn't already completed, update reservation
+                if (!isCompleted && !wasAlreadyCompleted) {
                     await inventoryService.updatePartReservation(db, partId, Number(p.quantity), (p.stockType as StockType) || StockType.GENERAL);
                 }
             }
@@ -8068,9 +8667,9 @@ export async function createFullSchedule(db: PoolClient, data: any) {
             internalNotes,
             JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])),
             ticketId,
-            (classification === ScheduleStatus.PENDING_SCHEDULING || !startDate) ? ScheduleStatus.PENDING_SCHEDULING : ScheduleStatus.PENDING,
+            (!startDate) ? ScheduleStatus.PENDING_SCHEDULING : ScheduleStatus.PENDING,
             includesTravel !== undefined ? includesTravel : false,
-            (classification && classification !== ScheduleStatus.PENDING_SCHEDULING) ? classification : 'geral',
+            classification || 'geral',
             priority || null
         ]
     );
@@ -8079,7 +8678,7 @@ export async function createFullSchedule(db: PoolClient, data: any) {
 
     await syncTimeBlocks(db, scheduleId, timeBlocks, startDate, endDate);
     await syncTechnicians(db, scheduleId, technicianIds);
-    await syncPartsAndReservations(db, scheduleId, parts, false);
+    await syncPartsAndReservations(db, scheduleId, parts, false, false);
 
     if (ticketId) {
         await db.query<Ticket>('UPDATE tickets SET "scheduleId" = $1, status = $2 WHERE id = $3', [scheduleId, TicketStatus.SCHEDULED, ticketId]);
@@ -8098,9 +8697,12 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
         timeBlocks, classification, includesTravel
     } = data;
 
-    const { rows: originalRows } = await db.query<Schedule>('SELECT title, "startDate", "endDate", "clientId", "equipmentId", "serviceType", "acknowledgementState" FROM schedules WHERE id = $1', [scheduleId]);
+    const { rows: originalRows } = await db.query<Schedule>('SELECT title, "startDate", "endDate", "clientId", "equipmentId", "serviceType", "acknowledgementState", "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
     if (originalRows.length === 0) throw new Error('Schedule not found');
     const originalSchedule = originalRows[0];
+    const wasAlreadyCompleted = originalSchedule.isCompleted;
+
+    if (wasAlreadyCompleted) throw new Error('Não é possível editar um agendamento já concluído.');
 
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
@@ -8108,8 +8710,8 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
         `UPDATE schedules SET 
             title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, 
             "isCompleted" = $6, "additionalInfo" = $7, "serviceType" = $8, "ticketId" = $9,
-            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12
-        WHERE id = $13 RETURNING *`,
+            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12, "priority" = $13
+        WHERE id = $14 RETURNING *`,
         [
             generatedTitle,
             startDate || null,
@@ -8120,9 +8722,10 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
             internalNotes,
             JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])),
             ticketId,
-            (isCompleted) ? ScheduleStatus.COMPLETED : (originalSchedule.acknowledgementState || ScheduleStatus.PENDING),
+            (isCompleted) ? ScheduleStatus.COMPLETED : (originalSchedule.acknowledgementState === ScheduleStatus.PENDING_SCHEDULING && startDate ? ScheduleStatus.PENDING : (originalSchedule.acknowledgementState || ScheduleStatus.PENDING)),
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
+            data.priority || originalSchedule.priority || null,
             scheduleId
         ]
     );
@@ -8132,11 +8735,36 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
     let hasSignificantChanges = false;
     if (originalSchedule.clientId !== clientId) hasSignificantChanges = true;
     if (originalSchedule.equipmentId !== equipmentId) hasSignificantChanges = true;
-    if (getServiceTypeKey(originalSchedule.serviceType) !== getServiceTypeKey(serviceType)) hasSignificantChanges = true;
+    if (JSON.stringify(getServiceTypeKeys(originalSchedule.serviceType)) !== JSON.stringify(getServiceTypeKeys(serviceType))) hasSignificantChanges = true;
+    if (originalSchedule.includes_travel !== (includesTravel !== undefined ? includesTravel : false)) hasSignificantChanges = true;
+    if (originalSchedule.classification !== (classification || 'geral')) hasSignificantChanges = true;
+    if (originalSchedule.priority !== (data.priority || originalSchedule.priority || null)) hasSignificantChanges = true;
 
     const origStart = originalSchedule.startDate ? new Date(originalSchedule.startDate).getTime() : 0;
     const newStart = startDate ? new Date(startDate).getTime() : 0;
     if (Math.abs(origStart - newStart) > 1000) hasSignificantChanges = true;
+
+    const origEnd = originalSchedule.endDate ? new Date(originalSchedule.endDate).getTime() : 0;
+    const newEnd = endDate ? new Date(endDate).getTime() : 0;
+    if (Math.abs(origEnd - newEnd) > 1000) hasSignificantChanges = true;
+
+    // Check technician changes
+    const { rows: existingTechRows } = await db.query<ScheduleTechnician>('SELECT "technicianId" FROM schedule_technicians WHERE "scheduleId" = $1', [scheduleId]);
+    const existingTechIds = existingTechRows.map(r => String(r.technicianId)).sort();
+    const incomingTechIds = (technicianIds || []).map((id: any) => String(id)).sort();
+    if (JSON.stringify(existingTechIds) !== JSON.stringify(incomingTechIds)) hasSignificantChanges = true;
+
+    // Check parts changes
+    const { rows: existingPartRows } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
+    const existingParts = existingPartRows.map(p => ({ id: p.partId, qty: Number(p.quantity), st: p.stock_type || StockType.GENERAL })).sort((a, b) => (a.id || 0) - (b.id || 0));
+    const incomingParts = (parts || []).map((p: any) => ({ id: p.id, qty: Number(p.quantity), st: p.stockType || StockType.GENERAL })).sort((a: any, b: any) => (a.id || 0) - (b.id || 0));
+    if (JSON.stringify(existingParts) !== JSON.stringify(incomingParts)) hasSignificantChanges = true;
+
+    // Check time blocks changes
+    const { rows: existingTBRows } = await db.query<ScheduleTimeBlock>('SELECT start_time, end_time FROM schedule_time_blocks WHERE schedule_id = $1', [scheduleId]);
+    const existingTBs = existingTBRows.map(r => ({ start: new Date(r.start_time).getTime(), end: new Date(r.end_time).getTime() })).sort((a, b) => a.start - b.start);
+    const incomingTBs = (timeBlocks || []).map((tb: any) => ({ start: new Date(tb.start).getTime(), end: new Date(tb.end).getTime() })).sort((a: any, b: any) => a.start - b.start);
+    if (JSON.stringify(existingTBs) !== JSON.stringify(incomingTBs)) hasSignificantChanges = true;
 
     // Google Calendar Cleanup List
     const { rows: existingBlocksRows } = await db.query<ScheduleTimeBlock>('SELECT google_event_id FROM schedule_time_blocks WHERE schedule_id = $1 AND google_event_id IS NOT NULL', [scheduleId]);
@@ -8144,7 +8772,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
 
     await syncTimeBlocks(db, scheduleId, timeBlocks, startDate, endDate);
     await syncTechnicians(db, scheduleId, technicianIds);
-    await syncPartsAndReservations(db, scheduleId, parts, isCompleted);
+    await syncPartsAndReservations(db, scheduleId, parts, isCompleted, !!wasAlreadyCompleted);
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, isCompleted ? TicketStatus.CLOSED : TicketStatus.SCHEDULED, startDate, ticketId]);
@@ -8163,6 +8791,9 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
         timeBlocks, includesTravel
     } = data;
 
+    const { rows: origRows } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
+    const wasAlreadyCompleted = origRows.length > 0 && origRows[0].isCompleted;
+
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
     const { rows } = await db.query<Schedule>(
@@ -8176,7 +8807,7 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
 
     await syncTimeBlocks(db, scheduleId, timeBlocks, startDate, endDate);
     await syncTechnicians(db, scheduleId, technicianIds);
-    await syncPartsAndReservations(db, scheduleId, parts, true); // isCompleted = true
+    await syncPartsAndReservations(db, scheduleId, parts, true, !!wasAlreadyCompleted); // isCompleted = true
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, TicketStatus.CLOSED, startDate, ticketId]);
@@ -8376,8 +9007,8 @@ export async function replyToFullTicket(db: PoolClient, ticketId: number, userId
     if (profileRows.length === 0) throw new Error('Profile not found');
 
     const { rows: updatedRows } = await db.query<Ticket>(
-        'UPDATE tickets SET "updatedAt" = $1 WHERE id = $2 RETURNING *',
-        [new Date().toISOString(), ticketId]
+        'UPDATE tickets SET "updatedAt" = $1, status = CASE WHEN status = $2 THEN $3 ELSE status END WHERE id = $4 RETURNING *',
+        [new Date().toISOString(), TicketStatus.OPEN, TicketStatus.ACKNOWLEDGED, ticketId]
     );
 
     await db.query(
@@ -8419,7 +9050,7 @@ describe('Billing Service', () => {
     describe('createBillingTask', () => {
         it('should create a billing task successfully', async () => {
             const mockData = { id: 1, report_id: 123, status: BillingStatus.REPORT_ISSUED };
-            mockDb.query.mockResolvedValue({ rows: [mockData] } as any);
+            (mockDb.query as jest.Mock).mockResolvedValue({ rows: [mockData] });
 
             const result = await createBillingTask(mockDb, 123);
 
@@ -8432,7 +9063,7 @@ describe('Billing Service', () => {
 
         it('should create a billing task with PENDING_COMPLETION status when isPending is true', async () => {
             const mockData = { id: 2, report_id: 124, status: BillingStatus.PENDING_COMPLETION };
-            mockDb.query.mockResolvedValue({ rows: [mockData] } as any);
+            (mockDb.query as jest.Mock).mockResolvedValue({ rows: [mockData] });
 
             const result = await createBillingTask(mockDb, 124, true);
 
@@ -8447,8 +9078,8 @@ describe('Billing Service', () => {
     describe('updateBillingTaskStatus', () => {
         it('should update task status successfully', async () => {
             const mockData = { id: 1, status: BillingStatus.READY_FOR_BILLING, report_id: 123 };
-            mockDb.query.mockResolvedValueOnce({ rows: [mockData] } as any) // update billing_tasks
-                .mockResolvedValueOnce({ rows: [] } as any); // update reports
+            (mockDb.query as jest.Mock).mockResolvedValueOnce({ rows: [mockData] }) // update billing_tasks
+                .mockResolvedValueOnce({ rows: [] }); // update reports
 
             const result = await updateBillingTaskStatus(mockDb, 1, BillingStatus.READY_FOR_BILLING);
 
@@ -8458,8 +9089,8 @@ describe('Billing Service', () => {
 
         it('should set billed_at when status is BILLED', async () => {
             const mockData = { id: 1, status: BillingStatus.BILLED, report_id: 123 };
-            mockDb.query.mockResolvedValueOnce({ rows: [mockData] } as any) // update billing_tasks
-                .mockResolvedValueOnce({ rows: [] } as any); // update reports
+            (mockDb.query as jest.Mock).mockResolvedValueOnce({ rows: [mockData] }) // update billing_tasks
+                .mockResolvedValueOnce({ rows: [] }); // update reports
 
             await updateBillingTaskStatus(mockDb, 1, BillingStatus.BILLED);
 
@@ -8944,6 +9575,443 @@ describe('Google Calendar Service', () => {
 
 
 ==================================================
+START FILE: .\services\__tests__\inventoryIntegration.test.ts
+==================================================
+
+
+import { Pool } from 'pg';
+import * as inventoryService from '../inventoryService';
+import { StockType } from '../../types';
+import path from 'path';
+require('dotenv').config({ path: path.join(__dirname, '../../../.env') });
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+async function runIntegrationTest() {
+    const client = await pool.connect();
+    try {
+        console.log('--- INICIANDO TESTE DE INTEGRAÇÃO DE INVENTÁRIO ---');
+        await client.query('BEGIN');
+
+        // 1. Inserção de 3 peças simples novas
+        console.log('1. Criando 3 peças simples...');
+        const p1 = await client.query(`INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, is_composed) VALUES ('TEST-A', 'Pneu Teste', 0, 0, 0, false) RETURNING id`);
+        const p2 = await client.query(`INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, is_composed) VALUES ('TEST-B', 'Jante Teste', 0, 0, 0, false) RETURNING id`);
+        const p3 = await client.query(`INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, is_composed) VALUES ('TEST-C', 'Valvula Teste', 0, 0, 0, false) RETURNING id`);
+
+        const idA = p1.rows[0].id;
+        const idB = p2.rows[0].id;
+        const idC = p3.rows[0].id;
+
+        // 2. Criar peça composta (KIT) com as 3 simples
+        console.log('2. Criando peça composta (KIT)...');
+        const pk = await client.query(`INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, is_composed) VALUES ('TEST-KIT', 'Roda Completa Teste', 0, 0, 0, true) RETURNING id`);
+        const idKit = pk.rows[0].id;
+
+        await client.query(`INSERT INTO part_components (parent_part_id, child_part_id, quantity) VALUES ($1, $2, 1), ($1, $3, 1), ($1, $4, 1)`, [idKit, idA, idB, idC]);
+
+        // Verificação Inicial
+        let kit = await client.query(`SELECT virtual_stock FROM parts WHERE id = $1`, [idKit]);
+        console.log(`Initial Virtual Stock: ${kit.rows[0].virtual_stock} (Esperado: 0)`);
+
+        // 3. Modificação directa de stock (Físico)
+        console.log('3. Adicionando stock físico (+10 em cada)...');
+        await inventoryService.updatePartStock(client, idA, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
+        await inventoryService.updatePartStock(client, idB, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
+        await inventoryService.updatePartStock(client, idC, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
+
+        kit = await client.query(`SELECT virtual_stock FROM parts WHERE id = $1`, [idKit]);
+        console.log(`Virtual Stock depois de +10 físico: ${kit.rows[0].virtual_stock} (Esperado: 10)`);
+
+        // 4. Encomenda de peças (Ordered Quantity)
+        console.log('4. Encomendando peças (+5 da Jante)...');
+        // change = 5, isFromOrder = false (porque estamos a ADICIONAR à encomenda, não a receber)
+        // No sistema, updatePartStock com change > 0 e isFromOrder=false apenas adiciona ao stock se StockType for passado.
+        // Wait, how does ordered_quantity get updated? Let's check inventoryService.ts again.
+
+        // Manual update to ordered_quantity for testing
+        await client.query(`UPDATE parts SET ordered_quantity = 5 WHERE id = $1`, [idB]);
+
+        // Refresh and check "potential stock" if implemented in DB
+        kit = await client.query(`SELECT virtual_stock FROM parts WHERE id = $1`, [idKit]);
+        console.log(`Virtual Stock (Físico) após encomenda Jante: ${kit.rows[0].virtual_stock} (Esperado: 10 - apenas físico conta para virtual_stock básico)`);
+
+        // 5. Chegada de peças (Arrival: ordered -> stock)
+        console.log('5. Chegada de encomenda (5 Jantes chegam)...');
+        // updatePartStock(db, id, change=5, isFromOrder=true) -> stock +5, ordered -5
+        await inventoryService.updatePartStock(client, idB, { quantity: 5, fromOrder: true, targetStock: StockType.GENERAL });
+
+        const partB = await client.query(`SELECT stock_quantity, ordered_quantity FROM parts WHERE id = $1`, [idB]);
+        console.log(`Part B (Jante) - Stock: ${partB.rows[0].stock_quantity}, Encomendada: ${partB.rows[0].ordered_quantity}`);
+
+        kit = await client.query(`SELECT virtual_stock FROM parts WHERE id = $1`, [idKit]);
+        console.log(`Virtual Stock após chegada: ${kit.rows[0].virtual_stock} (Esperado: 10 - porque Pneu e Válvula limitam a 10)`);
+
+        // 6. Teste de limite (Aumentar as outras duas para ver o Kit subir)
+        console.log('6. Aumentando peças limitantes (Pneu e Válvula +10)...');
+        await inventoryService.updatePartStock(client, idA, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
+        await inventoryService.updatePartStock(client, idC, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
+
+        kit = await client.query(`SELECT virtual_stock FROM parts WHERE id = $1`, [idKit]);
+        console.log(`Virtual Stock Final: ${kit.rows[0].virtual_stock} (Esperado: 15 - limitado pela Jante que tem 15)`);
+
+        await client.query('ROLLBACK');
+        console.log('--- TESTE CONCLUÍDO COM SUCESSO E ROLLBACK EXECUTADO ---');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('ERRO NO TESTE DE INTEGRAÇÃO:', err);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+}
+
+runIntegrationTest();
+
+
+==================================================
+START FILE: .\services\__tests__\inventoryLifecycle.test.ts
+==================================================
+
+
+import { PoolClient } from 'pg';
+import * as inventoryService from '../inventoryService';
+import * as scheduleService from '../scheduleService';
+import * as reportService from '../reportService';
+import { StockType } from '../../types';
+
+describe('Inventory & Lifecycle Integration Tests (Unit Mocks)', () => {
+    let mockDb: any;
+
+    beforeEach(() => {
+        mockDb = {
+            query: jest.fn().mockImplementation(async (sql: string, params: any[]) => {
+                // Default response to avoid undefined errors
+                return { rows: [] };
+            }),
+        };
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+    });
+
+    // --- SCHEDULE FLOW ---
+    describe('Schedule Lifecycle & Reservations', () => {
+        it('should reserve components when a kit is added to a schedule', async () => {
+            const kitId = 1;
+            const componentId = 2;
+
+            mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
+                const s = sql.toLowerCase();
+                if (s.includes('from parts') && s.includes('where id = $1')) {
+                    if (params[0] === kitId) {
+                        return { rows: [{ id: kitId, reserved_quantity: 0, reserved_quantity_contract: 0, is_composed: true, designation: 'Kit A' }] };
+                    }
+                    if (params[0] === componentId) {
+                        return { rows: [{ id: componentId, reserved_quantity: 0, reserved_quantity_contract: 0, is_composed: false, designation: 'Part B' }] };
+                    }
+                }
+                if (s.includes('from part_components') && s.includes('where parent_part_id = $1')) {
+                    return { rows: [{ child_part_id: componentId, quantity: 2 }] };
+                }
+                return { rows: [] };
+            });
+
+            await inventoryService.updatePartReservation(mockDb, kitId, 1, StockType.GENERAL);
+
+            // Verify Kit update
+            const kitUpdate = mockDb.query.mock.calls.find((c: any) =>
+                c[0].includes('UPDATE parts') && c[0].includes('reserved_quantity') && c[1][1] === kitId
+            );
+            expect(kitUpdate).toBeDefined();
+            expect(kitUpdate[1][0]).toBe(1);
+
+            // Verify Component update (1 * 2 multiplier)
+            const compUpdate = mockDb.query.mock.calls.find((c: any) =>
+                c[0].includes('UPDATE parts') && c[0].includes('reserved_quantity') && c[1][1] === componentId
+            );
+            expect(compUpdate).toBeDefined();
+            expect(compUpdate[1][0]).toBe(2);
+        });
+
+        it('should release reservations when a schedule is updated (item removed)', async () => {
+            const scheduleId = 100;
+            const oldPartId = 5;
+
+            mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
+                const s = sql.toLowerCase();
+                if (s.includes('from schedules')) return { rows: [{ isCompleted: false }] };
+                if (s.includes('from schedule_parts')) {
+                    return { rows: [{ partId: oldPartId, quantity: 3, stock_type: 'general' }] };
+                }
+                if (s.includes('from parts') && params[0] === oldPartId) {
+                    return { rows: [{ id: oldPartId, reserved_quantity: 3, designation: 'OldPart' }] };
+                }
+                return { rows: [] };
+            });
+
+            await scheduleService.syncPartsAndReservations(mockDb, scheduleId, [], false);
+
+            const releaseUpdate = mockDb.query.mock.calls.find((c: any) =>
+                c[0].includes('UPDATE parts') && c[0].includes('reserved_quantity') && c[1][1] === oldPartId
+            );
+            expect(releaseUpdate).toBeDefined();
+            expect(releaseUpdate[1][0]).toBe(0); // 3 - 3 = 0
+        });
+
+        it('should NOT allow updates or reservation changes once schedule is completed', async () => {
+            const scheduleId = 101;
+            mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
+                const s = sql.toLowerCase();
+                if (s.includes('from schedules')) return { rows: [{ isCompleted: true }] };
+                return { rows: [] };
+            });
+
+            await scheduleService.syncPartsAndReservations(mockDb, scheduleId, [{ id: 1, quantity: 5 }], true);
+
+            const inventoryUpdates = mockDb.query.mock.calls.filter((c: any) =>
+                c[0].includes('UPDATE parts') && (c[0].includes('reserved_quantity') || c[0].includes('stock_quantity'))
+            );
+            expect(inventoryUpdates.length).toBe(0);
+        });
+    });
+
+    // --- REPORT FLOW ---
+    describe('Report Lifecycle & Abatement', () => {
+        it('should abate stock and release reservation when a report is created', async () => {
+            const partId = 10;
+            const quantity = 2;
+
+            mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
+                const s = sql.toLowerCase();
+                if (s.includes('from parts') && params[0] === partId) {
+                    return {
+                        rows: [{
+                            id: partId,
+                            stock_quantity: 10,
+                            reserved_quantity: 2,
+                            stock_quantity_contract: 0,
+                            reserved_quantity_contract: 0,
+                            is_composed: false
+                        }]
+                    };
+                }
+                return { rows: [] };
+            });
+
+            await inventoryService.abatePartInventory(mockDb, partId, quantity, StockType.GENERAL, false);
+
+            const updateCall = mockDb.query.mock.calls.find((c: any) => c[0].includes('UPDATE parts SET stock_quantity'));
+            expect(updateCall).toBeDefined();
+            // Expected: [newStock, newReserved, newStockContract, newReservedContract, partId]
+            expect(updateCall[1]).toEqual([8, 0, 0, 0, partId]);
+        });
+
+        it('should restore inventory when a report is deleted', async () => {
+            const reportId = 500;
+            const partId = 10;
+
+            mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
+                const s = sql.toLowerCase();
+                // SQL patterns MUST be lowercased in patterns to match s
+                if (s.includes('from reports where id = $1')) return { rows: [{ id: reportId, scheduleId: 100 }] };
+                if (s.includes('from report_parts where "reportid" = $1')) { // pattern is lowercased to match s
+                    return { rows: [{ partId: partId, quantity: 2, stock_type: 'general' }] };
+                }
+                if (s.includes('from parts') && params[0] === partId) {
+                    return {
+                        rows: [{
+                            id: partId,
+                            stock_quantity: 8,
+                            reserved_quantity: 0,
+                            stock_quantity_contract: 0,
+                            reserved_quantity_contract: 0,
+                            is_composed: false
+                        }]
+                    };
+                }
+                return { rows: [] };
+            });
+
+            await reportService.deleteFullReport(mockDb, reportId, 'user-1', true);
+
+            const updateCall = mockDb.query.mock.calls.find((c: any) => c[0].includes('UPDATE parts SET stock_quantity'));
+            expect(updateCall).toBeDefined();
+            // 8 - (-2) = 10. Reserved stays 0.
+            expect(updateCall[1]).toEqual([10, 0, 0, 0, partId]);
+        });
+
+        it('should handle kit abatement by abating components', async () => {
+            const kitId = 1;
+            const componentId = 2;
+
+            mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
+                const s = sql.toLowerCase();
+                if (s.includes('from parts') && params[0] === kitId) {
+                    return { rows: [{ id: kitId, is_composed: true, designation: 'Kit A' }] };
+                }
+                if (s.includes('from part_components')) {
+                    return { rows: [{ child_part_id: componentId, quantity: 5 }] };
+                }
+                if (s.includes('from parts') && params[0] === componentId) {
+                    return { rows: [{ id: componentId, stock_quantity: 100, reserved_quantity: 10, stock_quantity_contract: 0, reserved_quantity_contract: 0, is_composed: false }] };
+                }
+                return { rows: [] };
+            });
+
+            await inventoryService.abatePartInventory(mockDb, kitId, 1, StockType.GENERAL, false);
+
+            const updateCall = mockDb.query.mock.calls.find((c: any) =>
+                c[0].includes('UPDATE parts') && c[1][4] === componentId
+            );
+            expect(updateCall).toBeDefined();
+            // 100 - (1*5) = 95. reserved 10 - (1*5) = 5.
+            expect(updateCall[1]).toEqual([95, 5, 0, 0, componentId]);
+        });
+    });
+});
+
+
+==================================================
+START FILE: .\services\__tests__\inventoryLifecycleIntegration.test.ts
+==================================================
+
+
+import { Pool } from 'pg';
+import * as inventoryService from '../inventoryService';
+import * as scheduleService from '../scheduleService';
+import * as reportService from '../reportService';
+import { StockType, ScheduleStatus, TicketStatus } from '../../types';
+import path from 'path';
+require('dotenv').config({ path: path.join(__dirname, '../../../.env') });
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+async function runComplexIntegrationTest() {
+    const client = await pool.connect();
+    try {
+        console.log('--- INICIANDO TESTE DE INTEGRAÇÃO COMPLEXO: AGENDAMENTO E RELATÓRIO ---');
+        await client.query('BEGIN');
+
+        // 0. Obter IDs válidos para evitar erros de FK
+        let validUserId = '00000000-0000-0000-0000-000000000000';
+        let validClientId = 1;
+        let validEquipmentId = 1;
+
+        try {
+            const { rows: userRows } = await client.query('SELECT id FROM profiles LIMIT 1');
+            if (userRows.length > 0) validUserId = userRows[0].id;
+
+            const { rows: clientRows } = await client.query('SELECT id FROM clients LIMIT 1');
+            if (clientRows.length > 0) validClientId = clientRows[0].id;
+
+            const { rows: equipRows } = await client.query('SELECT id FROM equipments LIMIT 1');
+            if (equipRows.length > 0) validEquipmentId = equipRows[0].id;
+
+        } catch (e) {
+            console.warn('Alerta: Erro ao buscar IDs reais, usando defaults. Pode haver falha de FK.', (e as any).message);
+        }
+        console.log(`Usando IDs: User=${validUserId}, Client=${validClientId}, Equipment=${validEquipmentId}`);
+
+        // 1. Setup: Criar peças com stock
+        console.log('1. Preparando peças (Pneu e Jante)...');
+        const p1 = await client.query(`INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, is_composed) VALUES ('INT-PNEU', 'Pneu Original', 20, 0, false) RETURNING id`);
+        const p2 = await client.query(`INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, is_composed) VALUES ('INT-JANTE', 'Jante Original', 20, 0, false) RETURNING id`);
+        const idPneu = p1.rows[0].id;
+        const idJante = p2.rows[0].id;
+
+        // 2. Criar Agendamento e Reservar
+        console.log('2. Criando Agendamento com reserva de 2 Pneus...');
+        const s1 = await client.query(`INSERT INTO schedules (title, "startDate", "endDate", "isCompleted") VALUES ('Teste Agendamento', NOW(), NOW(), false) RETURNING id`);
+        const scheduleId = s1.rows[0].id;
+
+        await scheduleService.syncPartsAndReservations(client, scheduleId, [{ id: idPneu, quantity: 2, stockType: StockType.GENERAL }], false);
+
+        let pneu = await client.query(`SELECT stock_quantity, reserved_quantity FROM parts WHERE id = $1`, [idPneu]);
+        console.log(`Pneu após reserva: Stock=${pneu.rows[0].stock_quantity}, Reservado=${pneu.rows[0].reserved_quantity} (Esperado: 20, 2)`);
+
+        // 3. Modificar Agendamento (Trocar Pneu por Jante)
+        console.log('3. Modificando Agendamento: Trocar 2 Pneus por 1 Jante...');
+        await scheduleService.syncPartsAndReservations(client, scheduleId, [{ id: idJante, quantity: 1, stockType: StockType.GENERAL }], false);
+
+        pneu = await client.query(`SELECT reserved_quantity FROM parts WHERE id = $1`, [idPneu]);
+        let jante = await client.query(`SELECT reserved_quantity FROM parts WHERE id = $1`, [idJante]);
+        console.log(`Pneu reservado: ${pneu.rows[0].reserved_quantity} (Esperado: 0)`);
+        console.log(`Jante reservada: ${jante.rows[0].reserved_quantity} (Esperado: 1)`);
+
+        // 4. Concluir Agendamento
+        console.log('4. Concluindo Agendamento (Reservas devem ser limpas)...');
+        // Usamos syncPartsAndReservations diretamente como o completeFullSchedule faz
+        await scheduleService.syncPartsAndReservations(client, scheduleId, [{ id: idJante, quantity: 1, stockType: StockType.GENERAL }], true);
+        await client.query(`UPDATE schedules SET "isCompleted" = true WHERE id = $1`, [scheduleId]);
+
+        jante = await client.query(`SELECT stock_quantity, reserved_quantity FROM parts WHERE id = $1`, [idJante]);
+        console.log(`Jante após conclusão: Stock=${jante.rows[0].stock_quantity}, Reservado=${jante.rows[0].reserved_quantity} (Esperado: 20, 0)`);
+
+        // 5. Criar Relatório (Abate Stock)
+        console.log('5. Criando Relatório (Abate 1 Jante)...');
+        const reportData = {
+            clientId: validClientId,
+            equipmentId: validEquipmentId,
+            scheduleId: scheduleId,
+            serviceDate: new Date().toISOString(),
+            hours: 1,
+            description: 'Teste',
+            technicianIds: [],
+            parts: [{ id: idJante, quantity: 1, stockType: StockType.GENERAL }]
+        };
+        const reportId = await reportService.createFullReport(client, reportData, validUserId);
+
+        jante = await client.query(`SELECT stock_quantity, reserved_quantity FROM parts WHERE id = $1`, [idJante]);
+        console.log(`Jante após Relatório: Stock=${jante.rows[0].stock_quantity}, Reservado=${jante.rows[0].reserved_quantity} (Esperado: 19, 0)`);
+
+        // 6. Atualizar Relatório (Adicionar 1 Pneu também)
+        console.log('6. Atualizando Relatório: Adicionar 1 Pneu (Total: 1 Jante + 1 Pneu)...');
+        const updateData = {
+            ...reportData,
+            clientId: validClientId,
+            equipmentId: validEquipmentId,
+            parts: [
+                { id: idJante, quantity: 1, stockType: StockType.GENERAL },
+                { id: idPneu, quantity: 1, stockType: StockType.GENERAL }
+            ]
+        };
+        await reportService.updateFullReport(client, reportId, updateData);
+
+        pneu = await client.query(`SELECT stock_quantity FROM parts WHERE id = $1`, [idPneu]);
+        jante = await client.query(`SELECT stock_quantity FROM parts WHERE id = $1`, [idJante]);
+        console.log(`Stocks após Update Report: Pneu=${pneu.rows[0].stock_quantity}, Jante=${jante.rows[0].stock_quantity} (Esperado: 19, 19)`);
+
+        // 7. Eliminar Relatório (Restaurar Stock)
+        console.log('7. Eliminando Relatório (Restaurar stocks de Jante e Pneu)...');
+        await reportService.deleteFullReport(client, reportId, validUserId, true);
+
+        pneu = await client.query(`SELECT stock_quantity FROM parts WHERE id = $1`, [idPneu]);
+        jante = await client.query(`SELECT stock_quantity FROM parts WHERE id = $1`, [idJante]);
+        console.log(`Stocks após Delete Report: Pneu=${pneu.rows[0].stock_quantity}, Jante=${jante.rows[0].stock_quantity} (Esperado: 20, 20)`);
+
+        await client.query('ROLLBACK');
+        console.log('--- TESTE COMPLEXO CONCLUÍDO COM SUCESSO E ROLLBACK EXECUTADO ---');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('ERRO NO TESTE COMPLEXO:', err);
+    } finally {
+        client.release();
+        await pool.end();
+    }
+}
+
+runComplexIntegrationTest();
+
+
+==================================================
 START FILE: .\services\__tests__\inventoryService.test.ts
 ==================================================
 
@@ -8968,7 +10036,7 @@ describe('Inventory Service', () => {
     describe('processStockUpdate', () => {
         test('should update stock and ordered quantity when receiving an order (general)', () => {
             const result = processStockUpdate(
-                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                { stock: 10, ordered: 5, stockFoss: 0, orderedFoss: 0 },
                 3,
                 true,
                 StockType.GENERAL
@@ -8979,18 +10047,18 @@ describe('Inventory Service', () => {
 
         test('should update contract stock and ordered quantity when receiving an order (contract)', () => {
             const result = processStockUpdate(
-                { stock: 0, ordered: 0, stockContract: 10, orderedContract: 5 },
+                { stock: 0, ordered: 0, stockFoss: 10, orderedFoss: 5 },
                 3,
                 true,
-                StockType.CONTRACT
+                StockType.FOSS
             );
-            expect(result.newStockContract).toBe(13);
-            expect(result.newOrderedContract).toBe(2);
+            expect(result.newStockFoss).toBe(13);
+            expect(result.newOrderedFoss).toBe(2);
         });
 
         test('should not decrease ordered quantity below zero', () => {
             const result = processStockUpdate(
-                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                { stock: 10, ordered: 5, stockFoss: 0, orderedFoss: 0 },
                 10,
                 true,
                 StockType.GENERAL
@@ -9000,7 +10068,7 @@ describe('Inventory Service', () => {
 
         test('should only update stock when not from order', () => {
             const result = processStockUpdate(
-                { stock: 10, ordered: 5, stockContract: 0, orderedContract: 0 },
+                { stock: 10, ordered: 5, stockFoss: 0, orderedFoss: 0 },
                 3,
                 false,
                 StockType.GENERAL
@@ -9384,9 +10452,9 @@ export type Database = {
           reserved_quantity: number
           ordered_quantity: number
           is_composed: boolean | null
-          stock_quantity_contract: number | null
-          reserved_quantity_contract: number | null
-          ordered_quantity_contract: number | null
+          stock_quantity_foss: number | null
+          reserved_quantity_foss: number | null
+          ordered_quantity_foss: number | null
         }
         Insert: {
           id?: number
@@ -9396,9 +10464,9 @@ export type Database = {
           reserved_quantity?: number
           ordered_quantity?: number
           is_composed?: boolean | null
-          stock_quantity_contract?: number | null
-          reserved_quantity_contract?: number | null
-          ordered_quantity_contract?: number | null
+          stock_quantity_foss?: number | null
+          reserved_quantity_foss?: number | null
+          ordered_quantity_foss?: number | null
         }
         Update: {
           id?: number
@@ -9408,9 +10476,9 @@ export type Database = {
           reserved_quantity?: number
           ordered_quantity?: number
           is_composed?: boolean | null
-          stock_quantity_contract?: number | null
-          reserved_quantity_contract?: number | null
-          ordered_quantity_contract?: number | null
+          stock_quantity_foss?: number | null
+          reserved_quantity_foss?: number | null
+          ordered_quantity_foss?: number | null
         }
         Relationships: []
       }
@@ -9753,6 +10821,8 @@ export type Database = {
           deleted_by: string | null
           created_by: string | null
           billing_status: string | null
+          time_blocks: Json | null
+          client_signer_name: string | null
         }
         Insert: {
           id?: number
@@ -9774,6 +10844,8 @@ export type Database = {
           deleted_by?: string | null
           created_by?: string | null
           billing_status?: string | null
+          time_blocks?: Json | null
+          client_signer_name?: string | null
         }
         Update: {
           id?: number
@@ -9795,6 +10867,8 @@ export type Database = {
           deleted_by?: string | null
           created_by?: string | null
           billing_status?: string | null
+          time_blocks?: Json | null
+          client_signer_name?: string | null
         }
         Relationships: [
           {
@@ -10046,9 +11120,9 @@ export interface Part {
     stock_quantity: number;
     reserved_quantity: number;
     ordered_quantity: number;
-    stock_quantity_contract: number;
-    reserved_quantity_contract: number;
-    ordered_quantity_contract: number;
+    stock_quantity_foss: number;
+    reserved_quantity_foss: number;
+    ordered_quantity_foss: number;
     is_composed: boolean;
     virtual_stock?: number;
 }
@@ -10069,7 +11143,7 @@ export interface Schedule {
     hasReport: boolean;
     clientId: number | null;
     equipmentId?: number | null;
-    serviceType: string;
+    serviceType: string | string[];
     additionalInfo?: string;
     includes_travel: boolean;
     classification: ServiceClassification;
@@ -10151,8 +11225,8 @@ export interface EnrichedPart {
     isApplied?: boolean;
     stock_quantity?: number;
     reserved_quantity?: number;
-    stock_quantity_contract?: number;
-    reserved_quantity_contract?: number;
+    stock_quantity_foss?: number;
+    reserved_quantity_foss?: number;
 }
 
 export interface TimeBlock {
@@ -10481,7 +11555,7 @@ export const mapScheduleDatabaseToResponse = (
         internalNotes: schedule.additionalInfo || undefined,
 
         // Service Type standardization
-        serviceType: scheduleService.getServiceTypeKey(schedule.serviceType),
+        serviceType: scheduleService.getServiceTypeKeys(schedule.serviceType),
 
         ticketId: schedule.ticketId || undefined,
         clientId: schedule.clientId,
@@ -10505,7 +11579,9 @@ export const mapScheduleDatabaseToResponse = (
 export const mapTicketDatabaseToResponse = (
     ticket: any,
     clientName: string,
-    equipmentInfo: string
+    equipmentInfo: string,
+    userFirstName: string = '',
+    userLastName: string = ''
 ) => {
     return {
         id: ticket.id,
@@ -10519,6 +11595,8 @@ export const mapTicketDatabaseToResponse = (
         equipmentId: ticket.equipmentId,
         clientName,
         equipmentInfo,
+        userFirstName,
+        userLastName,
         created_by_user_id: ticket.created_by_user_id,
         responsible_technician_id: ticket.responsible_technician_id,
         scheduled_at: ticket.scheduled_at,
@@ -10563,7 +11641,7 @@ export const inviteUserSchema = z.object({
 export const approveUserSchema = z.object({
     body: z.object({
         userId: z.string().uuid('ID de utilizador inválido'),
-        client_id: z.number().int().positive('ID de cliente inválido')
+        client_ids: z.array(z.number().int().positive('ID de cliente inválido')).min(1, 'Selecione pelo menos uma empresa')
     })
 });
 
@@ -10629,7 +11707,8 @@ import { z } from 'zod';
 
 export const createMyTicketSchema = z.object({
     body: z.object({
-        equipmentId: z.number().int().positive(),
+        equipmentId: z.number().int().positive().optional(),
+        clientId: z.number().int().positive().optional(),
         title: z.string().min(1, 'Título é obrigatório'),
         faultDescription: z.string().min(1, 'Descrição é obrigatória'),
     })

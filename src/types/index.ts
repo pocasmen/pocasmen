@@ -44,9 +44,9 @@ export interface Part {
     stock_quantity: number;
     reserved_quantity: number;
     ordered_quantity: number;
-    stock_quantity_contract: number;
-    reserved_quantity_contract: number;
-    ordered_quantity_contract: number;
+    stock_quantity_foss: number;
+    reserved_quantity_foss: number;
+    ordered_quantity_foss: number;
     is_composed: boolean;
     virtual_stock?: number;
 }
@@ -149,8 +149,8 @@ export interface EnrichedPart {
     isApplied?: boolean;
     stock_quantity?: number;
     reserved_quantity?: number;
-    stock_quantity_contract?: number;
-    reserved_quantity_contract?: number;
+    stock_quantity_foss?: number;
+    reserved_quantity_foss?: number;
 }
 
 export interface TimeBlock {
