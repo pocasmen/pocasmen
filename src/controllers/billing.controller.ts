@@ -63,7 +63,7 @@ export const getBillingStats = catchAsync(async (req: AuthenticatedRequest, res:
     if (error) throw new ApiError(500, 'Erro ao obter estatísticas.');
 
     const stats = {
-        total: (tasks || []).filter(t => t.status !== BillingStatus.BILLED).length,
+        total: (tasks || []).length,
         report_issued: (tasks || []).filter(t => t.status === BillingStatus.REPORT_ISSUED).length,
         pending_completion: (tasks || []).filter(t => t.status === BillingStatus.PENDING_COMPLETION).length,
         ready_for_billing: (tasks || []).filter(t => t.status === BillingStatus.READY_FOR_BILLING).length,
