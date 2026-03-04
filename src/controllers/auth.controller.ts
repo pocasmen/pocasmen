@@ -47,7 +47,12 @@ export const inviteUser = catchAsync(async (req: AuthenticatedRequest, res: Resp
         throw new ForbiddenError('Only Super Admin can create Super Admin users.');
     }
 
-    const inviteData: any = { role: role, must_set_password: true, ...meta };
+    const inviteData: any = {
+        role: role,
+        must_set_password: true,
+        ...meta
+    };
+
     if (client_id) {
         const { data: client, error: clientError } = await supabase
             .from('clients')
@@ -55,11 +60,24 @@ export const inviteUser = catchAsync(async (req: AuthenticatedRequest, res: Resp
             .eq('id', Number(client_id))
             .single();
         if (clientError || !client) throw new NotFoundError('Client not found.');
+
         inviteData.client_id = client_id;
+        // Injetar dados da empresa se for convite de cliente para manter consistência com auto-registo
+        if (role === UserRole.CLIENT) {
+            inviteData.company_name = client.name;
+        }
     }
 
-    const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, { data: inviteData });
+    const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
+        data: inviteData
+    });
     if (error) throw new ApiError(500, error.message);
+
+    // Se o utilizador já foi convidado por um técnico/admin com a role CLIENT, 
+    // podemos opcionalmente marcar como aprovado logo no perfil se o trigger o criar.
+    // No entanto, o USER disse que quando ele define a password aparece "aguarda aprovação".
+    // Isso acontece porque o CompleteRegistrationPage.tsx assume que role PENDING_CLIENT aguarda aprovação.
+    // Se o invite já tem role: "client", o CompleteRegistrationPage não deve mostrar "aguarda aprovação".
 
     res.status(200).json({ message: `Invite sent to ${email}.` });
 });

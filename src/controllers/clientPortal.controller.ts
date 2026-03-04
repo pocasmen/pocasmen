@@ -58,7 +58,7 @@ export const getMyStats = catchAsync(async (req: AuthenticatedRequest, res: Resp
     const closedTickets = ticketsData.filter(t => t.status === TicketStatus.CLOSED).length;
 
     // Schedules
-    const { data: schedules } = await supabase.from('schedules').select('isCompleted, hasReport, endDate').eq('clientId', clientId);
+    const { data: schedules } = await supabase.from('schedules').select('isCompleted, hasReport, endDate').eq('clientId', clientId).neq('acknowledgementState', 'pending_scheduling');
     const schedulesData = schedules || [];
 
     let schedPending = 0, schedCompleted = 0, schedClosed = 0, schedOverdue = 0;
@@ -149,7 +149,7 @@ export const getMyTickets = catchAsync(async (req: AuthenticatedRequest, res: Re
 
     let scheduleMap = new Map<number, DbSchedule>();
     if (scheduleIds.length > 0) {
-        const { data: schedules } = await supabase.from('schedules').select('*').in('id', scheduleIds);
+        const { data: schedules } = await supabase.from('schedules').select('*').in('id', scheduleIds).neq('acknowledgementState', 'pending_scheduling');
         if (schedules) scheduleMap = new Map((schedules as DbSchedule[]).map(s => [s.id, s]));
     }
 
@@ -187,7 +187,8 @@ export const getMySchedules = catchAsync(async (req: AuthenticatedRequest, res: 
     const { count: totalCount } = await supabase
         .from('schedules')
         .select('*', { count: 'exact', head: true })
-        .eq('clientId', clientId);
+        .eq('clientId', clientId)
+        .neq('acknowledgementState', 'pending_scheduling');
 
     const { data: schedulesRaw, error: schedulesError } = await supabase
         .from('schedules')
@@ -197,6 +198,7 @@ export const getMySchedules = catchAsync(async (req: AuthenticatedRequest, res: 
             schedule_technicians(technicianId)
         `)
         .eq('clientId', clientId)
+        .neq('acknowledgementState', 'pending_scheduling')
         .order('startDate', { ascending: false })
         .range(offset, offset + limit - 1);
 
