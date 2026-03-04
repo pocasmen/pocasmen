@@ -167,6 +167,7 @@ export type Database = {
           last_notification_sent: string | null
           phone: string | null
           google_calendar_color_id: string | null
+          client_role: string | null
         }
         Insert: {
           id?: string
@@ -186,6 +187,7 @@ export type Database = {
           last_notification_sent?: string | null
           phone?: string | null
           google_calendar_color_id?: string | null
+          client_role?: string | null
         }
         Update: {
           id?: string
@@ -205,6 +207,7 @@ export type Database = {
           last_notification_sent?: string | null
           phone?: string | null
           google_calendar_color_id?: string | null
+          client_role?: string | null
         }
         Relationships: [
           {

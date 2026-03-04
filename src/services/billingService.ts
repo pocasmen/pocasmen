@@ -86,11 +86,11 @@ export const getBillingTasks = async (supabase: SupabaseClient<Database>) => {
 };
 
 
-export const getBillingTasksRaw = async (db: PoolClient): Promise<any[]> => {
+export const getBillingTasksRaw = async (db: PoolClient, startDate?: string, endDate?: string): Promise<any[]> => {
     // Raw SQL to ensure we get the client name correctly, bypassing Supabase join issues
     // We quote "clientId" because db.types.ts suggests it is camelCase.
     // We select specific columns to avoid collisions
-    const query = `
+    let query = `
         SELECT 
             bt.*,
             r.id as r_report_id,
@@ -101,12 +101,19 @@ export const getBillingTasksRaw = async (db: PoolClient): Promise<any[]> => {
         FROM billing_tasks bt
         LEFT JOIN reports r ON bt.report_id = r.id
         LEFT JOIN clients c ON r."clientId" = c.id
-        WHERE r.deleted_at IS NULL OR r.id IS NULL
-        ORDER BY bt.created_at DESC
+        WHERE (r.deleted_at IS NULL OR r.id IS NULL)
     `;
 
+    const values: any[] = [];
+    if (startDate && endDate) {
+        query += ` AND r."serviceDate" >= $1 AND r."serviceDate" <= $2`;
+        values.push(startDate, endDate);
+    }
+
+    query += ` ORDER BY bt.created_at DESC`;
+
     try {
-        const result = await db.query(query);
+        const result = await db.query(query, values);
         return result.rows.map(row => ({
             id: row.id,
             report_id: row.report_id,

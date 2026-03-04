@@ -10,10 +10,11 @@ import { BillingStatus } from '../constants/enums';
 import { withTransaction, pool } from '../config/db';
 
 export const getBillingTasks = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { startDate, endDate } = req.query;
     // We use raw SQL to ensure client name is correct
     const client = await pool.connect();
     try {
-        const tasks = await billingService.getBillingTasksRaw(client);
+        const tasks = await billingService.getBillingTasksRaw(client, startDate as string, endDate as string);
         res.json(tasks);
     } finally {
         client.release();

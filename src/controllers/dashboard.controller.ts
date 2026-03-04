@@ -88,7 +88,7 @@ export const getWeeklySchedules = catchAsync(async (req: AuthenticatedRequest, r
     const { data: schedulesRaw, error } = await supabase
         .from('schedules')
         .select(`
-            id, title, startDate, endDate, isCompleted, hasReport, 
+            id, title, startDate, endDate, isCompleted, hasReport, clientId, equipmentId,
             clients(name), 
             schedule_technicians(technicianId)
         `)
@@ -112,8 +112,13 @@ export const getWeeklySchedules = catchAsync(async (req: AuthenticatedRequest, r
         endDate: s.endDate,
         isCompleted: !!s.isCompleted,
         hasReport: !!s.hasReport,
+        clientId: s.clientId,
+        equipmentId: s.equipmentId,
         clientName: s.clients?.name || (Array.isArray(s.clients) ? s.clients[0]?.name : 'Cliente Desconhecido'),
-        technicians: (s.schedule_technicians || []).map((st: any) => techMap.get(st.technicianId) || 'Técnico Desconhecido'),
+        technicians: (s.schedule_technicians || []).map((st: any) => ({
+            id: st.technicianId,
+            name: techMap.get(st.technicianId) || 'Técnico Desconhecido'
+        })),
     }));
 
     res.json(result);
@@ -141,7 +146,7 @@ export const getPendingReports = catchAsync(async (req: AuthenticatedRequest, re
     const { data: schedulesRaw, error } = await supabase
         .from('schedules')
         .select(`
-            id, title, startDate, endDate, isCompleted, hasReport, 
+            id, title, startDate, endDate, isCompleted, hasReport, clientId, equipmentId,
             clients(name), 
             schedule_technicians(technicianId)
         `)
@@ -163,7 +168,10 @@ export const getPendingReports = catchAsync(async (req: AuthenticatedRequest, re
     const result = (schedulesRaw || []).map((s: any) => ({
         ...s,
         clientName: s.clients?.name || (Array.isArray(s.clients) ? s.clients[0]?.name : 'Cliente Desconhecido'),
-        technicians: (s.schedule_technicians || []).map((st: any) => techMap.get(st.technicianId) || 'Técnico Desconhecido'),
+        technicians: (s.schedule_technicians || []).map((st: any) => ({
+            id: st.technicianId,
+            name: techMap.get(st.technicianId) || 'Técnico Desconhecido'
+        })),
     }));
 
     res.json(result);

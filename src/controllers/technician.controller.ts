@@ -44,7 +44,18 @@ export const getMe = catchAsync(async (req: AuthenticatedRequest, res: Response)
 export const updateTechnician = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
     const userId = req.params.id;
-    const { first_name, last_name, color, telegramchatid, signature, daily_notifications_enabled, notification_time, phone, google_calendar_color_id } = req.body;
+    const {
+        first_name,
+        last_name,
+        color,
+        telegramchatid,
+        signature,
+        daily_notifications_enabled,
+        notification_time,
+        phone,
+        google_calendar_color_id,
+        client_role
+    } = req.body;
 
     const userRole = req.user.user_metadata?.role;
 
@@ -64,8 +75,9 @@ export const updateTechnician = catchAsync(async (req: AuthenticatedRequest, res
                 daily_notifications_enabled = $6, 
                 notification_time = $7, 
                 phone = $8,
-                google_calendar_color_id = $9
-             WHERE id = $10 RETURNING *`,
+                google_calendar_color_id = $9,
+                client_role = $10
+             WHERE id = $11 RETURNING *`,
             [
                 first_name,
                 last_name,
@@ -76,10 +88,29 @@ export const updateTechnician = catchAsync(async (req: AuthenticatedRequest, res
                 notification_time,
                 phone,
                 google_calendar_color_id,
+                client_role,
                 userId
             ]
         );
         if (rowCount === 0) throw new NotFoundError('Perfil não encontrado.');
+
+        // Sync metadata to Supabase Auth if the update was successful
+        // This is crucial for the frontend to have up-to-date mandatory fields in session metadata
+        try {
+            const metadata: any = {
+                first_name: first_name,
+                last_name: last_name
+            };
+            if (client_role) metadata.client_role = client_role;
+
+            await supabase.auth.admin.updateUserById(userId, {
+                user_metadata: metadata
+            });
+        } catch (metaErr) {
+            // Silently log metadata sync error - the primary DB update succeeded
+            console.error('Failed to sync auth metadata:', metaErr);
+        }
+
         return rows[0];
     });
 
