@@ -58,7 +58,7 @@ export interface PartComponent {
 }
 
 export interface Schedule {
-    id: number;
+    id: number | string;
     title: string;
     startDate?: string;
     endDate?: string;
@@ -167,6 +167,8 @@ export interface EnrichedSchedule extends Omit<Schedule, 'additionalInfo'> {
     parts: EnrichedPart[];
     timeBlocks: TimeBlock[];
     ticketId?: number | null;
+    scheduleId?: number;
+    isTask?: boolean;
     acknowledgementState?: ScheduleStatus;
 }
 

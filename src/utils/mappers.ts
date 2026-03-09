@@ -1,5 +1,5 @@
 //Horas de desenvolvimento activo=3,5
-import { EnrichedSchedule, ScheduleStatus, EnrichedPart } from '../types';
+import { EnrichedSchedule, ScheduleStatus, EnrichedPart, ServiceClassification } from '../types';
 import { StockType } from '../constants/enums';
 import * as scheduleService from '../services/scheduleService';
 
@@ -62,6 +62,50 @@ export const mapScheduleDatabaseToResponse = (
         classification: (schedule.classification as any) || 'geral',
         priority: (schedule.priority as any) || undefined,
 
+        timeBlocks: timeBlocks,
+    };
+};
+
+/**
+ * Maps an internal task to the EnrichedSchedule format for calendar display.
+ */
+export const mapTaskToScheduleResponse = (
+    task: any,
+    clientName: string = '',
+    equipmentInfo: string = '',
+    technician: { id: string; name: string; color?: string } | null = null
+): EnrichedSchedule => {
+    const timeBlocks = (task.internal_task_time_blocks || []).map((tb: any) => ({
+        id: tb.id,
+        start: tb.start_time,
+        end: tb.end_time
+    }));
+
+    const initials = technician ? technician.name.split(' ').map(n => n[0]).join('').toUpperCase() : '';
+    const titlePrefix = initials ? `${initials} - ` : '';
+
+    return {
+        id: `task_${task.id}`, // Prefix to distinguish from regular schedules
+        scheduleId: task.id,    // Store original ID
+        title: `${titlePrefix}Tarefa - ${task.title}`,
+        startDate: timeBlocks.length > 0 ? timeBlocks[0].start : undefined,
+        endDate: timeBlocks.length > 0 ? timeBlocks[timeBlocks.length - 1].end : undefined,
+        status: task.completed ? ScheduleStatus.COMPLETED : ScheduleStatus.PENDING,
+        isCompleted: !!task.completed,
+        hasReport: false,
+        internalNotes: task.description,
+        serviceType: [task.type || 'other'],
+        clientId: task.client_id,
+        equipmentId: task.equipment_id,
+        technicians: technician ? [technician] : [],
+        clientName: clientName,
+        equipmentInfo: equipmentInfo,
+        parts: [],
+        acknowledgementState: task.completed ? ScheduleStatus.COMPLETED : ScheduleStatus.ACCEPTED,
+        includes_travel: false,
+        classification: ServiceClassification.GERAL,
+        priority: task.priority,
+        isTask: true,
         timeBlocks: timeBlocks,
     };
 };

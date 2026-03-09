@@ -258,25 +258,22 @@ export async function syncTechnicians(db: PoolClient, scheduleId: number, techni
 }
 
 /**
- * Syncs parts and updates reservations
+ * Syncs parts and updates reservations using absolute synchronization.
+ * Self-correcting against drift.
  */
 export async function syncPartsAndReservations(db: PoolClient, scheduleId: number, parts: any[], isCompleted: boolean, wasAlreadyCompletedParam?: boolean) {
     let wasAlreadyCompleted = wasAlreadyCompletedParam;
 
     if (wasAlreadyCompleted === undefined) {
-        // Fallback: Get current state from DB if not provided
         const { rows: currentStatus } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
         wasAlreadyCompleted = currentStatus.length > 0 && currentStatus[0].isCompleted;
     }
 
     const { rows: originalParts } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
 
-    // Release previous reservations ONLY if it was NOT already completed in the DB
-    if (originalParts.length > 0 && !wasAlreadyCompleted) {
-        for (const op of originalParts) {
-            await inventoryService.updatePartReservation(db, op.partId, -Number(op.quantity), (op.stock_type as StockType) || StockType.GENERAL);
-        }
-    }
+    // Track all parts involved for later synchronization
+    const affectedPartIds = new Set<number>();
+    originalParts.forEach(op => affectedPartIds.add(op.partId));
 
     await db.query('DELETE FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
 
@@ -297,17 +294,18 @@ export async function syncPartsAndReservations(db: PoolClient, scheduleId: numbe
             }
 
             if (partId && p.quantity > 0) {
+                affectedPartIds.add(partId);
                 await db.query<SchedulePart>(
                     'INSERT INTO schedule_parts ("scheduleId", "partId", quantity, stock_type, is_applied) VALUES ($1, $2, $3, $4, $5)',
                     [scheduleId, partId, Number(p.quantity), p.stockType || StockType.GENERAL, p.isApplied !== false]
                 );
-
-                // If the NEW state is not completed AND it wasn't already completed, update reservation
-                if (!isCompleted && !wasAlreadyCompleted) {
-                    await inventoryService.updatePartReservation(db, partId, Number(p.quantity), (p.stockType as StockType) || StockType.GENERAL);
-                }
             }
         }
+    }
+
+    // Recalculate everything for involved parts to ensure perfect sync.
+    if (affectedPartIds.size > 0) {
+        await inventoryService.syncMultiplePartsReservations(db, Array.from(affectedPartIds));
     }
 }
 
@@ -379,32 +377,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
 
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
-    const { rows: updatedRows } = await db.query<Schedule>(
-        `UPDATE schedules SET 
-            title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, 
-            "isCompleted" = $6, "additionalInfo" = $7, "serviceType" = $8, "ticketId" = $9,
-            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12, "priority" = $13
-        WHERE id = $14 RETURNING *`,
-        [
-            generatedTitle,
-            startDate || null,
-            endDate || null,
-            clientId,
-            equipmentId,
-            isCompleted || false,
-            internalNotes,
-            JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])),
-            ticketId,
-            (isCompleted) ? ScheduleStatus.COMPLETED : (originalSchedule.acknowledgementState === ScheduleStatus.PENDING_SCHEDULING && startDate ? ScheduleStatus.PENDING : (originalSchedule.acknowledgementState || ScheduleStatus.PENDING)),
-            includesTravel !== undefined ? includesTravel : false,
-            classification || 'geral',
-            data.priority || originalSchedule.priority || null,
-            scheduleId
-        ]
-    );
-    const updatedSchedule = updatedRows[0];
-
-    // Check significant changes
+    // Check significant changes BEFORE update
     let hasSignificantChanges = false;
     if (originalSchedule.clientId !== clientId) hasSignificantChanges = true;
     if (originalSchedule.equipmentId !== equipmentId) hasSignificantChanges = true;
@@ -438,6 +411,42 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
     const existingTBs = existingTBRows.map(r => ({ start: new Date(r.start_time).getTime(), end: new Date(r.end_time).getTime() })).sort((a, b) => a.start - b.start);
     const incomingTBs = (timeBlocks || []).map((tb: any) => ({ start: new Date(tb.start).getTime(), end: new Date(tb.end).getTime() })).sort((a: any, b: any) => a.start - b.start);
     if (JSON.stringify(existingTBs) !== JSON.stringify(incomingTBs)) hasSignificantChanges = true;
+
+    // Determine new acknowledgement state
+    let newAcknowledgementState = originalSchedule.acknowledgementState;
+    if (isCompleted) {
+        newAcknowledgementState = ScheduleStatus.COMPLETED;
+    } else if (originalSchedule.acknowledgementState === ScheduleStatus.PENDING_SCHEDULING && startDate) {
+        newAcknowledgementState = ScheduleStatus.PENDING;
+    } else if (hasSignificantChanges) {
+        // Reset to pending if significant changes occurred, so technicians must confirm again
+        newAcknowledgementState = ScheduleStatus.PENDING;
+    }
+
+    const { rows: updatedRows } = await db.query<Schedule>(
+        `UPDATE schedules SET 
+            title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, 
+            "isCompleted" = $6, "additionalInfo" = $7, "serviceType" = $8, "ticketId" = $9,
+            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12, "priority" = $13
+        WHERE id = $14 RETURNING *`,
+        [
+            generatedTitle,
+            startDate || null,
+            endDate || null,
+            clientId,
+            equipmentId,
+            isCompleted || false,
+            internalNotes,
+            JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])),
+            ticketId,
+            newAcknowledgementState || ScheduleStatus.PENDING,
+            includesTravel !== undefined ? includesTravel : false,
+            classification || 'geral',
+            data.priority || originalSchedule.priority || null,
+            scheduleId
+        ]
+    );
+    const updatedSchedule = updatedRows[0];
 
     // Google Calendar Cleanup List
     const { rows: existingBlocksRows } = await db.query<ScheduleTimeBlock>('SELECT google_event_id FROM schedule_time_blocks WHERE schedule_id = $1 AND google_event_id IS NOT NULL', [scheduleId]);

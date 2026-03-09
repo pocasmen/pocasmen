@@ -83,12 +83,12 @@ export const updateTask = catchAsync(async (req: AuthenticatedRequest, res: Resp
     // Check ownership unless super_admin
     const { data: originalTask } = await supabase
         .from('internal_tasks')
-        .select('user_id')
+        .select('user_id, created_by')
         .eq('id', taskId)
         .single();
 
     if (!originalTask) throw new NotFoundError('Task not found');
-    if (role !== UserRole.SUPER_ADMIN && originalTask.user_id !== userId) {
+    if (role !== UserRole.SUPER_ADMIN && originalTask.user_id !== userId && originalTask.created_by !== userId) {
         throw new ApiError(403, 'You can only update your own tasks');
     }
 

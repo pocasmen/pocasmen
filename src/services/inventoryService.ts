@@ -348,19 +348,6 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any)
  * Synchronizes reserved quantity based on active schedules
  */
 export async function syncPartStock(db: PoolClient, partId: number): Promise<Part> {
-    const query = `
-        SELECT 
-            COALESCE(SUM(CASE WHEN s."isCompleted" = false THEN sp.quantity ELSE 0 END), 0) as direct_qty,
-            COALESCE(SUM(CASE WHEN s."isCompleted" = false THEN (sp.quantity * pc.quantity) ELSE 0 END), 0) as kit_qty,
-            sp.stock_type
-        FROM parts p
-        LEFT JOIN schedule_parts sp ON p.id = sp."partId"
-        LEFT JOIN schedules s ON sp."scheduleId" = s.id
-        LEFT JOIN part_components pc ON p.id = pc.parent_part_id AND pc.child_part_id = $1
-        WHERE (p.id = $1 OR pc.child_part_id = $1)
-        GROUP BY sp.stock_type
-    `;
-
     const { rows } = await db.query<{ total: number; stock_type: string }>(
         `SELECT 
             COALESCE(SUM(quantity), 0) as total,
@@ -398,6 +385,30 @@ export async function syncPartStock(db: PoolClient, partId: number): Promise<Par
         [generalReserved, fossReserved, partId]
     );
     return enrichPart(updatedRows[0]);
+}
+
+/**
+ * Batch synchronizes reservations for multiple parts, ensuring kits and components are all updated.
+ */
+export async function syncMultiplePartsReservations(db: PoolClient, partIds: number[]): Promise<void> {
+    const uniqueIds = new Set<number>();
+
+    for (const id of partIds) {
+        if (!id) continue;
+        uniqueIds.add(id);
+
+        // If it's a kit, add components
+        const { rows: components } = await db.query('SELECT child_part_id FROM part_components WHERE parent_part_id = $1', [id]);
+        components.forEach(c => uniqueIds.add(c.child_part_id));
+
+        // If it's a component, add all its parent kits too (to be safe)
+        const { rows: parents } = await db.query('SELECT parent_part_id FROM part_components WHERE child_part_id = $1', [id]);
+        parents.forEach(p => uniqueIds.add(p.parent_part_id));
+    }
+
+    for (const id of Array.from(uniqueIds)) {
+        await syncPartStock(db, id);
+    }
 }
 
 /**

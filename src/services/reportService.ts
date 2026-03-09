@@ -81,6 +81,10 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
 
                 // Abate inventory (skip reserved update since we handle that separately for schedules)
                 await inventoryService.abatePartInventory(db, partId, qty, stockType, true);
+
+                // Even though we skip reserved in abate, we should still ensure the parts table is consistent
+                // In case there's a weird desync or if the part wasn't in the schedule.
+                await inventoryService.syncPartStock(db, partId);
             }
         }
     }
@@ -125,7 +129,14 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
     await syncReportPartsAndAbate(db, reportId, parts);
 
     if (scheduleId) {
-        await db.query('UPDATE schedules SET "hasReport" = true WHERE id = $1', [scheduleId]);
+        // Mark as having a report AND being completed
+        await db.query('UPDATE schedules SET "hasReport" = true, "isCompleted" = true WHERE id = $1', [scheduleId]);
+
+        // Ensure reservations for the schedule are released/synced
+        const { rows: schParts } = await db.query('SELECT "partId" FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
+        if (schParts.length > 0) {
+            await inventoryService.syncMultiplePartsReservations(db, schParts.map(p => p.partId));
+        }
     }
 
     await billingService.createBillingTask(db, reportId, isBillingPending === true);

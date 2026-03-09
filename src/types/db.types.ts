@@ -807,6 +807,8 @@ export type Database = {
           estimated_hours: number | null
           created_at: string
           updated_at: string
+          completed: boolean | null
+          completed_at: string | null
         }
         Insert: {
           id?: number
@@ -823,6 +825,8 @@ export type Database = {
           estimated_hours?: number | null
           created_at?: string
           updated_at?: string
+          completed?: boolean | null
+          completed_at?: string | null
         }
         Update: {
           id?: number
@@ -839,6 +843,8 @@ export type Database = {
           estimated_hours?: number | null
           created_at?: string
           updated_at?: string
+          completed?: boolean | null
+          completed_at?: string | null
         }
         Relationships: [
           {

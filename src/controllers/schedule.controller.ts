@@ -11,7 +11,7 @@ import { catchAsync } from '../utils/catchAsync';
 import { ApiError, NotFoundError } from '../utils/ApiError';
 import { EnrichedPart, EnrichedSchedule, StockType, ScheduleStatus, TicketStatus } from '../types';
 import { logger } from '../utils/logger';
-import { mapScheduleDatabaseToResponse } from '../utils/mappers';
+import { mapScheduleDatabaseToResponse, mapTaskToScheduleResponse } from '../utils/mappers';
 import {
     Schedule,
     Profile,
@@ -107,13 +107,40 @@ export const getSchedules = catchAsync(async (req: AuthenticatedRequest, res: Re
         );
     });
 
+    // Fetch Internal Tasks that should be on the calendar
+    const { data: tasksRaw } = await supabase
+        .from('internal_tasks')
+        .select(`
+            *,
+            assignee:profiles!internal_tasks_user_id_fkey(id, first_name, last_name, color),
+            clients(name),
+            equipments(brand, model),
+            internal_task_time_blocks(*)
+        `)
+        .eq('show_on_calendar', true);
+
+    if (tasksRaw && tasksRaw.length > 0) {
+        tasksRaw.forEach((task: any) => {
+            const tech = task.assignee ? {
+                id: task.assignee.id,
+                name: `${task.assignee.first_name || ''} ${task.assignee.last_name || ''}`.trim(),
+                color: task.assignee.color
+            } : null;
+
+            const clientName = task.clients?.name || 'Interno';
+            const equipInfo = task.equipments ? `${task.equipments.brand || ''} ${task.equipments.model || ''}`.trim() : 'N/A';
+
+            result.push(mapTaskToScheduleResponse(task, clientName, equipInfo, tech));
+        });
+    }
+
     res.json({
         data: result,
         pagination: {
             page,
             limit,
-            total: totalCount || 0,
-            totalPages: Math.ceil((totalCount || 0) / limit)
+            total: (totalCount || 0) + (tasksRaw?.length || 0),
+            totalPages: Math.ceil(((totalCount || 0) + (tasksRaw?.length || 0)) / limit)
         }
     });
 });
@@ -271,10 +298,16 @@ export const deleteSchedule = catchAsync(async (req: AuthenticatedRequest, res: 
         }
 
         await db.query('DELETE FROM schedule_technicians WHERE "scheduleId" = $1', [scheduleId]);
-        const { rows: oldParts } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
-        for (const op of oldParts) await inventoryService.updatePartReservation(db, op.partId, -Number(op.quantity), (op.stock_type as StockType) || StockType.GENERAL);
+        const { rows: oldParts } = await db.query<SchedulePart>('SELECT "partId" FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
+        const partIdsToSync = oldParts.map(p => p.partId);
 
         await db.query('DELETE FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
+
+        // Sync affected parts to ensure reservations are cleared correctly
+        if (partIdsToSync.length > 0) {
+            await inventoryService.syncMultiplePartsReservations(db, partIdsToSync);
+        }
+
         await db.query('UPDATE tickets SET "scheduleId" = NULL, status = $1, "scheduled_at" = NULL WHERE "scheduleId" = $2', [TicketStatus.OPEN, scheduleId]);
         await db.query('DELETE FROM schedules WHERE id = $1', [scheduleId]);
 
