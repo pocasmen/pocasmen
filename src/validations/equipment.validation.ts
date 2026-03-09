@@ -7,6 +7,7 @@ export const createEquipmentSchema = z.object({
         model: z.string().min(1, 'Modelo é obrigatório').max(100),
         serialNumber: z.string().min(1, 'Número de série é obrigatório').max(100),
         clientId: z.number().int().positive('ID do cliente inválido'),
+        additionalInfo: z.string().optional().nullable(),
     })
 });
 
@@ -19,6 +20,7 @@ export const updateEquipmentSchema = z.object({
         model: z.string().min(1).optional(),
         serialNumber: z.string().min(1).optional(),
         clientId: z.number().int().positive().optional(),
+        additionalInfo: z.string().optional().nullable(),
     })
 });
 

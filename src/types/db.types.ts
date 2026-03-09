@@ -123,6 +123,7 @@ export type Database = {
           model: string | null
           serialNumber: string | null
           clientId: number
+          additionalInfo: string | null
         }
         Insert: {
           id?: number
@@ -130,6 +131,7 @@ export type Database = {
           model?: string | null
           serialNumber?: string | null
           clientId: number
+          additionalInfo?: string | null
         }
         Update: {
           id?: number
@@ -137,6 +139,7 @@ export type Database = {
           model?: string | null
           serialNumber?: string | null
           clientId?: number
+          additionalInfo?: string | null
         }
         Relationships: [
           {

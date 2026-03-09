@@ -12,7 +12,7 @@ export const getEquipments = catchAsync(async (req: AuthenticatedRequest, res: R
     const search = req.query.search as string;
     let query = supabase
         .from('equipments')
-        .select('id, brand, model, serialNumber, clients(name)')
+        .select('id, brand, model, "serialNumber", "additionalInfo", clients(name)')
         .order('id', { ascending: true });
 
     if (search) {
@@ -38,6 +38,7 @@ export const getEquipments = catchAsync(async (req: AuthenticatedRequest, res: R
         brand: e.brand,
         model: e.model,
         serialNumber: e.serialNumber,
+        additionalInfo: e.additionalInfo,
         clientName: Array.isArray(e.clients) ? e.clients[0]?.name : (e.clients as any)?.name || 'Cliente Desconhecido',
     }));
 
@@ -48,7 +49,7 @@ export const getClientEquipments = catchAsync(async (req: AuthenticatedRequest, 
     const clientIdParam = Number(req.params.id);
     const { data, error } = await supabase
         .from('equipments')
-        .select('id, brand, model, serialNumber, clients(name)')
+        .select('id, brand, model, "serialNumber", "additionalInfo", clients(name)')
         .eq('clientId', clientIdParam)
         .order('id', { ascending: true });
 
@@ -59,6 +60,7 @@ export const getClientEquipments = catchAsync(async (req: AuthenticatedRequest, 
         brand: e.brand,
         model: e.model,
         serialNumber: e.serialNumber,
+        additionalInfo: e.additionalInfo,
         clientName: Array.isArray(e.clients) ? e.clients[0]?.name : (e.clients as any)?.name || 'Cliente Desconhecido',
     }));
 
@@ -66,7 +68,7 @@ export const getClientEquipments = catchAsync(async (req: AuthenticatedRequest, 
 });
 
 export const createEquipment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-    const { brand, model, serialNumber, clientId } = req.body;
+    const { brand, model, serialNumber, clientId, additionalInfo } = req.body;
 
     const result = await withTransaction(req, async (db) => {
         const { rows: existing } = await db.query('SELECT 1 FROM equipments WHERE "serialNumber" = $1 LIMIT 1', [serialNumber]);
@@ -79,8 +81,8 @@ export const createEquipment = catchAsync(async (req: AuthenticatedRequest, res:
         const clientName = clientRows[0].name;
 
         const { rows } = await db.query<Equipment>(
-            'INSERT INTO equipments (brand, model, "serialNumber", "clientId") VALUES ($1, $2, $3, $4) RETURNING *',
-            [brand, model, serialNumber, Number(clientId)]
+            'INSERT INTO equipments (brand, model, "serialNumber", "clientId", "additionalInfo") VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [brand, model, serialNumber, Number(clientId), additionalInfo]
         );
 
         return {
@@ -94,7 +96,7 @@ export const createEquipment = catchAsync(async (req: AuthenticatedRequest, res:
 
 export const updateEquipment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const { id } = req.params;
-    const { brand, model, serialNumber, clientId } = req.body;
+    const { brand, model, serialNumber, clientId, additionalInfo } = req.body;
 
     const result = await withTransaction(req, async (db) => {
         const { rows: existing } = await db.query('SELECT 1 FROM equipments WHERE "serialNumber" = $1 AND id != $2 LIMIT 1', [serialNumber, Number(id)]);
@@ -107,8 +109,8 @@ export const updateEquipment = catchAsync(async (req: AuthenticatedRequest, res:
         const clientName = clientRows[0].name;
 
         const { rows, rowCount } = await db.query<Equipment>(
-            'UPDATE equipments SET brand = $1, model = $2, "serialNumber" = $3, "clientId" = $4 WHERE id = $5 RETURNING *',
-            [brand, model, serialNumber, Number(clientId), Number(id)]
+            'UPDATE equipments SET brand = $1, model = $2, "serialNumber" = $3, "clientId" = $4, "additionalInfo" = $5 WHERE id = $6 RETURNING *',
+            [brand, model, serialNumber, Number(clientId), additionalInfo, Number(id)]
         );
 
         if (rowCount === 0) throw new NotFoundError('Equipamento não encontrado.');
