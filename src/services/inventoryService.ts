@@ -91,12 +91,12 @@ export const processReportAbate = (
     let newStockFoss = current.stockFoss;
     let newReservedFoss = current.reservedFoss;
 
-    if (stockType === StockType.FOSS) {
+    if (stockType === StockType.FOSS || stockType === StockType.CONTRACT) {
         newStockFoss = current.stockFoss - quantityUsed; // Permite negativo
         if (!skipReserved) {
             newReservedFoss = Math.max(0, current.reservedFoss - quantityUsed);
         }
-    } else if (stockType === StockType.GENERAL || stockType === StockType.CONTRACT || stockType === StockType.MSD) {
+    } else if (stockType === StockType.GENERAL || stockType === StockType.MSD) {
         newStock = current.stock - quantityUsed; // Permite negativo
         if (!skipReserved) {
             newReserved = Math.max(0, current.reserved - quantityUsed);
@@ -212,7 +212,7 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
     let sqlSet = [];
     let sqlParams = [];
 
-    if (stockType === StockType.FOSS) {
+    if (stockType === StockType.FOSS || stockType === StockType.CONTRACT) {
         const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity_foss || 0) + change);
         sqlSet.push('reserved_quantity_foss = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
@@ -222,8 +222,8 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
             old: currentPart.reserved_quantity_foss,
             change,
             new: newReservedQuantity
-        }, `[DEBUG_INV] Updating Part Reservation (FOSS)`);
-    } else if (stockType === StockType.GENERAL || stockType === StockType.CONTRACT || stockType === StockType.MSD) {
+        }, `[DEBUG_INV] Updating Part Reservation (FOSS/CONTRACT)`);
+    } else if (stockType === StockType.GENERAL || stockType === StockType.MSD) {
         const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity || 0) + change);
         sqlSet.push('reserved_quantity = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
@@ -376,7 +376,7 @@ export async function syncPartStock(db: PoolClient, partId: number): Promise<Par
     let fossReserved = 0;
 
     rows.forEach((item: { total: number; stock_type: string }) => {
-        if (item.stock_type === StockType.FOSS) fossReserved = Number(item.total);
+        if (item.stock_type === StockType.FOSS || item.stock_type === StockType.CONTRACT) fossReserved = Number(item.total);
         else generalReserved += Number(item.total);
     });
 

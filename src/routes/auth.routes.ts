@@ -110,7 +110,7 @@ router.post('/auth/self-register', authLimiter, validate(authValidation.selfRegi
  */
 router.post('/admin/invite-user',
     authenticateToken,
-    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]),
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF, UserRole.TECHNICIAN]),
     validate(authValidation.inviteUserSchema),
     authController.inviteUser
 );

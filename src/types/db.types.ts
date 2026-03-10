@@ -305,6 +305,8 @@ export type Database = {
           stock_quantity_foss: number | null
           reserved_quantity_foss: number | null
           ordered_quantity_foss: number | null
+          virtual_stock: number | null
+          virtual_stock_foss: number | null
         }
         Insert: {
           id?: number
@@ -317,6 +319,8 @@ export type Database = {
           stock_quantity_foss?: number | null
           reserved_quantity_foss?: number | null
           ordered_quantity_foss?: number | null
+          virtual_stock?: number | null
+          virtual_stock_foss?: number | null
         }
         Update: {
           id?: number
@@ -329,6 +333,8 @@ export type Database = {
           stock_quantity_foss?: number | null
           reserved_quantity_foss?: number | null
           ordered_quantity_foss?: number | null
+          virtual_stock?: number | null
+          virtual_stock_foss?: number | null
         }
         Relationships: []
       }
