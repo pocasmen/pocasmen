@@ -1,195 +1,142 @@
 import { sendEmail, resetTransporter } from '../emailService';
-import nodemailer from 'nodemailer';
 
-// Mock nodemailer
-jest.mock('nodemailer');
+// ── Mock global fetch (Node 18+) ─────────────────────────────────────────────
+const mockFetch = jest.fn();
+global.fetch = mockFetch as any;
 
-describe('EmailService', () => {
-    let mockTransporter: any;
-    let mockSendMail: jest.Mock;
+// ── Mock supabase (used only by sendEmailWithTemplate) ───────────────────────
+jest.mock('../../config/supabase', () => ({
+    supabase: {
+        from: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockReturnThis(),
+        maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    },
+}));
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const makeBrevoResponse = (ok: boolean, body: object, status = 200) =>
+    Promise.resolve({
+        ok,
+        status,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+    } as Response);
+
+describe('EmailService — Brevo HTTP API', () => {
     beforeEach(() => {
-        // Clear all mocks before each test
         jest.clearAllMocks();
-
-        // Reset the transporter singleton
         resetTransporter();
-
-        // Create mock sendMail function
-        mockSendMail = jest.fn().mockResolvedValue({
-            messageId: 'test-message-id-123',
-            accepted: ['test@example.com'],
-            rejected: [],
-            response: '250 Message accepted'
-        });
-
-        // Create mock transporter
-        mockTransporter = {
-            sendMail: mockSendMail
-        };
-
-        // Mock nodemailer.createTransport to return our mock transporter
-        (nodemailer.createTransport as jest.Mock).mockReturnValue(mockTransporter);
-
-        // Set up environment variables for testing
-        process.env.EMAIL_HOST = 'smtp.test.com';
-        process.env.EMAIL_PORT = '465';
-        process.env.EMAIL_SECURE = 'true';
-        process.env.EMAIL_USER = 'test@example.com';
-        process.env.EMAIL_PASS = 'test-password';
+        process.env.BREVO_API_KEY = 'test-brevo-key-123';
+        process.env.EMAIL_FROM    = 'noreply@example.com';
+        process.env.APP_NAME      = 'TestApp';
     });
 
     afterEach(() => {
-        // Clean up environment variables
-        delete process.env.EMAIL_HOST;
-        delete process.env.EMAIL_PORT;
-        delete process.env.EMAIL_SECURE;
-        delete process.env.EMAIL_USER;
-        delete process.env.EMAIL_PASS;
+        delete process.env.BREVO_API_KEY;
         delete process.env.EMAIL_FROM;
+        delete process.env.APP_NAME;
     });
 
+    // ── sendEmail ─────────────────────────────────────────────────────────────
     describe('sendEmail', () => {
-        it('should send an email successfully', async () => {
-            const to = 'recipient@example.com';
-            const subject = 'Test Subject';
-            const html = '<p>Test email body</p>';
+        it('sends email via Brevo HTTP POST and returns messageId', async () => {
+            mockFetch.mockReturnValueOnce(
+                makeBrevoResponse(true, { messageId: 'brevo-msg-001' })
+            );
 
-            const result = await sendEmail(to, subject, html);
+            const result = await sendEmail(
+                'recipient@example.com',
+                'Hello World',
+                '<p>Test body</p>'
+            );
 
-            // Verify nodemailer.createTransport was called with correct config
-            expect(nodemailer.createTransport).toHaveBeenCalledWith({
-                host: 'smtp.test.com',
-                port: 465,
-                secure: true,
-                auth: {
-                    user: 'test@example.com',
-                    pass: 'test-password'
-                },
-                tls: {
-                    rejectUnauthorized: false
-                },
-                connectionTimeout: 10000,
-                greetingTimeout: 10000,
-                socketTimeout: 10000,
-            });
-
-            // Verify sendMail was called with correct parameters
-            expect(mockSendMail).toHaveBeenCalledWith({
-                from: '"Project1 Support" <test@example.com>',
-                to: to,
-                subject: subject,
-                html: html
-            });
-
-            // Verify the result
-            expect(result).toEqual({
-                messageId: 'test-message-id-123',
-                accepted: ['test@example.com'],
-                rejected: [],
-                response: '250 Message accepted'
-            });
-        });
-
-        it('should use custom EMAIL_FROM if provided', async () => {
-            process.env.EMAIL_FROM = 'custom@example.com';
-
-            await sendEmail('recipient@example.com', 'Test', '<p>Test</p>');
-
-            expect(mockSendMail).toHaveBeenCalledWith(
+            // Verify the correct endpoint was called
+            expect(mockFetch).toHaveBeenCalledWith(
+                'https://api.brevo.com/v3/smtp/email',
                 expect.objectContaining({
-                    from: 'custom@example.com'
+                    method: 'POST',
+                    headers: expect.objectContaining({
+                        'api-key': 'test-brevo-key-123',
+                        'content-type': 'application/json',
+                    }),
                 })
             );
+
+            // Verify payload structure
+            const callBody = JSON.parse(
+                (mockFetch.mock.calls[0][1] as RequestInit).body as string
+            );
+            expect(callBody).toMatchObject({
+                sender: { name: 'TestApp', email: 'noreply@example.com' },
+                to:     [{ email: 'recipient@example.com' }],
+                subject: 'Hello World',
+                htmlContent: '<p>Test body</p>',
+            });
+
+            expect(result).toEqual({ messageId: 'brevo-msg-001' });
         });
 
-        it('should skip sending if EMAIL_HOST is missing', async () => {
-            delete process.env.EMAIL_HOST;
+        it('returns null and logs warning when BREVO_API_KEY is missing', async () => {
+            delete process.env.BREVO_API_KEY;
 
-            const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
+            const result = await sendEmail('test@example.com', 'Sub', '<p>body</p>');
 
-            const result = await sendEmail('test@example.com', 'Test', '<p>Test</p>');
-
-            expect(consoleWarnSpy).toHaveBeenCalledWith(
-                'SMTP configuration (EMAIL_HOST or EMAIL_USER) is missing. Email skipped.'
-            );
-            expect(mockSendMail).not.toHaveBeenCalled();
-            expect(result).toBeUndefined();
-
-            consoleWarnSpy.mockRestore();
+            expect(mockFetch).not.toHaveBeenCalled();
+            expect(result).toBeNull();
         });
 
-        it('should skip sending if EMAIL_USER is missing', async () => {
-            delete process.env.EMAIL_USER;
+        it('throws BadRequestError for an invalid email address', async () => {
+            await expect(
+                sendEmail('not-an-email', 'Sub', '<p>body</p>')
+            ).rejects.toThrow('Endereço de email inválido');
 
-            const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation();
-
-            const result = await sendEmail('test@example.com', 'Test', '<p>Test</p>');
-
-            expect(consoleWarnSpy).toHaveBeenCalledWith(
-                'SMTP configuration (EMAIL_HOST or EMAIL_USER) is missing. Email skipped.'
-            );
-            expect(mockSendMail).not.toHaveBeenCalled();
-            expect(result).toBeUndefined();
-
-            consoleWarnSpy.mockRestore();
+            expect(mockFetch).not.toHaveBeenCalled();
         });
 
-        it('should handle email sending errors gracefully', async () => {
-            const error = new Error('SMTP connection failed');
-            mockSendMail.mockRejectedValue(error);
-
-            const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
-
-            const result = await sendEmail('test@example.com', 'Test', '<p>Test</p>');
-
-            expect(consoleErrorSpy).toHaveBeenCalledWith(
-                '[EmailService] Error sending email:',
-                error
+        it('sanitises CRLF injection in subject', async () => {
+            mockFetch.mockReturnValueOnce(
+                makeBrevoResponse(true, { messageId: 'brevo-crlf-001' })
             );
-            expect(result).toBeUndefined();
 
-            consoleErrorSpy.mockRestore();
+            await sendEmail('test@example.com', 'Bad\r\nSubject', '<p>body</p>');
+
+            const callBody = JSON.parse(
+                (mockFetch.mock.calls[0][1] as RequestInit).body as string
+            );
+            expect(callBody.subject).toBe('BadSubject');
         });
 
-        it('should use port 587 by default if not specified', async () => {
-            delete process.env.EMAIL_PORT;
-            delete process.env.EMAIL_SECURE;
-
-            await sendEmail('test@example.com', 'Test', '<p>Test</p>');
-
-            expect(nodemailer.createTransport).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    port: 587,
-                    secure: false
-                })
+        it('throws when Brevo API returns a non-OK response', async () => {
+            mockFetch.mockReturnValueOnce(
+                makeBrevoResponse(false, { code: 'invalid_parameter', message: 'valid sender email required' }, 400)
             );
+
+            await expect(
+                sendEmail('test@example.com', 'Sub', '<p>body</p>')
+            ).rejects.toThrow('Brevo API error 400');
         });
 
-        it('should automatically set secure to true for port 465', async () => {
-            process.env.EMAIL_PORT = '465';
-            delete process.env.EMAIL_SECURE;
-
-            await sendEmail('test@example.com', 'Test', '<p>Test</p>');
-
-            expect(nodemailer.createTransport).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    port: 465,
-                    secure: true
-                })
+        it('uses fallback sender when EMAIL_FROM is absent', async () => {
+            delete process.env.EMAIL_FROM;
+            mockFetch.mockReturnValueOnce(
+                makeBrevoResponse(true, { messageId: 'brevo-fallback-001' })
             );
+
+            await sendEmail('test@example.com', 'Sub', '<p>body</p>');
+
+            const callBody = JSON.parse(
+                (mockFetch.mock.calls[0][1] as RequestInit).body as string
+            );
+            // Should fall back to the hardcoded default
+            expect(callBody.sender.email).toBe('noreply@microatomo.pt');
         });
+    });
 
-        it('should log success message when email is sent', async () => {
-            const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation();
-
-            await sendEmail('test@example.com', 'Test Subject', '<p>Test</p>');
-
-            expect(consoleLogSpy).toHaveBeenCalledWith(
-                '[EmailService] Email sent to test@example.com. MessageId: test-message-id-123'
-            );
-
-            consoleLogSpy.mockRestore();
+    // ── resetTransporter ──────────────────────────────────────────────────────
+    describe('resetTransporter', () => {
+        it('is a no-op that does not throw (HTTP API is stateless)', () => {
+            expect(() => resetTransporter()).not.toThrow();
         });
     });
 });

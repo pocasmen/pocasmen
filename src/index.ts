@@ -42,8 +42,13 @@ app.use(pinoHttp({ logger }));
 app.use(apiLimiter);
 
 // CORS restrito ao frontend (segurança)
+// Strip any trailing slash: browsers send origins without it, and the CORS
+// comparison is exact — a single '/' difference triggers a block.
+const rawFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+const frontendOrigin = rawFrontendUrl.replace(/\/+$/, '');
+
 const corsOptions = {
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: frontendOrigin,
   credentials: true,
   optionsSuccessStatus: 200
 };
