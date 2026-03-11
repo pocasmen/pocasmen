@@ -1,5 +1,6 @@
-//Horas de desenvolvimento activo=6,0
+//Horas de desenvolvimento activo=6,5
 import { Request, Response } from 'express';
+
 import { supabase } from '../config/supabase';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
 import * as emailService from '../services/emailService';
@@ -125,47 +126,14 @@ export const approveUser = catchAsync(async (req: AuthenticatedRequest, res: Res
     res.status(200).json({ message: 'User approved and associated successfully.', user: updatedUser });
 
     if (updatedUser.user && updatedUser.user.email) {
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-        const loginUrl = `${frontendUrl}/login`;
-
-        let emailSubject = 'Aprovação de Conta - Project1';
-        let emailHtml = `
-        <div style="font-family: Arial, sans-serif; color: #333;">
-          <h2>Bem-vindo ao Project1!</h2>
-          <p>A sua conta foi aprovada pelo administrador.</p>
-          <p>Já pode aceder à plataforma e gerir os seus pedidos de assistência.</p>
-          <p>
-            <a href="${loginUrl}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">
-              Aceder à Plataforma
-            </a>
-          </p>
-          <p style="font-size: 0.9em; color: #777; margin-top: 20px;">
-            Se o botão acima não funcionar, copie e cole este link no seu browser:<br>
-            ${loginUrl}
-          </p>
-        </div>
-      `;
-
-        let emailFrom = undefined;
-        try {
-            const { data: settingsData } = await supabase.from('settings').select('*').eq('id', 1).single(); // Assuming settings table for email templates
-            if (settingsData && (settingsData as any).email_templates) {
-                const templates = (settingsData as any).email_templates;
-                if (templates.approval) {
-                    emailSubject = templates.approval.subject || emailSubject;
-                    emailFrom = templates.approval.from || undefined;
-                    if (templates.approval.body) {
-                        emailHtml = templates.approval.body.replace(/{{login_url}}/g, loginUrl);
-                    }
-                }
-            }
-        } catch (e) {
-            logger.error(e, "Error loading email template, using default:");
-        }
-
-        logger.info({ email: updatedUser.user.email }, `[APPROVAL] Sending approval email`);
-        emailService.sendEmail(updatedUser.user.email, emailSubject, emailHtml, emailFrom).catch(err => {
-            logger.error(err, "Failed to send approval email async:");
-        });
+        const loginUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`;
+        
+        logger.info({ email: updatedUser.user.email }, `[APPROVAL] Sending approval email via template`);
+        emailService.sendEmailWithTemplate(
+            updatedUser.user.email, 
+            'approval', 
+            { login_url: loginUrl }
+        ).catch(err => logger.error(err, "Failed to send approval email async:"));
     }
+
 });

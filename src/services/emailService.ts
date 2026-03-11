@@ -1,5 +1,6 @@
-//Horas de desenvolvimento activo=7,5
-import { SupabaseClient } from '@supabase/supabase-js';
+//Horas de desenvolvimento activo=8,0
+import { supabase } from '../config/supabase';
+
 import nodemailer from 'nodemailer';
 import { z } from 'zod';
 import { logger } from '../utils/logger';
@@ -88,6 +89,67 @@ export const sendEmail = async (to: string, subject: string, html: string, from?
 };
 
 /**
+ * Sends an email using a template stored in the settings table.
+ * @param to Recipient email address
+ * @param templateType The key of the template in the email_templates setting (e.g. 'approval')
+ * @param variables Object mapping placeholder keys (e.g. 'login_url') to values
+ */
+export const sendEmailWithTemplate = async (to: string, templateType: string, variables: Record<string, string>) => {
+    try {
+        // 1. Fetch templates from DB using the correct key
+        const { data: settingsData, error } = await supabase
+            .from('settings')
+            .select('value')
+            .eq('key', 'email_templates')
+            .maybeSingle();
+
+        if (error) {
+            logger.error(error, "Error fetching email templates from DB:");
+        }
+
+        let subject = 'Mensagem de Project1';
+        let body = '';
+        let from = undefined;
+
+        // 2. Parse templates and find the specific one
+        if (settingsData?.value) {
+            const templates = typeof settingsData.value === 'string' ? JSON.parse(settingsData.value) : settingsData.value;
+            const template = templates[templateType];
+
+            if (template) {
+                subject = template.subject || subject;
+                body = template.body || '';
+                from = template.from || undefined;
+            }
+        }
+
+        // 3. Fallback for approval if template not found or body is empty
+        if (!body && templateType === 'approval') {
+            subject = 'Aprovação de Conta - Project1';
+            body = '<h2>Bem-vindo ao Project1!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>';
+        }
+
+        // 4. Replace variables in body
+        Object.keys(variables).forEach(key => {
+            const val = variables[key];
+            const regex = new RegExp(`{{${key}}}`, 'g');
+            body = body.replace(regex, val);
+        });
+
+        if (!body) {
+            logger.warn({ templateType }, "Empty email body for template type. Email skipped.");
+            return null;
+        }
+
+        return await sendEmail(to, subject, body, from);
+    } catch (error) {
+        logger.error(error, `[EmailService] Failed to send templated email (${templateType}):`);
+        // We don't throw here to avoid breaking the main process if email fails
+        return null;
+    }
+};
+
+/**
  * Reset the transporter (useful for testing)
  */
 export const resetTransporter = () => {
@@ -96,3 +158,4 @@ export const resetTransporter = () => {
     }
     transporter = null;
 };
+

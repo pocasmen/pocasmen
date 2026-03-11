@@ -421,7 +421,8 @@ export async function syncMultiplePartsReservations(db: PoolClient, partIds: num
 export async function getEnrichedInventory(
     db: SupabaseClient<Database> | PoolClient | Pool,
     page: number = 1,
-    limit: number = 50
+    limit: number = 50,
+    search?: string
 ) {
     const offset = (page - 1) * limit;
     let parts: any[] = [];
@@ -429,9 +430,15 @@ export async function getEnrichedInventory(
 
     if ('from' in db) {
         // Supabase Client
-        const { data, count, error } = await db
+        let query = db
             .from('parts')
-            .select('*', { count: 'exact' })
+            .select('*', { count: 'exact' });
+
+        if (search) {
+            query = query.or(`reference.ilike.%${search}%,designation.ilike.%${search}%`);
+        }
+
+        const { data, count, error } = await query
             .order('designation', { ascending: true })
             .range(offset, offset + limit - 1);
 
@@ -440,10 +447,22 @@ export async function getEnrichedInventory(
         totalCount = count || 0;
     } else {
         // Pool Client (PG)
-        const { rows: countRows } = await db.query<{ count: string }>('SELECT COUNT(*) FROM parts');
+        let countQuery = 'SELECT COUNT(*) FROM parts';
+        let dataQuery = 'SELECT * FROM parts ORDER BY designation ASC LIMIT $1 OFFSET $2';
+        let countParams: any[] = [];
+        let dataParams: any[] = [limit, offset];
+
+        if (search) {
+            countQuery = 'SELECT COUNT(*) FROM parts WHERE reference ILIKE $1 OR designation ILIKE $1';
+            countParams = [`%${search}%`];
+            dataQuery = 'SELECT * FROM parts WHERE reference ILIKE $3 OR designation ILIKE $3 ORDER BY designation ASC LIMIT $1 OFFSET $2';
+            dataParams = [limit, offset, `%${search}%`];
+        }
+
+        const { rows: countRows } = await db.query<{ count: string }>(countQuery, countParams);
         totalCount = parseInt(countRows[0].count, 10);
 
-        const { rows } = await db.query<Part>('SELECT * FROM parts ORDER BY designation ASC LIMIT $1 OFFSET $2', [limit, offset]);
+        const { rows } = await db.query<Part>(dataQuery, dataParams);
         parts = rows;
     }
 

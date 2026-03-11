@@ -14,8 +14,9 @@ import { pool } from '../config/db';
 export const getInventory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100)); // Default 100 parts
+    const search = req.query.search as string | undefined;
 
-    const finalResult = await inventoryService.getEnrichedInventory(pool, page, limit);
+    const finalResult = await inventoryService.getEnrichedInventory(pool, page, limit, search);
     res.json(finalResult);
 });
 
