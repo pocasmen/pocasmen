@@ -125,8 +125,8 @@ export const sendEmailWithTemplate = async (to: string, templateType: string, va
 
         // 3. Fallback for approval if template not found or body is empty
         if (!body && templateType === 'approval') {
-            subject = 'Aprovação de Conta - Project1';
-            body = '<h2>Bem-vindo ao Project1!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>';
+            subject = 'Aprovação de Conta';
+            body = '<h2>Bem-vindo à Micro Átomo!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>';
         }
 
         // 4. Replace variables in body

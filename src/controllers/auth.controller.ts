@@ -26,7 +26,10 @@ export const selfRegister = catchAsync(async (req: Request, res: Response) => {
             company_name: companyName,
             role: UserRole.PENDING_CLIENT,
             must_set_password: true
-        }
+        },
+        // S3 — Redirect to the intermediate page so email scanners cannot
+        // prefetch/consume the OTP token before the real user clicks.
+        redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite`,
     });
 
     if (error) {
@@ -70,7 +73,9 @@ export const inviteUser = catchAsync(async (req: AuthenticatedRequest, res: Resp
     }
 
     const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
-        data: inviteData
+        data: inviteData,
+        // S3 — Same intermediate page redirect for admin-sent invites.
+        redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite`,
     });
     if (error) throw new ApiError(500, error.message);
 
@@ -127,11 +132,11 @@ export const approveUser = catchAsync(async (req: AuthenticatedRequest, res: Res
 
     if (updatedUser.user && updatedUser.user.email) {
         const loginUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`;
-        
+
         logger.info({ email: updatedUser.user.email }, `[APPROVAL] Sending approval email via template`);
         emailService.sendEmailWithTemplate(
-            updatedUser.user.email, 
-            'approval', 
+            updatedUser.user.email,
+            'approval',
             { login_url: loginUrl }
         ).catch(err => logger.error(err, "Failed to send approval email async:"));
     }
