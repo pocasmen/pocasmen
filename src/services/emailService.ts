@@ -53,6 +53,23 @@ const sendViaBrevo = async (payload: BrevoEmailPayload): Promise<{ messageId: st
  * @param html Email body in HTML format
  * @param from Optional sender address (overrides EMAIL_FROM env var)
  */
+/**
+ * Parses a sender string that can be either:
+ *  - a plain email: "backend@microatomo.pt"
+ *  - RFC 5322 format: "'Micro Átomo' <backend@microatomo.pt>" or "Micro Átomo <backend@microatomo.pt>"
+ *
+ * Brevo REST API requires name and email as separate fields.
+ */
+const parseSender = (raw: string, defaultName: string): { name: string; email: string } => {
+    // Match: optional quoted/unquoted name followed by <email>
+    const match = raw.match(/^['"]?([^'"<>]+?)['"]?\s*<([^>]+)>$/);
+    if (match) {
+        return { name: match[1].trim(), email: match[2].trim() };
+    }
+    // Plain email address — use the default app name
+    return { name: defaultName, email: raw.trim() };
+};
+
 export const sendEmail = async (to: string, subject: string, html: string, from?: string): Promise<{ messageId: string } | null> => {
     // Validate recipient
     try {
@@ -71,12 +88,13 @@ export const sendEmail = async (to: string, subject: string, html: string, from?
         return null;
     }
 
-    const senderEmail = from || process.env.EMAIL_FROM || process.env.EMAIL_USER || 'noreply@microatomo.pt';
-    const senderName  = process.env.APP_NAME || 'Project1';
+    const defaultName = process.env.APP_NAME || 'Project1';
+    const rawSender   = from || process.env.EMAIL_FROM || process.env.EMAIL_USER || 'noreply@microatomo.pt';
+    const sender      = parseSender(rawSender, defaultName);
 
     try {
         const info = await sendViaBrevo({
-            sender: { name: senderName, email: senderEmail },
+            sender,
             to: [{ email: to }],
             subject: sanitizedSubject,
             htmlContent: html,
@@ -90,6 +108,7 @@ export const sendEmail = async (to: string, subject: string, html: string, from?
         throw error;
     }
 };
+
 
 /**
  * Sends an email using a template stored in the settings table.
@@ -115,7 +134,7 @@ export const sendEmailWithTemplate = async (
         }
 
         let subject = 'Mensagem de Project1';
-        let body    = '';
+        let body = '';
         let from: string | undefined;
 
         // 2. Parse and locate the requested template
@@ -127,15 +146,15 @@ export const sendEmailWithTemplate = async (
 
             if (template) {
                 subject = template.subject || subject;
-                body    = template.body    || '';
-                from    = template.from    || undefined;
+                body = template.body || '';
+                from = template.from || undefined;
             }
         }
 
         // 3. Fallback body for approval template
         if (!body && templateType === 'approval') {
             subject = 'Aprovação de Conta';
-            body    = '<h2>Bem-vindo à Micro Átomo!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>';
+            body = '<h2>Bem-vindo à Micro Átomo!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>';
         }
 
         // 4. Replace {{variable}} placeholders
