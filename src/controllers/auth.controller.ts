@@ -17,6 +17,13 @@ export const login = catchAsync(async (req: Request, res: Response) => {
     res.json(data);
 });
 
+export const getImpersonatedUser = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { id } = req.params;
+    const { data: { user }, error } = await supabase.auth.admin.getUserById(id);
+    if (error || !user) throw new ApiError(404, 'Utilizador não encontrado no sistema de autenticação.');
+    res.json(user);
+});
+
 export const selfRegister = catchAsync(async (req: Request, res: Response) => {
     const { email, firstName, lastName, companyName } = req.body;
     const { error } = await supabase.auth.admin.inviteUserByEmail(email, {

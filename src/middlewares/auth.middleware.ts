@@ -6,6 +6,7 @@ import { UserRole } from '../constants/enums';
 
 export interface AuthenticatedRequest extends Request {
     user?: User;
+    originalUser?: User; // The real user before impersonation
     file?: Express.Multer.File;
 }
 
@@ -19,6 +20,18 @@ export const authenticateToken = async (req: AuthenticatedRequest, res: Response
         if (error || !user) return res.sendStatus(403);
 
         req.user = user;
+        req.originalUser = user;
+
+        const impersonateId = req.headers['x-impersonate-user'];
+        if (impersonateId && typeof impersonateId === 'string') {
+            if (user.user_metadata?.role === UserRole.SUPER_ADMIN) {
+                const { data: { user: impersonatedUser }, error: impError } = await supabase.auth.admin.getUserById(impersonateId);
+                if (!impError && impersonatedUser) {
+                    req.user = impersonatedUser;
+                }
+            }
+        }
+
         next();
     } catch (err) {
         next(err);

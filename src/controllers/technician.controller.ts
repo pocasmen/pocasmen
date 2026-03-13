@@ -24,6 +24,29 @@ export const getTechnicians = catchAsync(async (req: AuthenticatedRequest, res: 
     res.json(result);
 });
 
+export const getExternalUsers = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const { data, error } = await supabase
+        .from('profiles')
+        .select(`
+            *,
+            client_users (
+                client_id,
+                clients ( name )
+            )
+        `)
+        .eq('role', UserRole.CLIENT)
+        .order('first_name', { ascending: true });
+
+    if (error) throw new ApiError(500, 'Failed to fetch external users', error.message);
+
+    const result = (data || []).map((p) => ({
+        ...p,
+        name: `${p.first_name || ''} ${p.last_name || ''}`.trim(),
+    }));
+
+    res.json(result);
+});
+
 export const getMe = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
     if (!req.user) throw new UnauthorizedError();
     const userId = req.user.id;
@@ -115,4 +138,30 @@ export const updateTechnician = catchAsync(async (req: AuthenticatedRequest, res
     });
 
     res.json(result);
+});
+
+export const deleteTechnician = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const userId = req.params.id;
+    const userRole = req.user?.user_metadata?.role;
+
+    if (userRole !== UserRole.ADMIN && userRole !== UserRole.SUPER_ADMIN) {
+        throw new ForbiddenError('Only admins can delete users.');
+    }
+
+    // 1. Delete from profiles
+    const { error: profileError } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', userId);
+
+    if (profileError) throw new ApiError(500, 'Failed to delete user profile', profileError.message);
+
+    // 2. Delete from Supabase Auth
+    try {
+        await supabase.auth.admin.deleteUser(userId);
+    } catch (authErr) {
+        console.error('Failed to delete user from auth:', authErr);
+    }
+
+    res.status(204).send();
 });

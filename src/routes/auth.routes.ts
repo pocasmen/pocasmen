@@ -167,4 +167,44 @@ router.post('/admin/approve-user',
     authController.approveUser
 );
 
+/**
+ * @swagger
+ * /admin/impersonate/{id}:
+ *   get:
+ *     summary: Retrieve user details for impersonation (Super Admin only)
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The user ID to impersonate
+ *     responses:
+ *       200:
+ *         description: User found
+ *       404:
+ *         description: User not found
+ */
+router.get('/admin/impersonate/:id',
+    authenticateToken,
+    authorizeRoles([UserRole.SUPER_ADMIN]),
+    authController.getImpersonatedUser
+);
+
+/**
+ * @swagger
+ * /api/users:
+ *   get:
+ *     summary: Retrieve a list of external client users
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/api/users', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]), (req, res, next) => {
+    import('../controllers/technician.controller').then(tc => tc.getExternalUsers(req, res, next)).catch(next);
+});
+
 export default router;

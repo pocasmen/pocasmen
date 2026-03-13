@@ -28,17 +28,19 @@ export const getStats = catchAsync(async (req: AuthenticatedRequest, res: Respon
     }
 
     const now = new Date();
-    const [ticketsRes, weeklySchedulesRes, completedPendingRes, overduePendingRes] = await Promise.all([
+    const [ticketsRes, weeklySchedulesRes, completedPendingRes, overduePendingRes, tasksRes] = await Promise.all([
         supabase.from('tickets').select('*'),
         supabase.from('schedules').select('*').gte('startDate', start.toISOString()).lte('startDate', end.toISOString()),
         supabase.from('schedules').select('*').gte('startDate', start.toISOString()).lte('startDate', end.toISOString()).eq('isCompleted', true).eq('hasReport', false),
-        supabase.from('schedules').select('*').gte('startDate', start.toISOString()).lte('startDate', end.toISOString()).eq('isCompleted', false).eq('hasReport', false).lt('endDate', now.toISOString())
+        supabase.from('schedules').select('*').gte('startDate', start.toISOString()).lte('startDate', end.toISOString()).eq('isCompleted', false).eq('hasReport', false).lt('endDate', now.toISOString()),
+        supabase.from('internal_tasks').select('*, internal_task_time_blocks(*)')
     ]);
 
     const tickets = ticketsRes.data || [];
     const weeklySchedules = weeklySchedulesRes.data || [];
     const completedPending = completedPendingRes.data || [];
     const overduePending = overduePendingRes.data || [];
+    const allTasks = tasksRes.data || [];
 
     const ticketsStats = { open: 0, scheduled: 0, closed: 0 };
     tickets.forEach((t) => {
@@ -54,6 +56,28 @@ export const getStats = catchAsync(async (req: AuthenticatedRequest, res: Respon
         else if (s.endDate && new Date(s.endDate) < now) weeklyStats.overdue++;
     });
 
+    // Task stats within range
+    const rangeStart = start.getTime();
+    const rangeEnd = end.getTime();
+    
+    const rangeTasks = allTasks.filter(t => {
+        const createdAt = new Date(t.created_at).getTime();
+        const blocks = t.internal_task_time_blocks || [];
+        if (blocks.length > 0) {
+            return blocks.some((b: any) => {
+                const bStart = new Date(b.start_time).getTime();
+                return bStart >= rangeStart && bStart <= rangeEnd;
+            });
+        }
+        return createdAt >= rangeStart && createdAt <= rangeEnd;
+    });
+
+    const tasksStats = {
+        total: rangeTasks.length,
+        completed: rangeTasks.filter(t => t.completed).length,
+        pending: rangeTasks.filter(t => !t.completed).length
+    };
+
     res.json({
         tickets: ticketsStats,
         weekly: weeklyStats,
@@ -62,7 +86,8 @@ export const getStats = catchAsync(async (req: AuthenticatedRequest, res: Respon
             total: completedPending.length + overduePending.length,
             completed: completedPending.length,
             overdue: overduePending.length
-        }
+        },
+        tasks: tasksStats
     });
 });
 

@@ -202,9 +202,21 @@ export const getReportById = catchAsync(async (req: AuthenticatedRequest, res: R
     if (!report) throw new NotFoundError('Relatório não encontrado');
 
     if (userRole === UserRole.CLIENT) {
-        const { data: profile } = await supabase.from('profiles').select('*').eq('id', userId).single();
-        if (!profile || !profile.client_id || report.clientId !== profile.client_id) {
-            throw new ForbiddenError('Permission denied.');
+        // Check if report belongs to any of the client's associated companies
+        const { data: associations } = await (supabase as any)
+            .from('client_users')
+            .select('client_id')
+            .eq('user_id', userId);
+        
+        const associatedIds = associations?.map((a: any) => a.client_id) || [];
+        
+        // Also check the primary client_id in profile
+        const { data: profile } = await (supabase as any).from('profiles').select('client_id').eq('id', userId).single();
+        if (profile?.client_id) associatedIds.push(profile.client_id);
+
+        if (!associatedIds.includes(report.clientId as number)) {
+            logger.warn({ reportId: id, userId, associatedIds, reportClientId: report.clientId }, 'Permission denied for user to view report');
+            throw new ForbiddenError('Permission denied. This report does not belong to your associated clients.');
         }
     }
 

@@ -114,4 +114,15 @@ router.get('/api/users/me', authenticateToken, technicianController.getMe);
  */
 router.put('/api/technicians/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.CLIENT]), validate(technicianValidation.updateTechnicianSchema), technicianController.updateTechnician);
 
+/**
+ * @swagger
+ * /api/technicians/{id}:
+ *   delete:
+ *     summary: Delete a user (Admin only)
+ *     tags: [Technicians]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/api/technicians/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), technicianController.deleteTechnician);
+
 export default router;
