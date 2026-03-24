@@ -20,14 +20,10 @@ const pool = new Pool({
     host: parsedConfig.host || undefined,
     database: parsedConfig.database || undefined,
     port: parsedConfig.port ? parseInt(parsedConfig.port, 10) : undefined,
-    ssl: process.env.NODE_ENV === 'production'
-        ? {
-            rejectUnauthorized: true,
-            ca: process.env.DB_CA_CERT, // Opcional: Para validar contra um certificado específico
-        }
-        : {
-            rejectUnauthorized: false // Em desenvolvimento permitimos bypass para facilitar
-        },
+    ssl: {
+        rejectUnauthorized: false, // Necessário para Supabase em ambientes como Render/Vercel
+        ca: process.env.DB_CA_CERT, 
+    },
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
