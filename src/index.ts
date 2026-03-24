@@ -1,6 +1,7 @@
-//Horas de desenvolvimento activo=4,5
+import './instrumentation';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import bodyParser from 'body-parser';
 import * as cron from 'node-cron';
 import { supabase } from './config/supabase';
@@ -8,38 +9,36 @@ import swaggerUi from 'swagger-ui-express';
 import swaggerSpec from './config/swagger';
 
 // Routes
-import authRoutes from './routes/auth.routes';
-import scheduleRoutes from './routes/schedule.routes';
-import equipmentRoutes from './routes/equipment.routes';
-import clientRoutes from './routes/client.routes';
-import inventoryRoutes from './routes/inventory.routes';
-import ticketRoutes from './routes/ticket.routes';
-import technicianRoutes from './routes/technician.routes';
-import reportRoutes from './routes/report.routes';
-import clientPortalRoutes from './routes/clientPortal.routes';
-import ticketAttachmentRoutes from './routes/ticketAttachment.routes';
-import settingRoutes from './routes/setting.routes';
-import googleRoutes from './routes/google.routes';
-import dashboardRoutes from './routes/dashboard.routes';
-import emailTemplateRoutes from './routes/emailTemplate.routes';
-import telegramRoutes from './routes/telegram.routes';
-import systemRoutes from './routes/system.routes';
-import billingRoutes from './routes/billing.routes';
-import taskRoutes from './routes/task.routes';
+import authRoutes from './modules/auth/auth.routes';
+import scheduleRoutes from './modules/schedule/schedule.routes';
+import equipmentRoutes from './modules/equipment/equipment.routes';
+import clientRoutes from './modules/client/client.routes';
+import inventoryRoutes from './modules/inventory/inventory.routes';
+import ticketRoutes from './modules/ticket/ticket.routes';
+import technicianRoutes from './modules/technician/technician.routes';
+import reportRoutes from './modules/report/report.routes';
+import clientPortalRoutes from './modules/clientPortal/clientPortal.routes';
+import settingRoutes from './modules/setting/setting.routes';
+import googleRoutes from './modules/google/google.routes';
+import dashboardRoutes from './modules/dashboard/dashboard.routes';
+import emailTemplateRoutes from './modules/emailTemplate/emailTemplate.routes';
+import telegramRoutes from './modules/telegram/telegram.routes';
+import systemRoutes from './modules/system/system.routes';
+import billingRoutes from './modules/billing/billing.routes';
+import taskRoutes from './modules/task/task.routes';
+import invoiceRoutes from './modules/invoice/invoice.routes';
 
 // Services
-import { initializeTelegramBot } from './controllers/telegram.controller';
+import { initializeTelegramBot } from './modules/telegram/telegram.routes';
 import { scheduleTicketCheck, runDailyReminders } from './services/cronService';
 
 import { logger } from './utils/logger';
 import pinoHttp from 'pino-http';
 import { apiLimiter } from './middlewares/rateLimiter.middleware';
+import { withObservability } from './utils/observability';
 
 const app = express();
 const port = process.env.PORT || 5001;
-
-app.use(pinoHttp({ logger }));
-app.use(apiLimiter);
 
 // CORS restrito ao frontend (segurança)
 // Strip any trailing slash: browsers send origins without it, and the CORS
@@ -54,32 +53,36 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// Body parser com limite reduzido (prevenir DoS)
-app.use(bodyParser.json({ limit: '1mb' }));
-app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
+app.use(pinoHttp({ logger }));
+app.use(helmet());
+app.use(apiLimiter);
+
+// Body parser com limite aumentado para suportar uploads de inventário
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Register Routes
-app.use('/', authRoutes);
-app.use('/', scheduleRoutes);
-app.use('/', equipmentRoutes);
-app.use('/', clientRoutes);
-app.use('/', inventoryRoutes);
-app.use('/', ticketRoutes);
-app.use('/', technicianRoutes);
-app.use('/', reportRoutes);
-app.use('/', clientPortalRoutes);
-app.use('/', ticketAttachmentRoutes);
-app.use('/', settingRoutes);
-app.use('/', googleRoutes);
-app.use('/', dashboardRoutes);
-app.use('/', emailTemplateRoutes);
-app.use('/', telegramRoutes);
-app.use('/', systemRoutes);
-app.use('/', billingRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/schedules', scheduleRoutes);
+app.use('/api/equipments', equipmentRoutes);
+app.use('/api/clients', clientRoutes);
+app.use('/api/inventory', inventoryRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/technicians', technicianRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/client-portal', clientPortalRoutes);
+app.use('/api/settings', settingRoutes);
+app.use('/api/google', googleRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/email-templates', emailTemplateRoutes);
+app.use('/api/telegram', telegramRoutes);
+app.use('/api/system', systemRoutes);
+app.use('/api/billing', billingRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/invoices', invoiceRoutes);
 
 // Global Error Handler
 import { errorHandler } from './middlewares/error.middleware';
@@ -93,7 +96,7 @@ if (process.env.NODE_ENV !== 'test') {
     // Background Initializations
     try {
       await scheduleTicketCheck(supabase);
-      cron.schedule('*/30 9-18 * * *', () => runDailyReminders(supabase), { timezone: "Europe/Lisbon" });
+      cron.schedule('*/30 9-18 * * *', () => withObservability('daily_reminders', () => runDailyReminders(supabase)), { timezone: "Europe/Lisbon" });
       await initializeTelegramBot();
     } catch (err) {
       logger.error(err, 'Error during background initialization:');

@@ -23,10 +23,10 @@ export const mapScheduleDatabaseToResponse = (
 ): EnrichedSchedule => {
 
     // Extract time blocks if they exist in the joined data
-    const timeBlocks = (schedule.schedule_blocks || schedule.schedule_time_blocks || []).map((tb: any) => ({
+    const timeBlocks = (schedule.timeBlocks || schedule.time_blocks || schedule.schedule_blocks || schedule.schedule_time_blocks || []).map((tb: any) => ({
         id: tb.id,
-        start: tb.start_time,
-        end: tb.end_time
+        start: tb.start || tb.start_time,
+        end: tb.end || tb.end_time
     }));
 
     return {
@@ -75,7 +75,7 @@ export const mapTaskToScheduleResponse = (
     equipmentInfo: string = '',
     technician: { id: string; name: string; color?: string } | null = null
 ): EnrichedSchedule => {
-    const timeBlocks = (task.internal_task_time_blocks || []).map((tb: any) => ({
+    const timeBlocks = (task.time_blocks || task.internal_task_time_blocks || []).map((tb: any) => ({
         id: tb.id,
         start: tb.start_time,
         end: tb.end_time

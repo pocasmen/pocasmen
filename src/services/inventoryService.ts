@@ -260,15 +260,15 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
  * Creates a composed part (kit) with its components
  */
 export async function createComposedPart(db: PoolClient, data: any): Promise<any> {
-    const { reference, designation, components } = data;
+    const { reference, designation, components, price, notes } = data;
 
     const { rows: existingRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1', [reference]);
     if (existingRows.length > 0) throw new Error('Já existe uma peça com esta referência.');
 
     const { rows } = await db.query<Part>(
-        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss) 
-         VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0) RETURNING *`,
-        [reference, designation]
+        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, price, notes) 
+         VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0, $3, $4) RETURNING *`,
+        [reference, designation, price || 0, notes || '']
     );
     const parentPart = rows[0];
 
@@ -289,11 +289,11 @@ export async function createComposedPart(db: PoolClient, data: any): Promise<any
  * Updates a composed part (kit) and its components
  */
 export async function updateComposedPart(db: PoolClient, partId: number, data: any): Promise<any> {
-    const { reference, designation, components } = data;
+    const { reference, designation, components, price, notes } = data;
 
     const { rows } = await db.query<Part>(
-        'UPDATE parts SET reference = $1, designation = $2 WHERE id = $3 RETURNING *',
-        [reference, designation, partId]
+        'UPDATE parts SET reference = $1, designation = $2, price = $3, notes = $4 WHERE id = $5 RETURNING *',
+        [reference, designation, price || 0, notes || '', partId]
     );
     const parentPart = rows[0];
     if (!parentPart) throw new Error('Part not found');
@@ -422,7 +422,8 @@ export async function getEnrichedInventory(
     db: SupabaseClient<Database> | PoolClient | Pool,
     page: number = 1,
     limit: number = 50,
-    search?: string
+    search?: string,
+    view?: string
 ) {
     const offset = (page - 1) * limit;
     let parts: any[] = [];
@@ -447,19 +448,38 @@ export async function getEnrichedInventory(
         totalCount = count || 0;
     } else {
         // Pool Client (PG)
-        let countQuery = 'SELECT COUNT(*) FROM parts';
-        let dataQuery = 'SELECT * FROM parts ORDER BY designation ASC LIMIT $1 OFFSET $2';
-        let countParams: any[] = [];
-        let dataParams: any[] = [limit, offset];
+        let countQuery = 'SELECT COUNT(*) FROM parts WHERE 1=1';
+        let dataQuery = 'SELECT * FROM parts WHERE 1=1';
+        let params: any[] = [];
+        let dataParams: any[] = [];
 
         if (search) {
-            countQuery = 'SELECT COUNT(*) FROM parts WHERE reference ILIKE $1 OR designation ILIKE $1';
-            countParams = [`%${search}%`];
-            dataQuery = 'SELECT * FROM parts WHERE reference ILIKE $3 OR designation ILIKE $3 ORDER BY designation ASC LIMIT $1 OFFSET $2';
-            dataParams = [limit, offset, `%${search}%`];
+            const searchCondition = `(reference ILIKE $${params.length + 1} OR designation ILIKE $${params.length + 1})`;
+            countQuery += ` AND ${searchCondition}`;
+            dataQuery += ` AND ${searchCondition}`;
+            params.push(`%${search}%`);
+            dataParams.push(`%${search}%`);
         }
 
-        const { rows: countRows } = await db.query<{ count: string }>(countQuery, countParams);
+        if (view === 'low_stock') {
+            const lowStockCondition = `(
+                (is_composed = false AND COALESCE(stock_quantity, 0) - COALESCE(reserved_quantity, 0) < COALESCE(min_stock, 0)) OR
+                (is_composed = false AND COALESCE(stock_quantity_foss, 0) - COALESCE(reserved_quantity_foss, 0) < COALESCE(min_stock_foss, 0)) OR
+                (is_composed = true AND COALESCE(virtual_stock, 0) - COALESCE(reserved_quantity, 0) < COALESCE(min_stock, 0)) OR
+                (is_composed = true AND COALESCE(virtual_stock_foss, 0) - COALESCE(reserved_quantity_foss, 0) < COALESCE(min_stock_foss, 0))
+            )`;
+            countQuery += ` AND ${lowStockCondition}`;
+            dataQuery += ` AND ${lowStockCondition}`;
+        } else if (view === 'reserved') {
+            const reservedCondition = `(COALESCE(reserved_quantity, 0) > 0 OR COALESCE(reserved_quantity_foss, 0) > 0)`;
+            countQuery += ` AND ${reservedCondition}`;
+            dataQuery += ` AND ${reservedCondition}`;
+        }
+
+        dataQuery += ` ORDER BY designation ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        dataParams.push(limit, offset);
+
+        const { rows: countRows } = await db.query<{ count: string }>(countQuery, params);
         totalCount = parseInt(countRows[0].count, 10);
 
         const { rows } = await db.query<Part>(dataQuery, dataParams);

@@ -5,6 +5,8 @@ import { BillingStatus, UserRole } from '../constants/enums';
 import { ApiError } from '../utils/ApiError';
 import { Database } from '../types/db.types';
 import { BillingTask } from '../types/supabase';
+import { logger } from '../utils/logger';
+
 
 export const createBillingTask = async (db: PoolClient, reportId: number, isPending: boolean = false): Promise<BillingTask> => {
     const status = isPending ? BillingStatus.PENDING_COMPLETION : BillingStatus.REPORT_ISSUED;
@@ -80,7 +82,7 @@ export const getBillingTasks = async (supabase: SupabaseClient<Database>) => {
     }
 
     if (data) {
-        console.log('Billing Tasks Data Sample:', JSON.stringify(data.slice(0, 3), null, 2));
+        logger.debug({ sample: data.slice(0, 3) }, 'Billing Tasks Data Sample');
     }
     return data;
 };
@@ -139,7 +141,8 @@ export const getBillingTasksRaw = async (db: PoolClient, startDate?: string, end
         }));
     } catch (error: any) {
         // Fallback or retry if column naming is wrong?
-        console.error('Raw query failed', error);
+        logger.error({ error }, 'Raw query failed');
         throw new ApiError(500, 'Error executing raw billing query: ' + error.message);
     }
 };
+

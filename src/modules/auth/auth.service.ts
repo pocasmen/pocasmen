@@ -1,0 +1,131 @@
+import { SupabaseClient } from '@supabase/supabase-js';
+import { pool, withTransactionAs } from '../../config/db';
+import { supabase } from '../../config/supabase';
+import { ApiError, ForbiddenError, NotFoundError, UnauthorizedError } from '../../utils/ApiError';
+import { ClientRepository } from '../client/client.repository';
+import * as emailService from '../../services/emailService';
+import { logger } from '../../utils/logger';
+import { UserRole } from '../../constants/enums';
+
+export class AuthService {
+    constructor(private clientRepo: ClientRepository) {}
+
+    async login(data: any) {
+        const { email, password } = data;
+        const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw new UnauthorizedError(error.message);
+        return authData;
+    }
+
+    async getImpersonatedUser(id: string) {
+        const { data: { user }, error } = await supabase.auth.admin.getUserById(id);
+        if (error || !user) throw new ApiError(404, 'Utilizador não encontrado no sistema de autenticação.');
+        return user;
+    }
+
+    async selfRegister(data: any) {
+        const { email, firstName, lastName, companyName } = data;
+        const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
+            data: {
+                first_name: firstName,
+                last_name: lastName,
+                company_name: companyName,
+                role: UserRole.PENDING_CLIENT,
+                must_set_password: true
+            },
+            redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite`,
+        });
+
+        if (error) {
+            if (error.message.includes('unique constraint') || error.message.includes('already exists')) {
+                throw new ApiError(409, 'Um utilizador com este email já existe.');
+            }
+            throw new ApiError(500, error.message);
+        }
+
+        return { message: `Convite de registo enviado para ${email}. Por favor, verifique o seu email para continuar.` };
+    }
+
+    async inviteUser(data: any, requestingUserRole?: string) {
+        const { email, client_id, role, ...meta } = data;
+
+        if (role === UserRole.SUPER_ADMIN && requestingUserRole !== UserRole.SUPER_ADMIN) {
+            throw new ForbiddenError('Only Super Admin can create Super Admin users.');
+        }
+
+        const inviteData: any = {
+            role: role,
+            must_set_password: true,
+            ...meta
+        };
+
+        if (client_id) {
+            // Usa query manual via pool para não injetar QueryRunner aqui, ou usa clientRepo passando pool
+            const client = await this.clientRepo.findById(Number(client_id), pool);
+            if (!client) throw new NotFoundError('Client not found.');
+
+            inviteData.client_id = client_id;
+            if (role === UserRole.CLIENT) {
+                inviteData.company_name = client.name;
+            }
+        }
+
+        const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
+            data: inviteData,
+            redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite`,
+        });
+        if (error) throw new ApiError(500, error.message);
+
+        return { message: `Invite sent to ${email}.` };
+    }
+
+    async getPendingUsers() {
+        const { data: { users }, error } = await supabase.auth.admin.listUsers();
+        if (error) throw new ApiError(500, 'Failed to fetch users: ' + error.message);
+        return users.filter(u => u.user_metadata?.role === UserRole.PENDING_CLIENT);
+    }
+
+    async approveUser(data: any, userId: string) {
+        const { userId: targetUserId, client_ids } = data;
+
+        const updatedUser = await withTransactionAs(userId, async (db) => {
+            const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
+
+            const { rowCount } = await db.query(
+                'UPDATE profiles SET client_id = $1, role = $2 WHERE id = $3',
+                [primaryClientId, UserRole.CLIENT, targetUserId]
+            );
+            if (rowCount === 0) throw new NotFoundError('Perfil não encontrado.');
+
+            if (Array.isArray(client_ids)) {
+                for (const id of client_ids) {
+                    await db.query(`
+                        INSERT INTO client_users (user_id, client_id) 
+                        VALUES ($1, $2)
+                        ON CONFLICT (user_id, client_id) DO NOTHING
+                    `, [targetUserId, Number(id)]);
+                }
+            }
+
+            const { data: user, error: userError } = await supabase.auth.admin.updateUserById(
+                targetUserId,
+                { user_metadata: { role: UserRole.CLIENT, must_set_password: false } }
+            );
+
+            if (userError) throw new ApiError(500, `Failed to update user role: ${userError.message}`);
+            return user;
+        });
+
+        if (updatedUser.user && updatedUser.user.email) {
+            const loginUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`;
+            logger.info({ email: updatedUser.user.email }, `[APPROVAL] Sending approval email via template`);
+            emailService.sendEmailWithTemplate(
+                updatedUser.user.email,
+                'approval',
+                { login_url: loginUrl }
+            ).catch(err => logger.error(err, "Failed to send approval email async:"));
+        }
+
+        return updatedUser;
+    }
+}

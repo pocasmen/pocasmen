@@ -2,6 +2,7 @@ import { Client } from 'pg';
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import { logger } from './utils/logger';
 
 dotenv.config();
 
@@ -12,7 +13,7 @@ async function introspect() {
 
     try {
         await client.connect();
-        console.log('✅ Ligado à base de dados para introspeção (v5.1)...');
+        logger.info('✅ Ligado à base de dados para introspeção (v5.1)...');
 
         // 1. Fetch Relationships (Foreign Keys)
         const relQuery = `
@@ -46,7 +47,7 @@ async function introspect() {
 
         for (const table of tables) {
             const tableName = table.table_name;
-            console.log(`🔍 A processar tabela: ${tableName}...`);
+            logger.info(`🔍 A processar tabela: ${tableName}...`);
 
             const columnsQuery = `
                 SELECT column_name, data_type, is_nullable, column_default
@@ -115,10 +116,10 @@ async function introspect() {
         if (!fs.existsSync(typesDir)) fs.mkdirSync(typesDir, { recursive: true });
 
         fs.writeFileSync(path.join(typesDir, 'db.types.ts'), output);
-        console.log('✅ Ficheiro src/types/db.types.ts reconstruído com sucesso (v5.1)!');
+        logger.info('✅ Ficheiro src/types/db.types.ts reconstruído com sucesso (v5.1)!');
 
     } catch (err) {
-        console.error('❌ Erro na introspeção:', err);
+        logger.error({ err }, '❌ Erro na introspeção');
     } finally {
         await client.end();
     }

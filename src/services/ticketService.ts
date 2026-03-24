@@ -4,6 +4,7 @@ import { PoolClient } from 'pg';
 import { TicketStatus } from '../constants/enums';
 import { sendTelegramNotification } from './telegramService';
 import { Ticket } from '../types/supabase';
+import { logger } from '../utils/logger';
 
 /**
  * Creates a ticket and sends notifications
@@ -25,10 +26,10 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
         try {
             const { data: clientData } = await supabase.from('clients').select('name').eq('id', Number(client_id)).single();
             const { data: equipData } = await supabase.from('equipments').select('brand, model').eq('id', Number(equipmentId)).single();
-            const telegramMessage = `🆕 *Novo Ticket Criado (Interno)*\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipData ? `${equipData.brand} ${equipData.model}` : '?'}\n*Descrição:* ${faultDescription}`;
+            const telegramMessage = `🆕 *Novo Ticket Criado *\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipData ? `${equipData.brand} ${equipData.model}` : '?'}\n*Descrição:* ${faultDescription}`;
             sendTelegramNotification(telegramMessage);
         } catch (err) {
-            console.error('Failed to send telegram notification for ticket', err);
+            logger.error({ err }, 'Failed to send telegram notification for ticket');
         }
     });
 

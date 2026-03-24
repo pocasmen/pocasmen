@@ -50,6 +50,8 @@ export interface Part {
     is_composed: boolean;
     virtual_stock?: number;
     virtual_stock_foss?: number;
+    min_stock: number;
+    min_stock_foss: number;
 }
 
 export interface PartComponent {

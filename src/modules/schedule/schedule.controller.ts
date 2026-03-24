@@ -1,0 +1,51 @@
+import { Response } from 'express';
+import { AuthenticatedRequest } from '../../middlewares/auth.middleware';
+import { catchAsync } from '../../utils/catchAsync';
+import { ApiError, NotFoundError, UnauthorizedError } from '../../utils/ApiError';
+import { ScheduleService } from './schedule.service';
+
+export class ScheduleController {
+    constructor(private scheduleService: ScheduleService) {}
+
+    getSchedules = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const page  = Math.max(1, Number(req.query.page) || 1);
+        const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
+        const includeCompleted = req.query.includeCompleted === 'true';
+        const { data, total } = await this.scheduleService.getSchedules(page, limit, includeCompleted);
+        res.json({ data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
+    });
+
+    getScheduleById = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const schedule = await this.scheduleService.getScheduleById(Number(req.params.id));
+        res.json(schedule);
+    });
+
+    createSchedule = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const result = await this.scheduleService.createSchedule(req.body, req.user.id);
+        res.status(201).json(result);
+    });
+
+    updateSchedule = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const result = await this.scheduleService.updateSchedule(Number(req.params.id), req.body, req.user.id);
+        res.json(result);
+    });
+
+    completeSchedule = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const result = await this.scheduleService.completeSchedule(Number(req.params.id), req.body, req.user.id);
+        res.json(result);
+    });
+
+    deleteSchedule = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        await this.scheduleService.deleteSchedule(Number(req.params.id), req.user.id);
+        res.status(204).send();
+    });
+
+    fixScheduleTitles = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.scheduleService.fixScheduleTitles();
+        res.json(result);
+    });
+}

@@ -15,5 +15,6 @@ if (!supabaseUrl || !supabaseServiceKey) {
 
 export const supabase = createClient<Database, 'public'>(supabaseUrl, supabaseServiceKey);
 export const ATTACHMENTS_BUCKET = process.env.SUPABASE_TICKET_ATTACHMENTS_BUCKET || 'ticket-attachments';
+export const INVENTORY_BUCKET = 'inventory';
 
 logger.info('Supabase client initialized in config.');

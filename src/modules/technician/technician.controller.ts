@@ -1,0 +1,44 @@
+import { Response } from 'express';
+import { AuthenticatedRequest } from '../../middlewares/auth.middleware';
+import { catchAsync } from '../../utils/catchAsync';
+import { UnauthorizedError } from '../../utils/ApiError';
+import { TechnicianService } from './technician.service';
+
+export class TechnicianController {
+    constructor(private technicianService: TechnicianService) {}
+
+    getTechnicians = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const technicians = await this.technicianService.getTechnicians();
+        res.json(technicians);
+    });
+
+    getExternalUsers = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const users = await this.technicianService.getExternalUsers();
+        res.json(users);
+    });
+
+    getMe = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const profile = await this.technicianService.getMe(req.user.id);
+        res.json(profile);
+    });
+
+    updateTechnician = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const result = await this.technicianService.updateTechnician(
+            req.params.id,
+            req.body,
+            req.user.id,
+            req.user.user_metadata?.role
+        );
+        res.json(result);
+    });
+
+    deleteTechnician = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        await this.technicianService.deleteTechnician(
+            req.params.id,
+            req.user?.user_metadata?.role
+        );
+        res.sendStatus(204);
+    });
+}

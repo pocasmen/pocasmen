@@ -23,9 +23,6 @@ export const createClientSchema = z.object({
             .regex(/^\d{9}$/, 'NIF deve ter exatamente 9 dígitos')
             .optional()
             .or(z.literal('')),
-        email: z.string().email('Email inválido').optional().or(z.literal('')),
-        phone: z.string().optional().or(z.literal('')),
-        hasContract: z.boolean().optional(),
     })
 });
 
@@ -39,8 +36,5 @@ export const updateClientSchema = z.object({
         city: z.string().max(100).optional().or(z.literal('')),
         postCode: z.string().regex(/^\d{4}-\d{3}$/, 'Formato: 1234-567').optional().or(z.literal('')),
         nif: z.string().regex(/^\d{9}$/, 'Deve ter 9 dígitos').optional().or(z.literal('')),
-        email: z.string().email().optional().or(z.literal('')),
-        phone: z.string().optional().or(z.literal('')),
-        hasContract: z.boolean().optional(),
     })
 });

@@ -20,9 +20,14 @@ const pool = new Pool({
     host: parsedConfig.host || undefined,
     database: parsedConfig.database || undefined,
     port: parsedConfig.port ? parseInt(parsedConfig.port, 10) : undefined,
-    ssl: {
-        rejectUnauthorized: false
-    },
+    ssl: process.env.NODE_ENV === 'production'
+        ? {
+            rejectUnauthorized: true,
+            ca: process.env.DB_CA_CERT, // Opcional: Para validar contra um certificado específico
+        }
+        : {
+            rejectUnauthorized: false // Em desenvolvimento permitimos bypass para facilitar
+        },
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
@@ -51,6 +56,35 @@ export const withTransaction = async <T>(
         // Injeta o ID do utilizador autenticado para o Trigger de auditoria
         if (req?.user?.id) {
             await setAuditUser(client, req.user.id);
+        }
+
+        const result = await callback(client);
+        await client.query('COMMIT');
+        return result;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        logger.error(error, 'Transaction rolled back due to error');
+        throw error;
+    } finally {
+        client.release();
+    }
+};
+
+
+/**
+ * Versão da transação para uso na camada Service.
+ * Recebe userId diretamente (sem req), para que o Service não conheça HTTP.
+ */
+export const withTransactionAs = async <T>(
+    userId: string | null,
+    callback: (client: PoolClient) => Promise<T>
+): Promise<T> => {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        if (userId) {
+            await setAuditUser(client, userId);
         }
 
         const result = await callback(client);

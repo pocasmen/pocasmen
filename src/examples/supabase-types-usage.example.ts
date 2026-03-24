@@ -13,6 +13,7 @@ import {
 } from '../types/supabase';
 import { catchAsync } from '../utils/catchAsync';
 import { AuthenticatedRequest } from '../middlewares/auth.middleware';
+import { logger } from '../utils/logger';
 
 /**
  * 1. Exemplo de SELECT com tipos automáticos (v5)
@@ -28,7 +29,7 @@ export const getMyProfileExample = catchAsync(async (req: AuthenticatedRequest, 
     if (error) throw error;
 
     // profile já vem tipado automaticamente como DbProfile!
-    console.log(profile.first_name); // Autocomplete ativo!
+    logger.info({ firstName: profile.first_name }, 'Profile found:'); // Autocomplete ativo!
     res.json(profile);
 });
 

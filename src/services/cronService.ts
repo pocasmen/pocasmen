@@ -7,6 +7,7 @@ import { TicketStatus } from '../constants/enums';
 import { Database } from '../types/db.types';
 import { Profile } from '../types/supabase';
 import { withTransaction } from '../config/db';
+import { withObservability } from '../utils/observability';
 
 let scheduledTask: cron.ScheduledTask | null = null;
 
@@ -139,7 +140,7 @@ export async function scheduleTicketCheck(supabase: SupabaseClient<Database>) {
         const cronExpression = `${minute} ${hour} * * 1-5`;
 
         if (scheduledTask) scheduledTask.stop();
-        scheduledTask = cron.schedule(cronExpression, () => runTicketCheck(supabase), { timezone: "Europe/Lisbon" });
+        scheduledTask = cron.schedule(cronExpression, () => withObservability('ticket_check', () => runTicketCheck(supabase)), { timezone: "Europe/Lisbon" });
     } catch (error) {
         logger.error(error, 'Error scheduling ticket check:');
     }

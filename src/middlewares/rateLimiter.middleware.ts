@@ -32,7 +32,7 @@ export const authLimiter = rateLimit({
 // Rate limiter para API geral
 export const apiLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minuto
-    max: 100, // 100 requests por minuto por IP
+    max: 500, // 500 requests por minuto por IP (Dashboard requires more capacity)
     message: 'Muitos pedidos. Tente novamente em breve.',
     standardHeaders: true,
     legacyHeaders: false,

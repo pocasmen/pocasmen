@@ -11,6 +11,7 @@
 
 import { sendEmail } from '../emailService';
 import dotenv from 'dotenv';
+import { logger } from '../../utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -40,16 +41,16 @@ describe.skip('EmailService Integration Tests', () => {
             </div>
         `;
 
-        console.log(`Attempting to send test email to ${testEmail}...`);
-        console.log(`Using SMTP: ${process.env.EMAIL_HOST}:${process.env.EMAIL_PORT}`);
+        logger.info(`Attempting to send test email to ${testEmail}...`);
+        logger.info(`Using SMTP: ${process.env.EMAIL_HOST}:${process.env.EMAIL_PORT}`);
 
         const result = await sendEmail(testEmail!, subject, html);
 
         expect(result).toBeDefined();
         expect(result?.messageId).toBeDefined();
 
-        console.log('✅ Email sent successfully!');
-        console.log('Message ID:', result?.messageId);
+        logger.info('✅ Email sent successfully!');
+        logger.info({ messageId: result?.messageId }, 'Message ID');
     }, 30000); // 30 second timeout for email sending
 
     it('should handle invalid recipient gracefully', async () => {
@@ -95,7 +96,7 @@ describe.skip('EmailService Integration Tests', () => {
         expect(result).toBeDefined();
         expect(result?.messageId).toBeDefined();
 
-        console.log('✅ HTML template email sent successfully!');
+        logger.info('✅ HTML template email sent successfully!');
     }, 30000);
 });
 
@@ -110,7 +111,7 @@ if (require.main === module) {
         console.log('🧪 Running manual email test...\n');
 
         if (!process.env.EMAIL_HOST || !process.env.EMAIL_USER) {
-            console.error('❌ Email configuration missing in .env file');
+            logger.error('❌ Email configuration missing in .env file');
             process.exit(1);
         }
 
@@ -140,16 +141,15 @@ if (require.main === module) {
             const result = await sendEmail(testEmail, subject, html);
 
             if (result) {
-                console.log('\n✅ SUCCESS! Email sent successfully!');
-                console.log('📬 Message ID:', result.messageId);
-                console.log('\n💡 Check your inbox at:', testEmail);
+                logger.info('\\n✅ SUCCESS! Email sent successfully!');
+                logger.info({ messageId: result.messageId }, '📬 Message ID');
+                logger.info(`\\n💡 Check your inbox at: ${testEmail}`);
             } else {
-                console.log('\n⚠️  Email function completed but no result returned');
-                console.log('Check the logs above for any warnings or errors');
+                logger.warn('\\n⚠️  Email function completed but no result returned');
+                logger.warn('Check the logs above for any warnings or errors');
             }
         } catch (error) {
-            console.error('\n❌ ERROR sending email:');
-            console.error(error);
+            logger.error({ error }, '\\n❌ ERROR sending email');
             process.exit(1);
         }
     };

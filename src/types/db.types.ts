@@ -1,3 +1,12 @@
+/**
+ * Contrato mínimo de acesso à base de dados.
+ * Satisfeito tanto por Pool como por PoolClient — permite que os Repositories
+ * sejam desacoplados e facilmente mockáveis em testes unitários.
+ */
+export type QueryRunner = {
+    query: (text: string, values?: any[]) => Promise<{ rows: any[]; rowCount: number | null }>;
+};
+
 export type Json =
   | string
   | number
@@ -307,6 +316,11 @@ export type Database = {
           ordered_quantity_foss: number | null
           virtual_stock: number | null
           virtual_stock_foss: number | null
+          min_stock: number | null
+          min_stock_foss: number | null
+          price: number | null
+          image_path: string | null
+          notes: string | null
         }
         Insert: {
           id?: number
@@ -321,6 +335,9 @@ export type Database = {
           ordered_quantity_foss?: number | null
           virtual_stock?: number | null
           virtual_stock_foss?: number | null
+          price?: number | null
+          image_path?: string | null
+          notes?: string | null
         }
         Update: {
           id?: number
@@ -335,6 +352,9 @@ export type Database = {
           ordered_quantity_foss?: number | null
           virtual_stock?: number | null
           virtual_stock_foss?: number | null
+          price?: number | null
+          image_path?: string | null
+          notes?: string | null
         }
         Relationships: []
       }

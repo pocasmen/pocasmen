@@ -9,7 +9,9 @@ require('dotenv').config({ path: path.join(__dirname, '../../../.env') });
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: process.env.NODE_ENV === 'production' 
+        ? { rejectUnauthorized: true, ca: process.env.DB_CA_CERT }
+        : { rejectUnauthorized: false }
 });
 
 async function runComplexIntegrationTest() {
