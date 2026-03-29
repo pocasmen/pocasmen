@@ -18,6 +18,7 @@
     "scripts",
     "check_db.ts",
     "get_triggers.ts",
-    "get_trigger_def.ts"
+    "get_trigger_def.ts",
+    "**/__tests__/*"
   ]
 }

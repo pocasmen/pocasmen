@@ -42,9 +42,9 @@ async function runIntegrationTest() {
 
         // 3. Modificação directa de stock (Físico)
         logger.info('3. Adicionando stock físico (+10 em cada)...');
-        await inventoryService.updatePartStock(client, idA, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
-        await inventoryService.updatePartStock(client, idB, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
-        await inventoryService.updatePartStock(client, idC, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
+        await inventoryService.updatePartStock(client, idA, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL }, '');
+        await inventoryService.updatePartStock(client, idB, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL }, '');
+        await inventoryService.updatePartStock(client, idC, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL }, '');
 
         kit = await client.query(`SELECT virtual_stock FROM parts WHERE id = $1`, [idKit]);
         logger.info(`Virtual Stock depois de +10 físico: ${kit.rows[0].virtual_stock} (Esperado: 10)`);
@@ -65,7 +65,7 @@ async function runIntegrationTest() {
         // 5. Chegada de peças (Arrival: ordered -> stock)
         logger.info('5. Chegada de encomenda (5 Jantes chegam)...');
         // updatePartStock(db, id, change=5, isFromOrder=true) -> stock +5, ordered -5
-        await inventoryService.updatePartStock(client, idB, { quantity: 5, fromOrder: true, targetStock: StockType.GENERAL });
+        await inventoryService.updatePartStock(client, idB, { quantity: 5, fromOrder: true, targetStock: StockType.GENERAL }, '');
 
         const partB = await client.query(`SELECT stock_quantity, ordered_quantity FROM parts WHERE id = $1`, [idB]);
         logger.info(`Part B (Jante) - Stock: ${partB.rows[0].stock_quantity}, Encomendada: ${partB.rows[0].ordered_quantity}`);
@@ -75,8 +75,8 @@ async function runIntegrationTest() {
 
         // 6. Teste de limite (Aumentar as outras duas para ver o Kit subir)
         logger.info('6. Aumentando peças limitantes (Pneu e Válvula +10)...');
-        await inventoryService.updatePartStock(client, idA, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
-        await inventoryService.updatePartStock(client, idC, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL });
+        await inventoryService.updatePartStock(client, idA, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL }, '');
+        await inventoryService.updatePartStock(client, idC, { quantity: 10, fromOrder: false, targetStock: StockType.GENERAL }, '');
 
         kit = await client.query(`SELECT virtual_stock FROM parts WHERE id = $1`, [idKit]);
         logger.info(`Virtual Stock Final: ${kit.rows[0].virtual_stock} (Esperado: 15 - limitado pela Jante que tem 15)`);

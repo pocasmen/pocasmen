@@ -1,13 +1,13 @@
 {
   "name": "server",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "",
   "main": "dist/index.js",
   "scripts": {
     "test": "jest",
     "test:email": "ts-node scripts/testEmail.ts",
     "dev": "ts-node src/index.ts",
-    "build": "tsc",
+    "build": "npx rimraf dist && tsc",
     "start": "node dist/index.js",
     "sync:calendar": "ts-node scripts/sync_all.ts",
     "list:unsynced": "ts-node scripts/list_unsynced.ts",
