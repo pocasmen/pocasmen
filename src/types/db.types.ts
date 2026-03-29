@@ -29,6 +29,7 @@ export type Database = {
           billed_at: string | null
           created_at: string | null
           updated_at: string | null
+          invoice_number: string | null
         }
         Insert: {
           id?: number
@@ -40,6 +41,7 @@ export type Database = {
           billed_at?: string | null
           created_at?: string | null
           updated_at?: string | null
+          invoice_number?: string | null
         }
         Update: {
           id?: number
@@ -51,10 +53,49 @@ export type Database = {
           billed_at?: string | null
           created_at?: string | null
           updated_at?: string | null
+          invoice_number?: string | null
         }
         Relationships: [
           {
             foreignKeyName: "billing_tasks_report_id_fkey"
+            columns: ["report_id"]
+            isOneToOne: false
+            referencedRelation: "reports"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      report_attachments: {
+        Row: {
+          id: string
+          report_id: number | null
+          file_name: string
+          mime_type: string
+          storage_path: string
+          uploaded_by_user_id: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          report_id?: number | null
+          file_name: string
+          mime_type: string
+          storage_path: string
+          uploaded_by_user_id?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          report_id?: number | null
+          file_name?: string
+          mime_type?: string
+          storage_path?: string
+          uploaded_by_user_id?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "report_attachments_report_id_fkey"
             columns: ["report_id"]
             isOneToOne: false
             referencedRelation: "reports"
@@ -125,6 +166,68 @@ export type Database = {
           },
         ]
       }
+      invoices: {
+        Row: {
+          id: string
+          invoice_number: string
+          customer_name: string | null
+          customer_nif: string | null
+          vendor: string | null
+          issue_date: string | null
+          due_date: string | null
+          reference: string | null
+          incidence: number | null
+          vat_total: number | null
+          total_value: number | null
+          file_url: string | null
+          billing_task_id: number | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          invoice_number: string
+          customer_name?: string | null
+          customer_nif?: string | null
+          vendor?: string | null
+          issue_date?: string | null
+          due_date?: string | null
+          reference?: string | null
+          incidence?: number | null
+          vat_total?: number | null
+          total_value?: number | null
+          file_url?: string | null
+          billing_task_id?: number | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          invoice_number?: string
+          customer_name?: string | null
+          customer_nif?: string | null
+          vendor?: string | null
+          issue_date?: string | null
+          due_date?: string | null
+          reference?: string | null
+          incidence?: number | null
+          vat_total?: number | null
+          total_value?: number | null
+          file_url?: string | null
+          billing_task_id?: number | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invoices_billing_task_id_fkey"
+            columns: ["billing_task_id"]
+            isOneToOne: false
+            referencedRelation: "billing_tasks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       equipments: {
         Row: {
           id: number
@@ -156,6 +259,47 @@ export type Database = {
             columns: ["clientId"]
             isOneToOne: false
             referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      invoice_items: {
+        Row: {
+          id: string
+          invoice_id: string
+          code: string | null
+          description: string | null
+          quantity: number | null
+          unit_price: number | null
+          total_price: number | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          invoice_id: string
+          code?: string | null
+          description?: string | null
+          quantity?: number | null
+          unit_price?: number | null
+          total_price?: number | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          invoice_id?: string
+          code?: string | null
+          description?: string | null
+          quantity?: number | null
+          unit_price?: number | null
+          total_price?: number | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invoice_items_invoice_id_fkey"
+            columns: ["invoice_id"]
+            isOneToOne: false
+            referencedRelation: "invoices"
             referencedColumns: ["id"]
           },
         ]
@@ -254,6 +398,42 @@ export type Database = {
           },
         ]
       }
+      client_users: {
+        Row: {
+          id: string
+          user_id: string
+          client_id: number
+          created_at: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          client_id: number
+          created_at?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          client_id?: number
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "client_users_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "client_users_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       report_technicians: {
         Row: {
           reportId: number
@@ -318,8 +498,8 @@ export type Database = {
           virtual_stock_foss: number | null
           min_stock: number | null
           min_stock_foss: number | null
-          price: number | null
           image_path: string | null
+          price: number | null
           notes: string | null
         }
         Insert: {
@@ -335,8 +515,10 @@ export type Database = {
           ordered_quantity_foss?: number | null
           virtual_stock?: number | null
           virtual_stock_foss?: number | null
-          price?: number | null
+          min_stock?: number | null
+          min_stock_foss?: number | null
           image_path?: string | null
+          price?: number | null
           notes?: string | null
         }
         Update: {
@@ -352,11 +534,99 @@ export type Database = {
           ordered_quantity_foss?: number | null
           virtual_stock?: number | null
           virtual_stock_foss?: number | null
-          price?: number | null
+          min_stock?: number | null
+          min_stock_foss?: number | null
           image_path?: string | null
+          price?: number | null
           notes?: string | null
         }
         Relationships: []
+      }
+      parts_order_items: {
+        Row: {
+          id: number
+          order_id: number
+          part_id: number
+          designation: string | null
+          quantity_ordered: number
+          quantity_received: number
+          stock_type: string
+          created_at: string | null
+        }
+        Insert: {
+          id?: number
+          order_id: number
+          part_id: number
+          designation?: string | null
+          quantity_ordered: number
+          quantity_received?: number
+          stock_type: string
+          created_at?: string | null
+        }
+        Update: {
+          id?: number
+          order_id?: number
+          part_id?: number
+          designation?: string | null
+          quantity_ordered?: number
+          quantity_received?: number
+          stock_type?: string
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "parts_order_items_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "parts_orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "parts_order_items_part_id_fkey"
+            columns: ["part_id"]
+            isOneToOne: false
+            referencedRelation: "parts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      parts_orders: {
+        Row: {
+          id: number
+          document_number: string
+          user_id: string | null
+          status: any
+          notes: string | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: number
+          document_number: string
+          user_id?: string | null
+          status?: any
+          notes?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: number
+          document_number?: string
+          user_id?: string | null
+          status?: any
+          notes?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "parts_orders_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       ticket_responses: {
         Row: {
@@ -399,6 +669,42 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      audit_logs: {
+        Row: {
+          id: string
+          table_name: string
+          record_id: string | null
+          operation: string
+          old_data: Json | null
+          new_data: Json | null
+          changed_by: string | null
+          changed_at: string | null
+          changed_by_name: string | null
+        }
+        Insert: {
+          id?: string
+          table_name: string
+          record_id?: string | null
+          operation: string
+          old_data?: Json | null
+          new_data?: Json | null
+          changed_by?: string | null
+          changed_at?: string | null
+          changed_by_name?: string | null
+        }
+        Update: {
+          id?: string
+          table_name?: string
+          record_id?: string | null
+          operation?: string
+          old_data?: Json | null
+          new_data?: Json | null
+          changed_by?: string | null
+          changed_at?: string | null
+          changed_by_name?: string | null
+        }
+        Relationships: []
       }
       schedule_time_blocks: {
         Row: {
@@ -784,38 +1090,31 @@ export type Database = {
           },
         ]
       }
-      report_parts: {
+      internal_task_time_blocks: {
         Row: {
-          reportId: number
-          partId: number
-          quantity: number
-          stock_type: string | null
+          id: number
+          task_id: number
+          start_time: string
+          end_time: string
         }
         Insert: {
-          reportId: number
-          partId: number
-          quantity: number
-          stock_type?: string | null
+          id?: number
+          task_id: number
+          start_time: string
+          end_time: string
         }
         Update: {
-          reportId?: number
-          partId?: number
-          quantity?: number
-          stock_type?: string | null
+          id?: number
+          task_id?: number
+          start_time?: string
+          end_time?: string
         }
         Relationships: [
           {
-            foreignKeyName: "report_parts_partid_fkey"
-            columns: ["partId"]
+            foreignKeyName: "internal_task_time_blocks_task_id_fkey"
+            columns: ["task_id"]
             isOneToOne: false
-            referencedRelation: "parts"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "report_parts_reportid_fkey"
-            columns: ["reportId"]
-            isOneToOne: false
-            referencedRelation: "reports"
+            referencedRelation: "internal_tasks"
             referencedColumns: ["id"]
           },
         ]
@@ -903,36 +1202,94 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "equipments"
             referencedColumns: ["id"]
-          }
+          },
         ]
       }
-      internal_task_time_blocks: {
+      report_parts: {
         Row: {
-          id: number
-          task_id: number
-          start_time: string
-          end_time: string
+          reportId: number
+          partId: number
+          quantity: number
+          stock_type: string | null
         }
         Insert: {
-          id?: number
-          task_id: number
-          start_time: string
-          end_time: string
+          reportId: number
+          partId: number
+          quantity: number
+          stock_type?: string | null
         }
         Update: {
-          id?: number
-          task_id?: number
-          start_time?: string
-          end_time?: string
+          reportId?: number
+          partId?: number
+          quantity?: number
+          stock_type?: string | null
         }
         Relationships: [
           {
-            foreignKeyName: "internal_task_time_blocks_task_id_fkey"
-            columns: ["task_id"]
+            foreignKeyName: "report_parts_partid_fkey"
+            columns: ["partId"]
             isOneToOne: false
-            referencedRelation: "internal_tasks"
+            referencedRelation: "parts"
             referencedColumns: ["id"]
-          }
+          },
+          {
+            foreignKeyName: "report_parts_reportid_fkey"
+            columns: ["reportId"]
+            isOneToOne: false
+            referencedRelation: "reports"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      parts_transactions: {
+        Row: {
+          id: number
+          part_id: number
+          user_id: string | null
+          quantity: number
+          stock_type: string
+          type: any
+          reference_id: string | null
+          notes: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: number
+          part_id: number
+          user_id?: string | null
+          quantity: number
+          stock_type: string
+          type: any
+          reference_id?: string | null
+          notes?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: number
+          part_id?: number
+          user_id?: string | null
+          quantity?: number
+          stock_type?: string
+          type?: any
+          reference_id?: string | null
+          notes?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "parts_transactions_part_id_fkey"
+            columns: ["part_id"]
+            isOneToOne: false
+            referencedRelation: "parts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "parts_transactions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
         ]
       }
     }

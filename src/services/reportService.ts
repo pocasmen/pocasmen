@@ -49,44 +49,67 @@ async function syncReportTechnicians(db: PoolClient, reportId: number, technicia
     }
 }
 
-/**
- * Syncs parts for a report and abates inventory
- */
-async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: any[], isUpdate: boolean = false, oldParts: any[] = []) {
-    if (isUpdate && oldParts.length > 0) {
-        // Reverse old abatement
-        for (const op of oldParts) {
-            await inventoryService.abatePartInventory(db, op.partId, -Number(op.quantity), op.stock_type || StockType.GENERAL, true);
+async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: any[], isUpdate: boolean = false, oldParts: any[] = [], userId: string = '') {
+    // 1. Summarize NEW parts
+    const finalMap = new Map<string, { partId: number; quantity: number; stockType: StockType }>();
+    if (Array.isArray(parts)) {
+        for (const p of parts) {
+            let pId = p.id;
+            if (!pId && p.reference) {
+                const { rows } = await db.query('SELECT id FROM parts WHERE reference = $1', [p.reference]);
+                if (rows.length > 0) pId = rows[0].id;
+            }
+            if (!pId) continue;
+
+            const qty = Number(p.quantity) || 0;
+            if (qty <= 0) continue;
+
+            // Handle different property names from frontend
+            const st = (p.stockType || p.stock_type || StockType.GENERAL) as StockType;
+            const key = `${pId}_${st}`;
+
+            const existing = finalMap.get(key);
+            if (existing) {
+                existing.quantity += qty;
+            } else {
+                finalMap.set(key, { partId: pId, quantity: qty, stockType: st });
+            }
         }
     }
 
-    await db.query('DELETE FROM report_parts WHERE "reportId" = $1', [reportId]);
+    // 2. Summarize OLD parts
+    const oldMap = new Map<string, number>();
+    for (const op of oldParts) {
+        const key = `${op.partId}_${op.stock_type || StockType.GENERAL}`;
+        oldMap.set(key, Number(op.quantity));
+    }
 
-    if (Array.isArray(parts) && parts.length > 0) {
-        for (const p of parts) {
-            let partId = p.id;
-            if (!partId && p.reference) {
-                const { rows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1', [p.reference]);
-                if (rows.length > 0) partId = rows[0].id;
-            }
+    // 3. Process Deltas
+    const allKeys = new Set([...oldMap.keys(), ...finalMap.keys()]);
+    for (const key of allKeys) {
+        const oldQty = oldMap.get(key) || 0;
+        const fresh = finalMap.get(key);
+        const newQty = fresh ? fresh.quantity : 0;
+        const delta = newQty - oldQty;
 
-            if (partId && Number(p.quantity) > 0) {
-                const qty = Number(p.quantity);
-                const stockType = p.stockType || StockType.GENERAL;
-
-                await db.query(
-                    'INSERT INTO report_parts ("reportId", "partId", "quantity", "stock_type") VALUES ($1, $2, $3, $4)',
-                    [reportId, partId, qty, stockType]
-                );
-
-                // Abate inventory (skip reserved update since we handle that separately for schedules)
-                await inventoryService.abatePartInventory(db, partId, qty, stockType, true);
-
-                // Even though we skip reserved in abate, we should still ensure the parts table is consistent
-                // In case there's a weird desync or if the part wasn't in the schedule.
-                await inventoryService.syncPartStock(db, partId);
-            }
+        if (delta !== 0) {
+            const [pIdStr, st] = key.split('_');
+            const pId = parseInt(pIdStr, 10);
+            
+            // Note: delta > 0 means more parts used (decrement stock)
+            // delta < 0 means parts removed (increment stock)
+            await inventoryService.abatePartInventory(db, pId, delta, st as StockType, true, userId, reportId);
+            await inventoryService.syncPartStock(db, pId);
         }
+    }
+
+    // 4. Update the relationship table
+    await db.query('DELETE FROM report_parts WHERE "reportId" = $1', [reportId]);
+    for (const part of finalMap.values()) {
+        await db.query(
+            'INSERT INTO report_parts ("reportId", "partId", "quantity", "stock_type") VALUES ($1, $2, $3, $4)',
+            [reportId, part.partId, part.quantity, part.stockType]
+        );
     }
 }
 
@@ -126,7 +149,7 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
     const reportId = rows[0].id;
 
     await syncReportTechnicians(db, reportId, technicianIds, technicianSignatures);
-    await syncReportPartsAndAbate(db, reportId, parts);
+    await syncReportPartsAndAbate(db, reportId, parts, false, [], creatorId);
 
     if (scheduleId) {
         // Mark as having a report AND being completed
@@ -147,7 +170,7 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
 /**
  * Updates a full report
  */
-export async function updateFullReport(db: PoolClient, reportId: number, data: any) {
+export async function updateFullReport(db: PoolClient, reportId: number, data: any, userId: string = '') {
     const {
         clientId, equipmentId, scheduleId, technicianIds,
         serviceDate, hours, parts, description, damage,
@@ -177,7 +200,7 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
     );
 
     await syncReportTechnicians(db, reportId, technicianIds, technicianSignatures);
-    await syncReportPartsAndAbate(db, reportId, parts, true, oldParts);
+    await syncReportPartsAndAbate(db, reportId, parts, true, oldParts, userId);
 
     if (isBillingPending !== undefined) {
         const isPending = isBillingPending === true;
@@ -209,7 +232,7 @@ export async function deleteFullReport(db: PoolClient, reportId: number, userId:
     if (restoreParts) {
         const { rows: parts } = await db.query<ReportPart>('SELECT "partId", quantity, stock_type FROM report_parts WHERE "reportId" = $1', [reportId]);
         for (const p of parts) {
-            await inventoryService.abatePartInventory(db, p.partId, -Number(p.quantity), (p.stock_type as StockType) || StockType.GENERAL, true);
+            await inventoryService.abatePartInventory(db, p.partId, -Number(p.quantity), (p.stock_type as StockType) || StockType.GENERAL, true, userId, reportId);
         }
     }
 

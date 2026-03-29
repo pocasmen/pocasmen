@@ -6,8 +6,10 @@ import * as inventoryService from '../../services/inventoryService';
 import { InventoryRepository } from './inventory.repository';
 import { supabase, INVENTORY_BUCKET } from '../../config/supabase';
 
+import { PartsTransactionRepository } from './partsTransaction.repository';
+
 export class InventoryService {
-    constructor(private repo: InventoryRepository) {}
+    constructor(private repo: InventoryRepository, private transactionRepo: PartsTransactionRepository) {}
 
     async uploadBatchImages(files: Express.Multer.File[], userId: string) {
         const results = {
@@ -78,7 +80,20 @@ export class InventoryService {
 
     async getPartByReference(reference: string) {
         const part = await this.repo.findByReference(reference);
-        if (!part) throw new NotFoundError('Part not found.');
+        if (!part) throw new NotFoundError('Peça não encontrada pela referência.');
+        return part;
+    }
+
+    async getPartById(id: number) {
+        const part = await this.repo.findById(id, pool);
+        if (!part) throw new NotFoundError('Peça não encontrada pelo ID.');
+        
+        // Also fetch components if it's a kit
+        if (part.is_composed) {
+            const components = await this.repo.findHierarchy(id);
+            (part as any).components = components;
+        }
+        
         return part;
     }
 
@@ -87,7 +102,11 @@ export class InventoryService {
     }
 
     async updateStock(partId: number, data: any, userId: string) {
-        return withTransactionAs(userId, (db) => inventoryService.updatePartStock(db, partId, data));
+        return withTransactionAs(userId, (db) => inventoryService.updatePartStock(db, partId, data, userId));
+    }
+
+    async registerDirectSale(data: any, userId: string) {
+        return withTransactionAs(userId, (db) => inventoryService.registerDirectSale(db, data, userId));
     }
 
     async updateOrder(partId: number, quantity: number, targetStock: string, userId: string) {
@@ -174,5 +193,14 @@ export class InventoryService {
             }
             return results;
         });
+    }
+
+
+    async getPartHistory(partId: number) {
+        return this.transactionRepo.getHistoryByPartId(pool, partId);
+    }
+
+    async getTransactions(page: number, limit: number) {
+        return this.transactionRepo.getTransactions(pool, limit, page);
     }
 }

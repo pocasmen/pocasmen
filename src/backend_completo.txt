@@ -88,6 +88,7 @@ import telegramRoutes from './modules/telegram/telegram.routes';
 import systemRoutes from './modules/system/system.routes';
 import billingRoutes from './modules/billing/billing.routes';
 import taskRoutes from './modules/task/task.routes';
+import invoiceRoutes from './modules/invoice/invoice.routes';
 
 // Services
 import { initializeTelegramBot } from './modules/telegram/telegram.routes';
@@ -118,9 +119,9 @@ app.use(pinoHttp({ logger }));
 app.use(helmet());
 app.use(apiLimiter);
 
-// Body parser com limite reduzido (prevenir DoS)
-app.use(bodyParser.json({ limit: '1mb' }));
-app.use(bodyParser.urlencoded({ limit: '1mb', extended: true }));
+// Body parser com limite aumentado para suportar uploads de inventário
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 // Swagger Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
@@ -143,6 +144,7 @@ app.use('/api/telegram', telegramRoutes);
 app.use('/api/system', systemRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/invoices', invoiceRoutes);
 
 // Global Error Handler
 import { errorHandler } from './middlewares/error.middleware';
@@ -476,14 +478,10 @@ const pool = new Pool({
     host: parsedConfig.host || undefined,
     database: parsedConfig.database || undefined,
     port: parsedConfig.port ? parseInt(parsedConfig.port, 10) : undefined,
-    ssl: process.env.NODE_ENV === 'production'
-        ? {
-            rejectUnauthorized: true,
-            ca: process.env.DB_CA_CERT, // Opcional: Para validar contra um certificado específico
-        }
-        : {
-            rejectUnauthorized: false // Em desenvolvimento permitimos bypass para facilitar
-        },
+    ssl: {
+        rejectUnauthorized: false, // Necessário para Supabase em ambientes como Render/Vercel
+        ca: process.env.DB_CA_CERT, 
+    },
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
@@ -579,6 +577,7 @@ if (!supabaseUrl || !supabaseServiceKey) {
 
 export const supabase = createClient<Database, 'public'>(supabaseUrl, supabaseServiceKey);
 export const ATTACHMENTS_BUCKET = process.env.SUPABASE_TICKET_ATTACHMENTS_BUCKET || 'ticket-attachments';
+export const INVENTORY_BUCKET = 'inventory';
 
 logger.info('Supabase client initialized in config.');
 
@@ -1675,9 +1674,6 @@ export interface CreateClientDto {
     city?: string;
     postCode?: string;
     nif?: string;
-    email?: string;
-    phone?: string;
-    hasContract?: boolean;
 }
 
 export interface UpdateClientDto extends Partial<CreateClientDto> {}
@@ -1714,25 +1710,24 @@ export class ClientRepository {
     }
 
     async create(data: CreateClientDto, db: QueryRunner): Promise<Client> {
-        const { name, address, city, postCode, nif, email, phone, hasContract } = data;
+        const { name, address, city, postCode, nif } = data;
         const { rows } = await db.query(
-            `INSERT INTO clients (name, address, city, "postCode", nif, email, phone, "hasContract")
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            `INSERT INTO clients (name, address, city, "postCode", nif)
+             VALUES ($1, $2, $3, $4, $5)
              RETURNING *`,
-            [name, address, city, postCode, nif, email ?? null, phone ?? null, hasContract ?? false]
+            [name, address, city, postCode, nif]
         );
         return rows[0];
     }
 
     async update(id: number, data: UpdateClientDto, db: QueryRunner): Promise<Client | null> {
-        const { name, address, city, postCode, nif, email, phone, hasContract } = data;
+        const { name, address, city, postCode, nif } = data;
         const { rows } = await db.query(
             `UPDATE clients
-             SET name = $1, address = $2, city = $3, "postCode" = $4, nif = $5,
-                 email = $6, phone = $7, "hasContract" = $8
-             WHERE id = $9
+             SET name = $1, address = $2, city = $3, "postCode" = $4, nif = $5
+             WHERE id = $6
              RETURNING *`,
-            [name, address, city, postCode, nif, email ?? null, phone ?? null, hasContract ?? false, id]
+            [name, address, city, postCode, nif, id]
         );
         return rows[0] ?? null;
     }
@@ -2054,6 +2049,12 @@ export class ClientPortalController {
         await this.service.markTicketAsRead(Number(req.params.id), req.user.id);
         res.status(200).send('Marked as read');
     });
+
+    signMyReport = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const result = await this.service.signMyReport(Number(req.params.id), req.user.id);
+        res.json(result);
+    });
 }
 
 
@@ -2123,6 +2124,12 @@ router.post('/my-tickets/:id/reply',
 router.put('/my-tickets/:id/mark-as-read',
     authenticateToken,
     controller.markTicketAsRead
+);
+
+router.post('/my-report/:id/sign',
+    authenticateToken,
+    authorizeRoles([UserRole.CLIENT]),
+    controller.signMyReport
 );
 
 export default router;
@@ -2257,6 +2264,31 @@ export class ClientPortalService {
                 'UPDATE ticket_responses SET "isNew" = false WHERE ticket_id = $1 AND user_id != $2 AND "isNew" = true',
                 [ticketId, userId]
             );
+        });
+    }
+    async signMyReport(reportId: number, userId: string) {
+        return await withTransactionAs(userId, async (db) => {
+            const report = await this.reportRepo.findById(reportId, db);
+            if (!report) throw new NotFoundError('Relatório não encontrado.');
+
+            // Validate access
+            await this.getValidatedClientId(userId, report.clientId);
+
+            // Get user profile signature
+            const { rows: profileRows } = await db.query('SELECT signature, first_name, last_name FROM profiles WHERE id = $1', [userId]);
+            const profile = profileRows[0];
+
+            if (!profile || !profile.signature) {
+                throw new BadRequestError('Não tem uma assinatura definida no seu perfil.');
+            }
+
+            // Update report
+            await db.query(
+                'UPDATE reports SET signature = $1, client_signer_name = $2 WHERE id = $3',
+                [profile.signature, `${profile.first_name} ${profile.last_name}`, reportId]
+            );
+
+            return { success: true };
         });
     }
 }
@@ -2902,7 +2934,8 @@ export class InventoryController {
         const page   = Math.max(1, Number(req.query.page) || 1);
         const limit  = Math.min(1000, Math.max(1, Number(req.query.limit) || 100));
         const search = req.query.search as string | undefined;
-        const result = await this.inventoryService.getInventory(page, limit, search);
+        const view   = req.query.view as string | undefined;
+        const result = await this.inventoryService.getInventory(page, limit, search, view);
         res.json(result);
     });
 
@@ -2961,6 +2994,22 @@ export class InventoryController {
 
     syncPartStock = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const result = await this.inventoryService.syncPartStock(+req.params.id, req.user!.id);
+        res.json(result);
+    });
+
+    getInventoryAll = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.inventoryService.getInventoryAll();
+        res.json(result);
+    });
+
+    uploadBatchImages = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const files = req.files as Express.Multer.File[];
+        const result = await this.inventoryService.uploadBatchImages(files, req.user!.id);
+        res.json(result);
+    });
+
+    importPrices = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.inventoryService.importPrices(req.body, req.user!.id);
         res.json(result);
     });
 }
@@ -3097,10 +3146,12 @@ import { validate } from '../../middlewares/validate.middleware';
 import * as inventoryValidation from '../../validations/inventory.validation';
 import * as commonValidation from '../../validations/common.validation';
 import { UserRole } from '../../constants/enums';
+import multer from 'multer';
 import { InventoryRepository } from './inventory.repository';
 import { InventoryService } from './inventory.service';
 import { InventoryController } from './inventory.controller';
 
+const upload = multer({ storage: multer.memoryStorage() });
 const router = Router();
 
 const repo = new InventoryRepository();
@@ -3116,10 +3167,14 @@ const STAFF = [UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserR
  *   description: Management of inventory and parts
  */
 
+router.get('/all-export', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN]), controller.getInventoryAll);
 router.get('/', authenticateToken, authorizeRoles(STAFF), controller.getInventory);
+router.post('/import-prices', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN]), controller.importPrices);
 router.post('/', authenticateToken, authorizeRoles(STAFF), validate(inventoryValidation.createPartSchema), controller.createPart);
 router.post('/composed', authenticateToken, authorizeRoles(STAFF), validate(inventoryValidation.createComposedPartSchema), controller.createComposedPart);
 router.get('/parts/:reference', authenticateToken, authorizeRoles(STAFF), controller.getPartByReference);
+
+router.post('/batch-images', authenticateToken, authorizeRoles(STAFF), upload.array('files', 500), controller.uploadBatchImages);
 
 router.put('/:id/composed', authenticateToken, authorizeRoles(STAFF), validate(inventoryValidation.updateComposedPartSchema), controller.updateComposedPart);
 router.put('/:id/stock', authenticateToken, authorizeRoles(STAFF), validate(inventoryValidation.updateStockSchema), controller.updateStock);
@@ -3138,17 +3193,63 @@ START FILE: .\modules\inventory\inventory.service.ts
 ==================================================
 
 import { pool, withTransactionAs } from '../../config/db';
-import { BadRequestError, NotFoundError } from '../../utils/ApiError';
+import { BadRequestError, NotFoundError, ApiError } from '../../utils/ApiError';
 import { StockType } from '../../constants/enums';
 import { Part } from '../../types/supabase';
 import * as inventoryService from '../../services/inventoryService';
 import { InventoryRepository } from './inventory.repository';
+import { supabase, INVENTORY_BUCKET } from '../../config/supabase';
 
 export class InventoryService {
     constructor(private repo: InventoryRepository) {}
 
-    async getInventory(page: number, limit: number, search?: string) {
-        return inventoryService.getEnrichedInventory(pool, page, limit, search);
+    async uploadBatchImages(files: Express.Multer.File[], userId: string) {
+        const results = {
+            success: 0,
+            failed: 0,
+            errors: [] as { file: string; error: string }[]
+        };
+
+        for (const file of files) {
+            try {
+                // Get reference from filename (e.g., "REF-123.jpg" -> "REF-123")
+                const reference = file.originalname.split('.')[0];
+                
+                // Find part by reference
+                const part = await this.repo.findByReference(reference);
+                
+                if (!part) {
+                    results.failed++;
+                    results.errors.push({ file: file.originalname, error: `Peça com referência "${reference}" não encontrada.` });
+                    continue;
+                }
+
+                const fileExt = file.originalname.split('.').pop() || 'jpg';
+                const filePath = `items/${reference}.${fileExt}`;
+
+                // Upload to Supabase (upsert: true to replace silently)
+                const { error: uploadError } = await supabase.storage.from(INVENTORY_BUCKET).upload(filePath, file.buffer, { 
+                    contentType: file.mimetype,
+                    upsert: true 
+                });
+
+                if (uploadError) throw new Error(uploadError.message);
+
+                // Update DB path
+                await pool.query('UPDATE parts SET image_path = $1 WHERE id = $2', [filePath, part.id]);
+
+                results.success++;
+            } catch (err: any) {
+                results.failed++;
+                results.errors.push({ file: file.originalname, error: err.message || 'Erro desconhecido' });
+            }
+        }
+
+        return results;
+    }
+
+    async getInventory(page: number, limit: number, search?: string, view?: string) {
+        return inventoryService.getEnrichedInventory(pool, page, limit, search, view);
     }
 
     async getPartReservations(partId: number) {
@@ -3203,12 +3304,12 @@ export class InventoryService {
 
     async createPart(data: any, userId: string) {
         return withTransactionAs(userId, async (db) => {
-            const { reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss } = data;
+            const { reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes } = data;
             const { rows: existing } = await db.query('SELECT 1 FROM parts WHERE reference = $1', [reference]);
             if (existing.length > 0) throw new BadRequestError('Já existe uma peça com esta referência.');
             const { rows } = await db.query<Part>(
-                'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-                [reference, designation, stock_quantity || 0, !!is_composed, min_stock || 0, min_stock_foss || 0]
+                'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+                [reference, designation, stock_quantity || 0, !!is_composed, min_stock || 0, min_stock_foss || 0, price || 0, notes || '']
             );
             return rows[0];
         });
@@ -3220,10 +3321,10 @@ export class InventoryService {
 
     async updatePart(id: number, data: any, userId: string) {
         return withTransactionAs(userId, async (db) => {
-            const { reference, designation, min_stock, min_stock_foss } = data;
+            const { reference, designation, min_stock, min_stock_foss, price, notes } = data;
             const { rows, rowCount } = await db.query<Part>(
-                'UPDATE parts SET reference = $1, designation = $2, min_stock = $3, min_stock_foss = $4 WHERE id = $5 RETURNING *',
-                [reference, designation, min_stock || 0, min_stock_foss || 0, id]
+                'UPDATE parts SET reference = $1, designation = $2, min_stock = $3, min_stock_foss = $4, price = $5, notes = $6 WHERE id = $7 RETURNING *',
+                [reference, designation, min_stock || 0, min_stock_foss || 0, price || 0, notes || '', id]
             );
             if (rowCount === 0) throw new NotFoundError('Peça não encontrada.');
             return inventoryService.enrichPart(rows[0]);
@@ -3233,6 +3334,222 @@ export class InventoryService {
     async syncPartStock(partId: number, userId: string) {
         return withTransactionAs(userId, (db) => inventoryService.syncPartStock(db, partId));
     }
+
+    async getInventoryAll() {
+        return inventoryService.getEnrichedInventory(pool, 1, 10000);
+    }
+
+    async importPrices(items: { reference: string, price: number }[], userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const results = { updated: 0, notFound: 0 };
+            for (const item of items) {
+                if (!item.reference) continue;
+                
+                // Remove all dots or spaces (thousand separators), then replace comma with dot
+                // e.g., "1.234,56" -> "1234.56"
+                // e.g., "1 234,56" -> "1234.56"
+                let priceStr = String(item.price || 0)
+                    .replace(/\./g, '')
+                    .replace(/\s/g, '')
+                    .replace(',', '.');
+                let priceValue = parseFloat(priceStr);
+                if (isNaN(priceValue)) priceValue = 0;
+
+                const { rowCount } = await db.query(
+                    'UPDATE parts SET price = $1 WHERE reference = $2',
+                    [priceValue, item.reference]
+                );
+                
+                if (rowCount && rowCount > 0) {
+                    results.updated++;
+                } else {
+                    results.notFound++;
+                }
+            }
+            return results;
+        });
+    }
+}
+
+
+==================================================
+START FILE: .\modules\invoice\invoice.controller.ts
+==================================================
+
+import { Response } from 'express';
+import { InvoiceService } from './invoice.service';
+import { ApiError } from '../../utils/ApiError';
+import { AuthenticatedRequest } from '../../middlewares/auth.middleware';
+import { catchAsync } from '../../utils/catchAsync';
+
+export class InvoiceController {
+  constructor(private service: InvoiceService) {}
+
+  uploadInvoice = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.file) throw new ApiError(400, 'Nenhum ficheiro PDF enviado.');
+    if (!req.user) throw new ApiError(401, 'Utilizador não autenticado.');
+
+    const result = await this.service.uploadAndParseInvoice(req.file, req.user.id);
+    res.json(result);
+  });
+
+  listInvoices = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const invoices = await this.service.list();
+    res.json(invoices);
+  });
+}
+
+
+==================================================
+START FILE: .\modules\invoice\invoice.repository.ts
+==================================================
+
+import { QueryRunner } from '../../types/db.types';
+import { ParsedInvoice, ParsedInvoiceItem } from '../../utils/pdfParser';
+
+export class InvoiceRepository {
+  async listInvoices(db: QueryRunner) {
+    const { rows } = await db.query(`
+      SELECT 
+        i.*,
+        (SELECT json_agg(it) FROM invoice_items it WHERE it.invoice_id = i.id) as items
+      FROM invoices i
+      ORDER BY i.created_at DESC
+    `);
+    return rows;
+  }
+
+  async saveInvoice(db: QueryRunner, data: ParsedInvoice, fileUrl: string) {
+    // 1. Upsert the invoice record
+    const { rows: [invoice] } = await db.query(`
+      INSERT INTO invoices (
+        invoice_number, customer_name, customer_nif, vendor, 
+        issue_date, due_date, reference, incidence, 
+        vat_total, total_value, file_url
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (invoice_number) DO UPDATE SET
+        customer_name = EXCLUDED.customer_name,
+        customer_nif = EXCLUDED.customer_nif,
+        vendor = EXCLUDED.vendor,
+        issue_date = EXCLUDED.issue_date,
+        due_date = EXCLUDED.due_date,
+        reference = EXCLUDED.reference,
+        incidence = EXCLUDED.incidence,
+        vat_total = EXCLUDED.vat_total,
+        total_value = EXCLUDED.total_value,
+        file_url = EXCLUDED.file_url
+      RETURNING id
+    `, [
+      data.invoiceNumber, data.customerName, data.customerNif, data.vendor,
+      data.issueDate, data.dueDate, data.reference, data.incidence,
+      data.vatTotal, data.totalValue, fileUrl
+    ]);
+
+    const invoiceId = invoice.id;
+
+    // 2. Clear previous items to avoid duplicates if reprocessing
+    await db.query('DELETE FROM invoice_items WHERE invoice_id = $1', [invoiceId]);
+
+    // 3. Insert new items
+    for (const item of data.items) {
+      await db.query(`
+        INSERT INTO invoice_items (
+          invoice_id, code, description, quantity, unit_price, total_price
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        invoiceId, item.code, item.description, item.quantity, 
+        item.unitPrice, item.totalPrice
+      ]);
+    }
+
+    return invoiceId;
+  }
+}
+
+
+==================================================
+START FILE: .\modules\invoice\invoice.routes.ts
+==================================================
+
+import { Router } from 'express';
+import multer from 'multer';
+import { authenticateToken, authorizeRoles } from '../../middlewares/auth.middleware';
+import { UserRole } from '../../constants/enums';
+import { InvoiceRepository } from './invoice.repository';
+import { InvoiceService } from './invoice.service';
+import { InvoiceController } from './invoice.controller';
+
+const upload = multer({ storage: multer.memoryStorage() });
+const router = Router();
+
+const repo = new InvoiceRepository();
+const service = new InvoiceService(repo);
+const controller = new InvoiceController(service);
+
+const ADMIN_STAFF = [UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF];
+
+router.post('/upload', authenticateToken, authorizeRoles(ADMIN_STAFF), upload.single('file'), controller.uploadInvoice);
+router.get('/', authenticateToken, authorizeRoles(ADMIN_STAFF), controller.listInvoices);
+
+export default router;
+
+
+==================================================
+START FILE: .\modules\invoice\invoice.service.ts
+==================================================
+
+import { InvoiceRepository } from './invoice.repository';
+import { pool } from '../../config/db';
+import { parseMicroAtomoInvoice } from '../../utils/pdfParser';
+import { supabase } from '../../config/supabase';
+
+export class InvoiceService {
+  constructor(private repo: InvoiceRepository) {}
+
+  async uploadAndParseInvoice(file: Express.Multer.File, userId: string) {
+    try {
+      console.log('>>> [STEP 1] Uploading to Supabase...');
+      const fileName = `${Date.now()}_${file.originalname}`;
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('invoices')
+        .upload(fileName, file.buffer, { contentType: 'application/pdf' });
+
+      if (uploadError) throw new Error(`Supabase error: ${uploadError.message}`);
+      const { data: { publicUrl } } = supabase.storage.from('invoices').getPublicUrl(uploadData.path);
+      console.log('>>> [STEP 1] SUCCESS. URL:', publicUrl);
+
+      console.log('>>> [STEP 2] Parsing PDF...');
+      const parsedData = await parseMicroAtomoInvoice(file.buffer);
+      console.log('>>> [STEP 2] PARSING SUCCESS. Invoice #:', parsedData.invoiceNumber);
+
+      console.log('>>> [STEP 3] Saving to Database...');
+      const client = await pool.connect();
+      try {
+        const id = await this.repo.saveInvoice(client, parsedData, publicUrl);
+        console.log('>>> [STEP 3] DB SUCCESS. ID:', id);
+      } catch (dbErr: any) {
+        console.error('>>> [STEP 3] DB FAILED:', dbErr.message);
+        throw dbErr;
+      } finally {
+        client.release();
+      }
+
+      return parsedData;
+    } catch (err: any) {
+      console.error('!!! [UPLOAD FAILED] !!!');
+      console.error(err);
+      throw err;
+    }
+  }
+
+  async list() {
+    const client = await pool.connect();
+    try {
+      return await this.repo.listInvoices(client);
+    } finally {
+      client.release();
+    }
+  }
 }
 
 
@@ -3313,8 +3630,8 @@ export class ReportRepository {
         if (startDate) { params.push(startDate); whereClauses.push(`r."serviceDate" >= $${params.length}`); }
         if (endDate)   { params.push(endDate);   whereClauses.push(`r."serviceDate" <= $${params.length}`); }
         if (serviceTypes?.length) {
-            params.push(JSON.stringify(serviceTypes));
-            whereClauses.push(`r."serviceType"::jsonb ?| $${params.length}`);
+            params.push(serviceTypes);
+            whereClauses.push(`r."serviceType"::jsonb ?| $${params.length}::text[]`);
         }
         if (search) {
             params.push(`%${search}%`);
@@ -3331,7 +3648,7 @@ export class ReportRepository {
             SELECT r.*, c.name as "clientName", e.brand as "equipmentBrand", e.model as "equipmentModel",
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
-                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',pr.designation,'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general')))
+                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',pr.designation,'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'image_path',pr.image_path))
                     FROM report_parts rp JOIN parts pr ON rp."partId"=pr.id WHERE rp."reportId"=r.id),'[]') as parts
             ${joinSql} ${whereSql}
             ORDER BY r."serviceDate" DESC
@@ -3347,7 +3664,7 @@ export class ReportRepository {
                 e.brand as "equipmentBrand", e.model as "equipmentModel", e."serialNumber" as "equipmentSerialNumber",
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
-                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',pr.designation,'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'stock_quantity',pr.stock_quantity,'reserved_quantity',pr.reserved_quantity,'stock_quantity_foss',pr.stock_quantity_foss,'reserved_quantity_foss',pr.reserved_quantity_foss))
+                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',pr.designation,'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'stock_quantity',pr.stock_quantity,'reserved_quantity',pr.reserved_quantity,'stock_quantity_foss',pr.stock_quantity_foss,'reserved_quantity_foss',pr.reserved_quantity_foss,'image_path',pr.image_path))
                     FROM report_parts rp JOIN parts pr ON rp."partId"=pr.id WHERE rp."reportId"=r.id),'[]') as parts
             FROM reports r
             LEFT JOIN clients c ON r."clientId"=c.id
@@ -3725,7 +4042,7 @@ export class ScheduleRepository {
                     '[]'
                 ) as technicians,
                 COALESCE(
-                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', pa.designation, 'quantity', sp.quantity, 'stockType', sp.stock_type))
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', pa.designation, 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path))
                      FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
                     '[]'
                 ) as parts,
@@ -3756,7 +4073,7 @@ export class ScheduleRepository {
                     '[]'
                 ) as technicians,
                 COALESCE(
-                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', pa.designation, 'quantity', sp.quantity, 'stockType', sp.stock_type))
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', pa.designation, 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path))
                      FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
                     '[]'
                 ) as parts,
@@ -3842,7 +4159,12 @@ export class ScheduleRepository {
                     (SELECT json_agg(json_build_object('start', tb.start_time, 'end', tb.end_time, 'googleEventId', tb.google_event_id) ORDER BY tb.start_time)
                      FROM schedule_time_blocks tb WHERE tb.schedule_id = s.id),
                     '[]'
-                ) as "timeBlocks"
+                ) as "timeBlocks",
+                COALESCE(
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', pa.designation, 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path))
+                     FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
+                    '[]'
+                ) as parts
             FROM schedules s
             LEFT JOIN clients c ON s."clientId" = c.id
             LEFT JOIN equipments e ON s."equipmentId" = e.id
@@ -3866,7 +4188,12 @@ export class ScheduleRepository {
                     (SELECT json_agg(json_build_object('start', tb.start_time, 'end', tb.end_time, 'googleEventId', tb.google_event_id) ORDER BY tb.start_time)
                      FROM schedule_time_blocks tb WHERE tb.schedule_id = s.id),
                     '[]'
-                ) as "timeBlocks"
+                ) as "timeBlocks",
+                COALESCE(
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', pa.designation, 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path))
+                     FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
+                    '[]'
+                ) as parts
             FROM schedules s
             LEFT JOIN clients c ON s."clientId" = c.id
             LEFT JOIN equipments e ON s."equipmentId" = e.id
@@ -3891,7 +4218,16 @@ export class ScheduleRepository {
                         (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                          FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
                         '[]'
-                    ) as technicians
+                    ) as technicians,
+                    COALESCE(
+                        (SELECT r.signature IS NOT NULL AND r.signature != '' FROM reports r WHERE r."scheduleId" = s.id AND r.deleted_at IS NULL LIMIT 1),
+                        false
+                    ) as "isSigned",
+                    COALESCE(
+                        (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', pa.designation, 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path))
+                         FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
+                        '[]'
+                    ) as parts
                 FROM schedules s
                 LEFT JOIN equipments e ON s."equipmentId" = e.id
                 WHERE s."clientId" = $1
@@ -4418,8 +4754,8 @@ export class TaskRepository {
                 t.*,
                 COALESCE(json_build_object('first_name', ap.first_name, 'last_name', ap.last_name, 'color', ap.color), NULL) as assignee,
                 COALESCE(json_build_object('first_name', cp.first_name, 'last_name', cp.last_name), NULL) as creator,
-                c.name as "clientName",
-                json_build_object('brand', e.brand, 'model', e.model, 'serialNumber', e."serialNumber") as equipment,
+                CASE WHEN c.id IS NOT NULL THEN json_build_object('name', c.name) ELSE NULL END as clients,
+                CASE WHEN e.id IS NOT NULL THEN json_build_object('brand', e.brand, 'model', e.model, 'serialNumber', e."serialNumber") ELSE NULL END as equipments,
                 COALESCE((SELECT json_agg(tb.*) FROM internal_task_time_blocks tb WHERE tb.task_id = t.id), '[]') as time_blocks
             FROM internal_tasks t
             LEFT JOIN profiles ap ON t.user_id = ap.id
@@ -4439,8 +4775,8 @@ export class TaskRepository {
                 t.*,
                 COALESCE(json_build_object('first_name', ap.first_name, 'last_name', ap.last_name, 'color', ap.color), NULL) as assignee,
                 COALESCE(json_build_object('first_name', cp.first_name, 'last_name', cp.last_name), NULL) as creator,
-                c.name as "clientName",
-                json_build_object('brand', e.brand, 'model', e.model, 'serialNumber', e."serialNumber") as equipment,
+                CASE WHEN c.id IS NOT NULL THEN json_build_object('name', c.name) ELSE NULL END as clients,
+                CASE WHEN e.id IS NOT NULL THEN json_build_object('brand', e.brand, 'model', e.model, 'serialNumber', e."serialNumber") ELSE NULL END as equipments,
                 COALESCE((SELECT json_agg(tb.*) FROM internal_task_time_blocks tb WHERE tb.task_id = t.id), '[]') as time_blocks
             FROM internal_tasks t
             LEFT JOIN profiles ap ON t.user_id = ap.id
@@ -5250,7 +5586,11 @@ export class TicketRepository {
             pool.query(`
                 SELECT t.*,
                     CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
-                    s."startDate", s."endDate", s."hasReport"
+                    s."startDate", s."endDate", s."hasReport",
+                    COALESCE(
+                        (SELECT r.signature IS NOT NULL AND r.signature != '' FROM reports r WHERE r."scheduleId" = s.id AND r.deleted_at IS NULL LIMIT 1),
+                        false
+                    ) as "isSigned"
                 FROM tickets t
                 LEFT JOIN equipments e ON t."equipmentId" = e.id
                 LEFT JOIN schedules s ON t."scheduleId" = s.id
@@ -6191,6 +6531,51 @@ async function recalculateReservations() {
 }
 
 recalculateReservations();
+
+
+==================================================
+START FILE: .\scripts\reset_inventory_images.ts
+==================================================
+
+import { Pool } from 'pg';
+import dotenv from 'dotenv';
+
+// Carregar variáveis do .env na pasta raiz do server
+dotenv.config();
+
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+    console.error('ERRO: DATABASE_URL não encontrada. Certifica-te que estás na pasta raiz do server e que o ficheiro .env existe.');
+    process.exit(1);
+}
+
+const pool = new Pool({
+    connectionString,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
+
+async function resetImagePaths() {
+    process.stdout.write('🔄 A fazer reset da coluna image_path na tabela parts... ');
+    
+    try {
+        const client = await pool.connect();
+        try {
+            const result = await client.query('UPDATE parts SET image_path = NULL');
+            process.stdout.write(`✅ SUCESSO! ${result.rowCount} itens atualizados.\n`);
+        } finally {
+            client.release();
+        }
+    } catch (err: any) {
+        process.stdout.write(`❌ ERRO: ${err.message}\n`);
+    } finally {
+        await pool.end();
+    }
+}
+
+resetImagePaths();
 
 
 ==================================================
@@ -7542,15 +7927,15 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
  * Creates a composed part (kit) with its components
  */
 export async function createComposedPart(db: PoolClient, data: any): Promise<any> {
-    const { reference, designation, components } = data;
+    const { reference, designation, components, price, notes } = data;
 
     const { rows: existingRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1', [reference]);
     if (existingRows.length > 0) throw new Error('Já existe uma peça com esta referência.');
 
     const { rows } = await db.query<Part>(
-        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss) 
-         VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0) RETURNING *`,
-        [reference, designation]
+        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, price, notes) 
+         VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0, $3, $4) RETURNING *`,
+        [reference, designation, price || 0, notes || '']
     );
     const parentPart = rows[0];
 
@@ -7571,11 +7956,11 @@ export async function createComposedPart(db: PoolClient, data: any): Promise<any
  * Updates a composed part (kit) and its components
  */
 export async function updateComposedPart(db: PoolClient, partId: number, data: any): Promise<any> {
-    const { reference, designation, components } = data;
+    const { reference, designation, components, price, notes } = data;
 
     const { rows } = await db.query<Part>(
-        'UPDATE parts SET reference = $1, designation = $2 WHERE id = $3 RETURNING *',
-        [reference, designation, partId]
+        'UPDATE parts SET reference = $1, designation = $2, price = $3, notes = $4 WHERE id = $5 RETURNING *',
+        [reference, designation, price || 0, notes || '', partId]
     );
     const parentPart = rows[0];
     if (!parentPart) throw new Error('Part not found');
@@ -7704,7 +8089,8 @@ export async function getEnrichedInventory(
     db: SupabaseClient<Database> | PoolClient | Pool,
     page: number = 1,
     limit: number = 50,
-    search?: string
+    search?: string,
+    view?: string
 ) {
     const offset = (page - 1) * limit;
     let parts: any[] = [];
@@ -7729,19 +8115,38 @@ export async function getEnrichedInventory(
         totalCount = count || 0;
     } else {
         // Pool Client (PG)
-        let countQuery = 'SELECT COUNT(*) FROM parts';
-        let dataQuery = 'SELECT * FROM parts ORDER BY designation ASC LIMIT $1 OFFSET $2';
-        let countParams: any[] = [];
-        let dataParams: any[] = [limit, offset];
+        let countQuery = 'SELECT COUNT(*) FROM parts WHERE 1=1';
+        let dataQuery = 'SELECT * FROM parts WHERE 1=1';
+        let params: any[] = [];
+        let dataParams: any[] = [];
 
         if (search) {
-            countQuery = 'SELECT COUNT(*) FROM parts WHERE reference ILIKE $1 OR designation ILIKE $1';
-            countParams = [`%${search}%`];
-            dataQuery = 'SELECT * FROM parts WHERE reference ILIKE $3 OR designation ILIKE $3 ORDER BY designation ASC LIMIT $1 OFFSET $2';
-            dataParams = [limit, offset, `%${search}%`];
+            const searchCondition = `(reference ILIKE $${params.length + 1} OR designation ILIKE $${params.length + 1})`;
+            countQuery += ` AND ${searchCondition}`;
+            dataQuery += ` AND ${searchCondition}`;
+            params.push(`%${search}%`);
+            dataParams.push(`%${search}%`);
         }
 
-        const { rows: countRows } = await db.query<{ count: string }>(countQuery, countParams);
+        if (view === 'low_stock') {
+            const lowStockCondition = `(
+                (is_composed = false AND COALESCE(stock_quantity, 0) - COALESCE(reserved_quantity, 0) < COALESCE(min_stock, 0)) OR
+                (is_composed = false AND COALESCE(stock_quantity_foss, 0) - COALESCE(reserved_quantity_foss, 0) < COALESCE(min_stock_foss, 0)) OR
+                (is_composed = true AND COALESCE(virtual_stock, 0) - COALESCE(reserved_quantity, 0) < COALESCE(min_stock, 0)) OR
+                (is_composed = true AND COALESCE(virtual_stock_foss, 0) - COALESCE(reserved_quantity_foss, 0) < COALESCE(min_stock_foss, 0))
+            )`;
+            countQuery += ` AND ${lowStockCondition}`;
+            dataQuery += ` AND ${lowStockCondition}`;
+        } else if (view === 'reserved') {
+            const reservedCondition = `(COALESCE(reserved_quantity, 0) > 0 OR COALESCE(reserved_quantity_foss, 0) > 0)`;
+            countQuery += ` AND ${reservedCondition}`;
+            dataQuery += ` AND ${reservedCondition}`;
+        }
+
+        dataQuery += ` ORDER BY designation ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        dataParams.push(limit, offset);
+
+        const { rows: countRows } = await db.query<{ count: string }>(countQuery, params);
         totalCount = parseInt(countRows[0].count, 10);
 
         const { rows } = await db.query<Part>(dataQuery, dataParams);
@@ -8827,7 +9232,7 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
         try {
             const { data: clientData } = await supabase.from('clients').select('name').eq('id', Number(client_id)).single();
             const { data: equipData } = await supabase.from('equipments').select('brand, model').eq('id', Number(equipmentId)).single();
-            const telegramMessage = `🆕 *Novo Ticket Criado (Interno)*\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipData ? `${equipData.brand} ${equipData.model}` : '?'}\n*Descrição:* ${faultDescription}`;
+            const telegramMessage = `🆕 *Novo Ticket Criado *\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipData ? `${equipData.brand} ${equipData.model}` : '?'}\n*Descrição:* ${faultDescription}`;
             sendTelegramNotification(telegramMessage);
         } catch (err) {
             logger.error({ err }, 'Failed to send telegram notification for ticket');
@@ -10264,6 +10669,9 @@ export type Database = {
           virtual_stock_foss: number | null
           min_stock: number | null
           min_stock_foss: number | null
+          price: number | null
+          image_path: string | null
+          notes: string | null
         }
         Insert: {
           id?: number
@@ -10278,6 +10686,9 @@ export type Database = {
           ordered_quantity_foss?: number | null
           virtual_stock?: number | null
           virtual_stock_foss?: number | null
+          price?: number | null
+          image_path?: string | null
+          notes?: string | null
         }
         Update: {
           id?: number
@@ -10292,6 +10703,9 @@ export type Database = {
           ordered_quantity_foss?: number | null
           virtual_stock?: number | null
           virtual_stock_foss?: number | null
+          price?: number | null
+          image_path?: string | null
+          notes?: string | null
         }
         Relationships: []
       }
@@ -11525,6 +11939,250 @@ export async function withObservability(jobName: string, fn: () => Promise<void>
 
 
 ==================================================
+START FILE: .\utils\pdfParser.ts
+==================================================
+
+// Use require as it's more reliable for some CommonJS packages in ts-node
+const pdf = require('pdf-parse');
+
+export interface ParsedInvoiceItem {
+  code: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+}
+
+export interface ParsedInvoice {
+  invoiceNumber: string;
+  customerName: string;
+  customerNif: string;
+  vendor: string;
+  issueDate: string;
+  dueDate: string;
+  reference: string;
+  incidence: number;
+  vatTotal: number;
+  totalValue: number;
+  items: ParsedInvoiceItem[];
+}
+
+interface Chunk {
+  text: string;
+  x: number;
+  y: number;
+}
+
+export const parseMicroAtomoInvoice = async (dataBuffer: Buffer): Promise<ParsedInvoice> => {
+  let chunks: Chunk[] = [];
+
+  const renderPage = async (pageData: any) => {
+    const textContent = await pageData.getTextContent({
+      normalizeWhitespace: true,
+      disableCombineTextItems: false
+    });
+
+    for (let item of textContent.items) {
+      if (item.str.trim()) {
+        chunks.push({
+          text: item.str.trim(),
+          x: item.transform[4],
+          y: item.transform[5]
+        });
+      }
+    }
+    return ''; // We don't need the joined text
+  };
+
+  await pdf(dataBuffer, { 
+    max: 1,
+    pagerender: renderPage
+  });
+
+  // --- Logic from invoice-parser.ts adapted ---
+
+  const Y_TOLERANCE = 4;
+  
+  const findLabel = (label: string): Chunk | undefined => {
+    return chunks.find(c => c.text.toLowerCase().includes(label.toLowerCase()));
+  };
+
+  const chunksOnSameLine = (ref: Chunk): Chunk[] => {
+    return chunks.filter(c => c !== ref && Math.abs(c.y - ref.y) <= Y_TOLERANCE);
+  };
+
+  const findValueBelow = (labelChunk: Chunk): string => {
+    const below = chunks
+      .filter(c =>
+        Math.abs(c.x - labelChunk.x) <= 80 &&
+        c.y < labelChunk.y &&
+        labelChunk.y - c.y <= 25
+      )
+      .sort((a, b) => b.y - a.y);
+    return below.length > 0 ? below[0].text : '';
+  };
+
+  const findValueNear = (labelChunk: Chunk): string => {
+    const sameLine = chunksOnSameLine(labelChunk)
+      .filter(c => c.x > labelChunk.x && c.x - labelChunk.x <= 300)
+      .sort((a, b) => a.x - b.x);
+    return sameLine.length > 0 ? sameLine[0].text : '';
+  };
+
+  const groupByY = (chunkList: Chunk[]): Chunk[][] => {
+    if (chunkList.length === 0) return [];
+    const sorted = [...chunkList].sort((a, b) => b.y - a.y);
+    const bands: Chunk[][] = [];
+    let currentBand: Chunk[] = [sorted[0]];
+    let currentY = sorted[0].y;
+
+    for (let i = 1; i < sorted.length; i++) {
+      if (Math.abs(sorted[i].y - currentY) <= Y_TOLERANCE) {
+        currentBand.push(sorted[i]);
+      } else {
+        bands.push(currentBand);
+        currentBand = [sorted[i]];
+        currentY = sorted[i].y;
+      }
+    }
+    bands.push(currentBand);
+    return bands;
+  };
+
+  // 1. Extrair Cabeçalho
+  const faturaChunk = chunks.find(c => c.text.startsWith('FACTURA Nº'));
+  const invoiceNumber = faturaChunk ? faturaChunk.text.replace('FACTURA Nº', '').replace('FA ', '').trim() : '';
+
+  const exmoChunk = findLabel('Exmo(s). Senhor(es),');
+  let customerName = '';
+  if (exmoChunk) {
+    const abaixo = chunks
+      .filter(c => c.y < exmoChunk.y && c.x > 280 && exmoChunk.y - c.y < 50)
+      .sort((a, b) => b.y - a.y);
+    if (abaixo.length > 0) customerName = abaixo[0].text;
+  }
+
+  const nifLabel = findLabel('V/ Nº Contribuinte');
+  const nifRowChunks = nifLabel ? chunks.filter(c => nifLabel.y - c.y > 5 && nifLabel.y - c.y < 35) : [];
+  const customerNif = nifRowChunks.map(c => c.text.match(/\d{9}/)?.[0]).find(n => n) || '';
+
+  const vendLabel = findLabel('Vendedor');
+  const vendor = vendLabel ? findValueBelow(vendLabel) : '';
+
+  const dataLabel = findLabel('Data');
+  const datePattern = /(\d{4}-\w{3}-\d{2})|(\d{2}-\d{2}-\d{4})/;
+  const dataRowChunks = dataLabel ? chunks.filter(c => dataLabel.y - c.y > 5 && dataLabel.y - c.y < 35) : [];
+  const issueDateRel = dataRowChunks.map(c => c.text.match(datePattern)?.[0]).find(n => n) || '';
+
+  const vencLabel = findLabel('Vencimento');
+  const vencRowChunks = vencLabel ? chunks.filter(c => vencLabel.y - c.y > 5 && vencLabel.y - c.y < 35) : [];
+  const dueDateRel = vencRowChunks.map(c => c.text.match(datePattern)?.[0]).find(n => n) || '';
+
+  const refLabel = findLabel('Referência');
+  const reference = refLabel ? findValueBelow(refLabel) : '';
+
+  // 2. Extrair Itens (Tabela)
+  const headerYChunk = findLabel('Código');
+  const tableEndChunk = findLabel('Ilíquido') || findLabel('Totais do Documento');
+  
+  const items: ParsedInvoiceItem[] = [];
+  if (headerYChunk && tableEndChunk) {
+    const tableChunks = chunks.filter(c => c.y < headerYChunk.y && c.y > tableEndChunk.y);
+    const bands = groupByY(tableChunks);
+
+    // Header X positions
+    const xPositions = {
+      codigo: findLabel('Código')?.x ?? 0,
+      designacao: findLabel('Designação')?.x ?? 100,
+      qtd: findLabel('Qtd.')?.x ?? 400,
+      preco: findLabel('Preço')?.x ?? 450,
+      total: findLabel('Total')?.x ?? 530
+    };
+
+    for (const band of bands) {
+      if (band.length < 2) continue; // Ignore lines with only 1 chunk (often noise)
+      
+      const getCol = (xRef: number) => {
+        const sorted = band.slice().sort((a, b) => Math.abs(a.x - xRef) - Math.abs(b.x - xRef));
+        const best = sorted[0];
+        // Must be within 50px of the header column
+        return (best && Math.abs(best.x - xRef) < 50) ? best : null;
+      };
+      
+      const codeChunk = getCol(xPositions.codigo);
+      const qtdChunk = getCol(xPositions.qtd);
+      const precoChunk = getCol(xPositions.preco);
+      const totalChunk = getCol(xPositions.total);
+
+      const designacaoChunks = band.filter(c => c.x > xPositions.codigo + 30 && c.x < xPositions.qtd).sort((a, b) => a.x - b.x);
+
+      const quantity = parseFloat(qtdChunk?.text.replace(/\./g, '').replace(',', '.') || '0');
+      const unitPrice = parseFloat(precoChunk?.text.replace(/\./g, '').replace(',', '.') || '0');
+      const totalPrice = parseFloat(totalChunk?.text.replace(/\./g, '').replace(',', '.') || '0');
+
+      // Only add if it has a valid-looking price and quantity
+      if (quantity > 0 && unitPrice > 0) {
+        items.push({
+          code: codeChunk?.text || '',
+          description: designacaoChunks.map(c => c.text).join(' '),
+          quantity,
+          unitPrice,
+          totalPrice: totalPrice || (quantity * unitPrice) // fallback
+        });
+      }
+    }
+  }
+
+  // 3. Extrair Totais
+  const findTotalLabel = (lbl: string) => {
+    const c = findLabel(lbl);
+    if (!c) return 0;
+    // value could be in the same chunk if merged, or to the right on the same line
+    const sameLine = chunksOnSameLine(c).filter(item => item.x > c.x).sort((a, b) => a.x - b.x);
+    const valueStr = sameLine.length > 0 ? sameLine[0].text : c.text;
+    const match = valueStr.match(/(\d[\d.,]*)/);
+    return match ? parseFloat(match[1].replace(/\./g, '').replace(',', '.')) : 0;
+  };
+
+  const incidence = findTotalLabel('Incidência') || findTotalLabel('Ilíquido');
+  const vatTotal = findTotalLabel('I.V.A.') || findTotalLabel('Valor IVA');
+  const totalValue = findTotalLabel('Total Final') || findTotalLabel('Total a Pagar');
+
+  const monthMap: { [key: string]: string } = {
+    'jan': '01', 'fev': '02', 'mar': '03', 'abr': '04', 'mai': '05', 'jun': '06',
+    'jul': '07', 'ago': '08', 'set': '09', 'out': '10', 'nov': '11', 'dez': '12'
+  };
+
+  const normalizeDate = (dateStr: string) => {
+    if (!dateStr) return '2000-01-01';
+    const parts = dateStr.toLowerCase().split('-');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        return `${parts[0]}-${monthMap[parts[1]] || parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+      } else if (parts[2].length === 4) {
+        return `${parts[2]}-${monthMap[parts[1]] || parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+      }
+    }
+    return dateStr;
+  };
+
+  return {
+    invoiceNumber,
+    customerName: customerName || 'Cliente Desconhecido',
+    customerNif,
+    vendor,
+    issueDate: normalizeDate(issueDateRel),
+    dueDate: normalizeDate(dueDateRel),
+    reference,
+    incidence,
+    vatTotal,
+    totalValue,
+    items
+  };
+};
+
+
+==================================================
 START FILE: .\validations\auth.validation.ts
 ==================================================
 
@@ -11595,9 +12253,6 @@ export const createClientSchema = z.object({
             .regex(/^\d{9}$/, 'NIF deve ter exatamente 9 dígitos')
             .optional()
             .or(z.literal('')),
-        email: z.string().email('Email inválido').optional().or(z.literal('')),
-        phone: z.string().optional().or(z.literal('')),
-        hasContract: z.boolean().optional(),
     })
 });
 
@@ -11611,9 +12266,6 @@ export const updateClientSchema = z.object({
         city: z.string().max(100).optional().or(z.literal('')),
         postCode: z.string().regex(/^\d{4}-\d{3}$/, 'Formato: 1234-567').optional().or(z.literal('')),
         nif: z.string().regex(/^\d{9}$/, 'Deve ter 9 dígitos').optional().or(z.literal('')),
-        email: z.string().email().optional().or(z.literal('')),
-        phone: z.string().optional().or(z.literal('')),
-        hasContract: z.boolean().optional(),
     })
 });
 

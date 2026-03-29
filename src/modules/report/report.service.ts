@@ -71,8 +71,7 @@ export class ReportService {
 
     async getReportBySchedule(scheduleId: number) {
         const report = await this.repo.findByScheduleId(scheduleId);
-        if (!report) throw new NotFoundError('Report not found');
-        return report;
+        return report ?? null; // Return null (not 404) when schedule has no report yet
     }
 
     async createReport(data: any, userId: string) {
@@ -82,7 +81,7 @@ export class ReportService {
     }
 
     async updateReport(reportId: number, data: any, userId: string) {
-        await withTransactionAs(userId, (db) => reportService.updateFullReport(db, reportId, data));
+        await withTransactionAs(userId, (db) => reportService.updateFullReport(db, reportId, data, userId));
         broadcastCalendarUpdate(supabase);
     }
 

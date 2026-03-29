@@ -3,9 +3,10 @@ import { AuthenticatedRequest } from '../../middlewares/auth.middleware';
 import { catchAsync } from '../../utils/catchAsync';
 import { BadRequestError } from '../../utils/ApiError';
 import { InventoryService } from './inventory.service';
+import { PartsOrderService } from './partsOrder.service';
 
 export class InventoryController {
-    constructor(private inventoryService: InventoryService) {}
+    constructor(private inventoryService: InventoryService, private partsOrderService: PartsOrderService) {}
 
     getInventory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const page   = Math.max(1, Number(req.query.page) || 1);
@@ -31,6 +32,11 @@ export class InventoryController {
         if (isNaN(partId)) throw new BadRequestError('ID da peça inválido');
         const result = await this.inventoryService.getPartComponents(partId);
         res.json(result);
+    });
+
+    getPartById = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const part = await this.inventoryService.getPartById(+req.params.id);
+        res.json(part);
     });
 
     getPartByReference = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
@@ -87,6 +93,44 @@ export class InventoryController {
 
     importPrices = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const result = await this.inventoryService.importPrices(req.body, req.user!.id);
+        res.json(result);
+    });
+
+    registerDirectSale = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.inventoryService.registerDirectSale(req.body, req.user!.id);
+        res.json(result);
+    });
+
+    getPartHistory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.inventoryService.getPartHistory(+req.params.id);
+        res.json(result);
+    });
+
+    getTransactions = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 100));
+        const result = await this.inventoryService.getTransactions(page, limit);
+        res.json(result);
+    });
+
+    // Orders
+    getOrders = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsOrderService.getOrders(req.query);
+        res.json(result);
+    });
+
+    getOrderById = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsOrderService.getOrderById(+req.params.id);
+        res.json(result);
+    });
+
+    createOrder = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsOrderService.createOrder(req.body, req.user!.id);
+        res.status(201).json(result);
+    });
+
+    receiveItems = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsOrderService.receiveItems(+req.params.id, req.body.items, req.user!.id);
         res.json(result);
     });
 }

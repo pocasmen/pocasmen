@@ -111,7 +111,15 @@ export const processReportAbate = (
     };
 };
 
-export async function abatePartInventory(db: PoolClient, partId: number, quantity: number, stockType: StockType = StockType.GENERAL, skipReserved: boolean = false): Promise<void> {
+export async function abatePartInventory(
+    db: PoolClient, 
+    partId: number, 
+    quantity: number, 
+    stockType: StockType = StockType.GENERAL, 
+    skipReserved: boolean = false,
+    userId: string = '',
+    reportId?: number
+): Promise<void> {
     if (stockType === StockType.CLIENT || stockType === StockType.WARRANTY) {
         logger.debug({ partId, stockType }, `[DEBUG_INV] Skipping inventory abatement for this stock type.`);
         return;
@@ -139,7 +147,7 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
         if (components && components.length > 0) {
             for (const comp of components) {
                 if (comp.child_part_id) {
-                    await abatePartInventory(db, comp.child_part_id, Number(comp.quantity) * quantity, stockType, skipReserved);
+                    await abatePartInventory(db, comp.child_part_id, Number(comp.quantity) * quantity, stockType, skipReserved, userId, reportId);
                 }
             }
         }
@@ -182,12 +190,30 @@ export async function abatePartInventory(db: PoolClient, partId: number, quantit
             skipReserved,
             old: { stock: currentPart.stock_quantity, foss: currentPart.stock_quantity_foss, reserved: currentPart.reserved_quantity },
             new: { stock: result.newStock, foss: result.newStockFoss, reserved: result.newReserved }
-        }, `[DEBUG_INV] Abating Part Inventory`);
+        }, `[DEBUG_INV] Abating Part Inventory via Ledger`);
 
-        await db.query(
-            'UPDATE parts SET stock_quantity = $1, reserved_quantity = $2, stock_quantity_foss = $3, reserved_quantity_foss = $4 WHERE id = $5',
-            [result.newStock, result.newReserved, result.newStockFoss, result.newReservedFoss, partId]
-        );
+        // Registo na Ledger (Trigger trata de abater stock físico e ordered)
+        const mappedStockType = (stockType === StockType.FOSS || stockType === StockType.CONTRACT) ? 'contract' : 'general';
+        const safeUserId = userId && userId.trim() ? userId : null; // '' is not a valid UUID
+        await db.query(`
+            INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, reference_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        `, [
+            partId,
+            safeUserId,
+            -quantity, // Abate is negative
+            mappedStockType,
+            'SERVICE_REPORT',
+            reportId ? String(reportId) : null
+        ]);
+
+        // Manter o update só das reservas (não tratadas pelo trigger da Ledger)
+        if (!skipReserved) {
+            await db.query(
+                'UPDATE parts SET reserved_quantity = $1, reserved_quantity_foss = $2 WHERE id = $3',
+                [result.newReserved, result.newReservedFoss, partId]
+            );
+        }
     }
 }
 
@@ -314,33 +340,40 @@ export async function updateComposedPart(db: PoolClient, partId: number, data: a
 }
 
 /**
- * Updates stock for a part
+ * Updates stock for a part using Ledger
  */
-export async function updatePartStock(db: PoolClient, partId: number, data: any): Promise<Part> {
-    const { quantity, fromOrder, targetStock } = data;
+export async function updatePartStock(db: PoolClient, partId: number, data: any, userId: string): Promise<Part> {
+    const { quantity, fromOrder, targetStock, notes, type: providedType, reference_id } = data;
 
-    const { rows: fetchRows } = await db.query<Part>(
-        'SELECT stock_quantity, ordered_quantity, stock_quantity_foss, ordered_quantity_foss, is_composed FROM parts WHERE id = $1 FOR UPDATE',
-        [partId]
-    );
-    if (fetchRows.length === 0) throw new Error('Peça não encontrada');
-    const currentPart = fetchRows[0];
+    // Se fromOrder, gera transação PURCHASE_ORDER
+    const type = fromOrder ? 'PURCHASE_ORDER' : (providedType || 'MANUAL_ADJUST');
+    const mappedStockType = (targetStock === StockType.FOSS || targetStock === StockType.CONTRACT) ? 'contract' : 'general';
+    const safeUserId = userId && userId.trim() ? userId : null;
 
-    if (currentPart.is_composed) {
-        await db.query('SELECT child_part_id FROM part_components WHERE parent_part_id = $1 FOR UPDATE', [partId]);
-    }
+    await db.query(`
+        INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, notes, reference_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [partId, safeUserId, quantity, mappedStockType, type, notes, reference_id || null]);
 
-    const updateResult = processStockUpdate({
-        stock: currentPart.stock_quantity || 0,
-        ordered: currentPart.ordered_quantity || 0,
-        stockFoss: currentPart.stock_quantity_foss || 0,
-        orderedFoss: currentPart.ordered_quantity_foss || 0
-    }, quantity, !!fromOrder, targetStock || StockType.GENERAL);
+    const { rows } = await db.query<Part>('SELECT * FROM parts WHERE id = $1', [partId]);
+    return enrichPart(rows[0]);
+}
 
-    const { rows } = await db.query<Part>(
-        `UPDATE parts SET stock_quantity = $1, ordered_quantity = $2, stock_quantity_foss = $3, ordered_quantity_foss = $4 WHERE id = $5 RETURNING *`,
-        [updateResult.newStock, updateResult.newOrdered, updateResult.newStockFoss, updateResult.newOrderedFoss, partId]
-    );
+/**
+ * Registers a direct sale (abating stock)
+ */
+export async function registerDirectSale(db: PoolClient, data: any, userId: string): Promise<Part> {
+    const { part_id, quantity, stock_type, notes, reference_id } = data;
+    
+    const mappedStockType = (stock_type === 'contract' || stock_type === StockType.FOSS || stock_type === StockType.CONTRACT) ? 'contract' : 'general';
+    const safeUserId = userId && userId.trim() ? userId : null;
+
+    await db.query(`
+        INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, notes, reference_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `, [part_id, safeUserId, -Math.abs(quantity), mappedStockType, 'DIRECT_SALE', notes, reference_id]);
+
+    const { rows } = await db.query<Part>('SELECT * FROM parts WHERE id = $1', [part_id]);
     return enrichPart(rows[0]);
 }
 
@@ -622,4 +655,19 @@ export async function getPartReservations(db: SupabaseClient<Database> | PoolCli
     }
 
     return reservations;
+}
+
+/**
+ * Updates ONLY the ordered quantity of a part (independent of ledger transactions)
+ * Used when placing/cancelling an order.
+ */
+export async function updatePartOrderedQuantity(db: PoolClient, partId: number, change: number, stockType: StockType): Promise<void> {
+    const isFoss = stockType === StockType.FOSS || stockType === StockType.CONTRACT;
+    const column = isFoss ? 'ordered_quantity_foss' : 'ordered_quantity';
+    
+    await db.query(`
+        UPDATE parts 
+        SET ${column} = GREATEST(0, COALESCE(${column}, 0) + $1)
+        WHERE id = $2
+    `, [change, partId]);
 }
