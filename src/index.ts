@@ -38,6 +38,7 @@ import { apiLimiter } from './middlewares/rateLimiter.middleware';
 import { withObservability } from './utils/observability';
 
 const app = express();
+app.set('trust proxy', 1);
 const port = process.env.PORT || 5001;
 
 // CORS restrito ao frontend (segurança)

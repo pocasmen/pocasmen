@@ -24,6 +24,13 @@ export class AuthService {
     }
 
     async selfRegister(data: any) {
+        // Honeypot check
+        if (data.website) {
+            logger.info({ ip: 'unknown', email: data.email }, '[SELF-REGISTER] Honeypot hit! Bot blocked.');
+            // We tell the bot it succeeded so it doesn't try other things
+            return { message: 'Pedido recebido com sucesso. Verifique o seu email.' };
+        }
+
         const { email, firstName, lastName, companyName } = data;
         const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
             data: {
@@ -85,18 +92,26 @@ export class AuthService {
         return users.filter(u => u.user_metadata?.role === UserRole.PENDING_CLIENT);
     }
 
-    async approveUser(data: any, userId: string) {
+    async approveUser(data: any, adminUserId: string) {
         const { userId: targetUserId, client_ids } = data;
 
-        const updatedUser = await withTransactionAs(userId, async (db) => {
+        // Fetch current user confirmation status from Supabase
+        const { data: { user: currentUser }, error: fetchError } = await supabase.auth.admin.getUserById(targetUserId);
+        if (fetchError || !currentUser) throw new NotFoundError('Utilizador não encontrado no sistema de autenticação.');
+
+        const isConfirmed = !!currentUser.email_confirmed_at;
+
+        const updatedUser = await withTransactionAs(adminUserId, async (db) => {
             const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
 
+            // Update local profile
             const { rowCount } = await db.query(
                 'UPDATE profiles SET client_id = $1, role = $2 WHERE id = $3',
                 [primaryClientId, UserRole.CLIENT, targetUserId]
             );
             if (rowCount === 0) throw new NotFoundError('Perfil não encontrado.');
 
+            // Update client associations
             if (Array.isArray(client_ids)) {
                 for (const id of client_ids) {
                     await db.query(`
@@ -107,23 +122,52 @@ export class AuthService {
                 }
             }
 
+            // Sync with Supabase Auth
+            // Crucial: only set must_set_password: false if they already have an active/confirmed account
             const { data: user, error: userError } = await supabase.auth.admin.updateUserById(
                 targetUserId,
-                { user_metadata: { role: UserRole.CLIENT, must_set_password: false } }
+                { user_metadata: { role: UserRole.CLIENT, must_set_password: !isConfirmed } }
             );
 
-            if (userError) throw new ApiError(500, `Failed to update user role: ${userError.message}`);
+            if (userError) throw new ApiError(500, `Erro ao atualizar função do utilizador: ${userError.message}`);
             return user;
         });
 
         if (updatedUser.user && updatedUser.user.email) {
-            const loginUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/login`;
-            logger.info({ email: updatedUser.user.email }, `[APPROVAL] Sending approval email via template`);
-            emailService.sendEmailWithTemplate(
-                updatedUser.user.email,
-                'approval',
-                { login_url: loginUrl }
-            ).catch(err => logger.error(err, "Failed to send approval email async:"));
+            const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+            const loginUrl = `${frontendUrl}/login`;
+            const firstName = updatedUser.user.user_metadata?.first_name || '';
+
+            if (!isConfirmed) {
+                // User hasn't set their password yet.
+                // We'll generate a fresh link just in case the previous one expired or was lost.
+                logger.info({ email: updatedUser.user.email }, `[APPROVAL] Account approved but password not yet set. Generating invite link.`);
+                
+                const { data: linkGen, error: linkError } = await supabase.auth.admin.generateLink({
+                    type: 'invite',
+                    email: updatedUser.user.email,
+                    options: { redirectTo: `${frontendUrl}/accept-invite` }
+                });
+
+                const setupUrl = linkGen?.properties?.action_link || `${frontendUrl}/accept-invite`;
+
+                emailService.sendEmailWithTemplate(
+                    updatedUser.user.email,
+                    'approval_pending_password',
+                    { 
+                        login_url: loginUrl, 
+                        setup_url: setupUrl,
+                        first_name: firstName 
+                    }
+                ).catch(err => logger.error(err, "Failed to send approval_pending_password email:"));
+            } else {
+                logger.info({ email: updatedUser.user.email }, `[APPROVAL] Sending regular approval email`);
+                emailService.sendEmailWithTemplate(
+                    updatedUser.user.email,
+                    'approval',
+                    { login_url: loginUrl, first_name: firstName }
+                ).catch(err => logger.error(err, "Failed to send approval email:"));
+            }
         }
 
         return updatedUser;

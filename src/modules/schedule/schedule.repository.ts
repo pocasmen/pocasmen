@@ -129,7 +129,7 @@ export class ScheduleRepository {
         const { rows } = await this.pool.query(`
             SELECT s.*,
                 c.name as "clientName",
-                CONCAT(e.brand, ' ', e.model) as "equipmentModel",
+                e.model as "equipmentModel",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -158,7 +158,7 @@ export class ScheduleRepository {
         const { rows } = await this.pool.query(`
             SELECT s.*,
                 c.name as "clientName",
-                CONCAT(e.brand, ' ', e.model) as "equipmentModel",
+                e.model as "equipmentModel",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),

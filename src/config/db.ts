@@ -8,7 +8,13 @@ import { parse } from 'pg-connection-string';
 dotenv.config();
 
 // Initializing PostgreSQL Pool
-const connectionString = process.env.DATABASE_URL || '';
+const rawConnectionString = process.env.DATABASE_URL || '';
+// Ensure sslmode=verify-full is used if any sslmode is present, to silence the pg-connection-string warning
+// while maintaining current behavior (as recommended by the warning itself).
+const connectionString = rawConnectionString.includes('sslmode=') 
+    ? rawConnectionString.replace(/sslmode=[^&]+/, 'sslmode=verify-full')
+    : rawConnectionString;
+
 const parsedConfig = parse(connectionString);
 
 const maskedUrl = connectionString.replace(/:([^@]+)@/, ':****@');

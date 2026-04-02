@@ -151,11 +151,7 @@ export const sendEmailWithTemplate = async (
             }
         }
 
-        // 3. Fallback body for approval template
-        if (!body && templateType === 'approval') {
-            subject = 'Aprovação de Conta';
-            body = '<h2>Bem-vindo à Micro Átomo!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>';
-        }
+        // 3. (Removed hardcoded fallbacks - templates should now be in DB)
 
         // 4. Replace {{variable}} placeholders
         for (const [key, value] of Object.entries(variables)) {

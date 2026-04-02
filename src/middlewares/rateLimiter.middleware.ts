@@ -36,6 +36,18 @@ export const apiLimiter = rateLimit({
     message: 'Muitos pedidos. Tente novamente em breve.',
     standardHeaders: true,
     legacyHeaders: false,
+    validate: false,
+});
+
+// Rate limiter para criação de novos registos (Self-Register)
+// Muito mais restrito para evitar bots a criar milhares de contas
+export const registrationLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hora
+    max: 3,                   // Apenas 3 registos por hora por IP
+    message: 'Muitos pedidos de registo deste endereço. Por favor, tente novamente dentro de uma hora.',
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
 });
 
 // Rate limiter para criação de recursos (POST em geral)
@@ -46,4 +58,5 @@ export const createResourceLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skipSuccessfulRequests: false,
+    validate: false,
 });

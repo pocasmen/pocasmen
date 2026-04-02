@@ -3,7 +3,7 @@ import { authenticateToken, authorizeRoles } from '../../middlewares/auth.middle
 import { validate } from '../../middlewares/validate.middleware';
 import * as authValidation from '../../validations/auth.validation';
 import { UserRole } from '../../constants/enums';
-import { authLimiter } from '../../middlewares/rateLimiter.middleware';
+import { authLimiter, registrationLimiter } from '../../middlewares/rateLimiter.middleware';
 import { technicianController } from '../technician/technician.routes';
 import { ClientRepository } from '../client/client.repository';
 import { AuthService } from './auth.service';
@@ -24,7 +24,7 @@ const controller = new AuthController(authService);
 
 router.post('/login', authLimiter, validate(authValidation.loginSchema), controller.login);
 
-router.post('/self-register', authLimiter, validate(authValidation.selfRegisterSchema), controller.selfRegister);
+router.post('/self-register', registrationLimiter, validate(authValidation.selfRegisterSchema), controller.selfRegister);
 
 router.post('/admin/invite-user',
     authenticateToken,

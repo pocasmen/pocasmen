@@ -5,8 +5,14 @@ const DEFAULT_TEMPLATES = {
     approval: {
         name: 'Aprovação Cliente',
         from: '',
-        subject: 'Aprovação de Conta - Project1',
-        body: '<h2>Bem-vindo ao Project1!</h2><p>A sua conta foi aprovada.</p><p><a href="{{login_url}}">Aceder à Plataforma</a></p>',
+        subject: '',
+        body: '',
+    },
+    approval_pending_password: {
+        name: 'Aprovação Cliente (Senha Pendente)',
+        from: '',
+        subject: '',
+        body: '',
     },
 };
 

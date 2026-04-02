@@ -15,6 +15,7 @@ export const selfRegisterSchema = z.object({
         firstName: z.string().min(1, 'Primeiro nome é obrigatório'),
         lastName: z.string().min(1, 'Último nome é obrigatório'),
         companyName: z.string().min(1, 'Nome da empresa é obrigatório'),
+        website: z.string().optional(),
     })
 });
 
