@@ -28,6 +28,7 @@ router.get('/my-stats', authenticateToken, authorizeRoles([UserRole.CLIENT]), co
 router.get('/my-equipments', authenticateToken, authorizeRoles([UserRole.CLIENT]), controller.getMyEquipments);
 router.get('/my-tickets', authenticateToken, authorizeRoles([UserRole.CLIENT]), controller.getMyTickets);
 router.get('/my-schedules', authenticateToken, authorizeRoles([UserRole.CLIENT]), controller.getMySchedules);
+router.get('/my-reports', authenticateToken, authorizeRoles([UserRole.CLIENT]), controller.getMyReports);
 
 router.post('/my-tickets',
     authenticateToken,

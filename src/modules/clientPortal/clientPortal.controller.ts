@@ -51,6 +51,12 @@ export class ClientPortalController {
         });
     });
 
+    getMyReports = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const reports = await this.service.getMyReports(req.user.id, req.query.clientId);
+        res.json(reports);
+    });
+
     createMyTicket = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         if (!req.user) throw new UnauthorizedError();
         const result = await this.service.createMyTicket(req.body, req.user.id, req.body.clientId, req.query.clientId);

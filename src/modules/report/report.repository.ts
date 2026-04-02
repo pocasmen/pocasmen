@@ -66,6 +66,21 @@ export class ReportRepository {
         return this.findById(rows[0].id, pool);
     }
 
+    async findByClientId(clientId: number): Promise<any[]> {
+        const { rows } = await pool.query(`
+            SELECT r.id, r.report_number as "reportNumber", r."serviceDate", r."scheduleId", r."serviceType",
+                   (r.signature IS NOT NULL AND r.signature != '') as "isSigned",
+                   CONCAT(e.brand, ' ', e.model) as "equipmentInfo",
+                   COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color))
+                    FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians
+            FROM reports r
+            LEFT JOIN equipments e ON r."equipmentId" = e.id
+            WHERE r."clientId" = $1 AND r.deleted_at IS NULL
+            ORDER BY r."serviceDate" DESC
+        `, [clientId]);
+        return rows;
+    }
+
     async countByClientId(clientId: number): Promise<number> {
         const { rows } = await pool.query('SELECT COUNT(*) FROM reports WHERE "clientId"=$1 AND deleted_at IS NULL', [clientId]);
         return parseInt(rows[0].count, 10);

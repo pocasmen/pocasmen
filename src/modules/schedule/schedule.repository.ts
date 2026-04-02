@@ -2,7 +2,7 @@ import { Pool, PoolClient } from 'pg';
 import { QueryRunner } from '../../types/db.types';
 
 export class ScheduleRepository {
-    constructor(private pool: Pool) {}
+    constructor(private pool: Pool) { }
 
     async findAll(options: { page?: number; limit?: number; includeCompleted?: boolean } = {}) {
         const { page = 1, limit = 200, includeCompleted = false } = options;
@@ -116,12 +116,12 @@ export class ScheduleRepository {
         `, params);
 
         return {
-            total:           parseInt(rows[0].total, 10),
-            completed:       parseInt(rows[0].completed, 10),
-            withReport:      parseInt(rows[0].withReport, 10),
-            overdue:         parseInt(rows[0].overdue, 10),
-            pendingReportsCompleted:  parseInt(rows[0].pendingCompleted, 10),
-            pendingReportsOverdue:  parseInt(rows[0].pendingOverdue, 10),
+            total: parseInt(rows[0].total, 10),
+            completed: parseInt(rows[0].completed, 10),
+            withReport: parseInt(rows[0].withReport, 10),
+            overdue: parseInt(rows[0].overdue, 10),
+            pendingReportsCompleted: parseInt(rows[0].pendingCompleted, 10),
+            pendingReportsOverdue: parseInt(rows[0].pendingOverdue, 10),
         };
     }
 
@@ -192,7 +192,8 @@ export class ScheduleRepository {
         const [countRes, dataRes] = await Promise.all([
             this.pool.query('SELECT COUNT(*) FROM schedules WHERE "clientId" = $1', [clientId]),
             this.pool.query(`
-                SELECT s.*,
+                SELECT s.*, 
+                    (EXISTS (SELECT 1 FROM reports r WHERE r."scheduleId" = s.id AND r.deleted_at IS NULL)) as "hasReport",
                     CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
                     COALESCE(
                         (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
@@ -225,14 +226,14 @@ export class ScheduleRepository {
                 COUNT(*) as total,
                 COUNT(*) FILTER (WHERE "isCompleted" = false) as pending,
                 COUNT(*) FILTER (WHERE "isCompleted" = true) as completed,
-                COUNT(*) FILTER (WHERE "isCompleted" = true AND "hasReport" = true) as "withReport"
-            FROM schedules WHERE "clientId" = $1
+                COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM reports r WHERE r."scheduleId" = s.id AND r.deleted_at IS NULL)) as "withReport"
+            FROM schedules s WHERE "clientId" = $1
         `, [clientId]);
 
         return {
-            total:      parseInt(rows[0].total, 10),
-            pending:    parseInt(rows[0].pending, 10),
-            completed:  parseInt(rows[0].completed, 10),
+            total: parseInt(rows[0].total, 10),
+            pending: parseInt(rows[0].pending, 10),
+            completed: parseInt(rows[0].completed, 10),
             withReport: parseInt(rows[0].withReport, 10),
         };
     }

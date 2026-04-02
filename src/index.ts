@@ -27,6 +27,7 @@ import systemRoutes from './modules/system/system.routes';
 import billingRoutes from './modules/billing/billing.routes';
 import taskRoutes from './modules/task/task.routes';
 import invoiceRoutes from './modules/invoice/invoice.routes';
+import { SystemController } from './modules/system/system.controller';
 
 // Services
 import { initializeTelegramBot } from './modules/telegram/telegram.routes';
@@ -84,6 +85,11 @@ app.use('/api/system', systemRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/invoices', invoiceRoutes);
+
+// Health check and status alias
+const systemController = new SystemController();
+app.get('/api/status', systemController.status);
+app.get('/api/healthcheck', systemController.healthcheck);
 
 // Global Error Handler
 import { errorHandler } from './middlewares/error.middleware';

@@ -67,6 +67,11 @@ export class ClientPortalService {
         return { data, total, page, limit };
     }
 
+    async getMyReports(userId: string, requestedClientId: any) {
+        const clientId = await this.getValidatedClientId(userId, requestedClientId);
+        return this.reportRepo.findByClientId(clientId);
+    }
+
     async createMyTicket(data: any, userId: string, requestedClientId?: any, queryClientId?: any) {
         const { equipmentId } = data;
         const clientIdParam = requestedClientId || queryClientId;
