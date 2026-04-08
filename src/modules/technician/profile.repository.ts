@@ -64,17 +64,33 @@ export class ProfileRepository {
     async update(id: string, data: Record<string, any>, db: QueryRunner): Promise<any | null> {
         const { first_name, last_name, color, telegramchatid, signature,
                 daily_notifications_enabled, notification_time, phone,
-                google_calendar_color_id, client_role } = data;
+                google_calendar_color_id, client_role, client_ids } = data;
+
+        const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
 
         const { rows, rowCount } = await db.query(`
             UPDATE profiles SET
                 first_name = $1, last_name = $2, color = $3, telegramchatid = $4,
                 signature = $5, daily_notifications_enabled = $6, notification_time = $7,
-                phone = $8, google_calendar_color_id = $9, client_role = $10
-            WHERE id = $11 RETURNING *
+                phone = $8, google_calendar_color_id = $9, client_role = $10,
+                client_id = $11
+            WHERE id = $12 RETURNING *
         `, [first_name, last_name, color, telegramchatid, signature,
             daily_notifications_enabled, notification_time, phone,
-            google_calendar_color_id, client_role, id]);
+            google_calendar_color_id, client_role, primaryClientId, id]);
+
+        if (rowCount !== 0 && client_ids !== undefined) {
+            // Update many-to-many associations
+            await db.query('DELETE FROM client_users WHERE user_id = $1', [id]);
+            if (Array.isArray(client_ids)) {
+                for (const clientId of client_ids) {
+                    await db.query(
+                        'INSERT INTO client_users (user_id, client_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                        [id, Number(clientId)]
+                    );
+                }
+            }
+        }
 
         return rows[0] ?? null;
     }
