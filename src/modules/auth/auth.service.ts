@@ -172,4 +172,22 @@ export class AuthService {
 
         return updatedUser;
     }
+
+    async resendInvite(userId: string) {
+        const { data: { user }, error: fetchError } = await supabase.auth.admin.getUserById(userId);
+        if (fetchError || !user || !user.email) throw new NotFoundError('Utilizador não encontrado.');
+
+        // Re-invite the user using Supabase's native method. 
+        // This will trigger the "Invite User" email template configured in the Supabase Dashboard.
+        const { error: inviteError } = await supabase.auth.admin.inviteUserByEmail(user.email, {
+            data: user.user_metadata, // Preserve existing metadata
+            redirectTo: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/accept-invite`
+        });
+
+        if (inviteError) {
+            throw new ApiError(500, `Erro ao reenviar convite via Supabase: ${inviteError.message}`);
+        }
+
+        return { message: 'Convite reenviado com sucesso através do sistema do Supabase.' };
+    }
 }

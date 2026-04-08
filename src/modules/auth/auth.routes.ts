@@ -52,6 +52,12 @@ router.get('/admin/impersonate/:id',
     controller.getImpersonatedUser
 );
 
+router.post('/admin/resend-invite/:userId',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]),
+    controller.resendInvite
+);
+
 router.get('/users', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]), technicianController.getExternalUsers);
 
 export default router;

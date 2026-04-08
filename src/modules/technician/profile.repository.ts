@@ -63,8 +63,8 @@ export class ProfileRepository {
 
     async update(id: string, data: Record<string, any>, db: QueryRunner): Promise<any | null> {
         const { first_name, last_name, color, telegramchatid, signature,
-                daily_notifications_enabled, notification_time, phone,
-                google_calendar_color_id, client_role, client_ids } = data;
+            daily_notifications_enabled, notification_time, phone,
+            google_calendar_color_id, client_role, client_ids } = data;
 
         const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
 

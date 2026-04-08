@@ -56,12 +56,16 @@ export class ReportService {
                 pool.query('SELECT client_id FROM profiles WHERE id = $1', [userId]),
                 pool.query('SELECT client_id FROM client_users WHERE user_id = $1', [userId]),
             ]);
+            
             const associatedIds = [
-                ...(profileRes.rows[0]?.client_id ? [profileRes.rows[0].client_id] : []),
-                ...assocRes.rows.map((r: any) => r.client_id),
+                ...(profileRes.rows[0]?.client_id ? [Number(profileRes.rows[0].client_id)] : []),
+                ...assocRes.rows.map((r: any) => Number(r.client_id)),
             ];
-            if (!associatedIds.includes(report.clientId as number)) {
-                logger.warn({ id, userId, associatedIds, reportClientId: report.clientId }, 'Permission denied');
+
+            const reportClientId = Number(report.clientId);
+
+            if (!associatedIds.includes(reportClientId)) {
+                logger.warn({ id, userId, associatedIds, reportClientId }, 'Permission denied');
                 throw new ForbiddenError('Permission denied. This report does not belong to your associated clients.');
             }
         }

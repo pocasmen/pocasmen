@@ -65,9 +65,12 @@ export class ClientRepository {
 
     /** Verifica se um utilizador tem acesso a um determinado cliente. */
     async validateAccess(userId: string, clientId: number): Promise<boolean> {
+        const idNum = Number(clientId);
         const { rowCount } = await pool.query(
-            'SELECT 1 FROM client_users WHERE user_id = $1 AND client_id = $2',
-            [userId, clientId]
+            `SELECT 1 FROM client_users WHERE user_id = $1 AND client_id = $2
+             UNION
+             SELECT 1 FROM profiles WHERE id = $1 AND client_id = $2`,
+            [userId, idNum]
         );
         return (rowCount ?? 0) > 0;
     }
@@ -75,10 +78,11 @@ export class ClientRepository {
     /** Devolve as empresas (clientes) associadas a um utilizador do portal. */
     async findMyCompanies(userId: string): Promise<Client[]> {
         const { rows } = await pool.query(
-            `SELECT c.*
+            `SELECT DISTINCT c.*
              FROM clients c
-             JOIN client_users cu ON c.id = cu.client_id
-             WHERE cu.user_id = $1
+             LEFT JOIN client_users cu ON c.id = cu.client_id
+             LEFT JOIN profiles p ON c.id = p.client_id
+             WHERE cu.user_id = $1 OR p.id = $1
              ORDER BY c.name ASC`,
             [userId]
         );

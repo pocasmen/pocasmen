@@ -39,4 +39,9 @@ export class AuthController {
         const updatedUser = await this.authService.approveUser(req.body, req.user.id);
         res.status(200).json({ message: 'User approved and associated successfully.', user: updatedUser });
     });
+
+    resendInvite = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.authService.resendInvite(req.params.userId);
+        res.status(200).json(result);
+    });
 }
