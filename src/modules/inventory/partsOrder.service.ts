@@ -13,21 +13,41 @@ export class PartsOrderService {
             const order = await this.repo.createOrder(db, { document_number, user_id: userId, notes });
             
             for (const item of items) {
-                const { partId, designation, quantity, stockType } = item;
+                let { designation, reference, quantity, stockType } = item;
+                let currentPartId = item.partId;
+
+                if (reference) reference = reference.trim().replace(/\s+/g, ' ');
+                if (designation) designation = designation.trim().replace(/\s+/g, ' ');
+
+                if (!currentPartId && reference) {
+                    const { rows: existing } = await db.query('SELECT id FROM parts WHERE reference = $1', [reference]);
+                    if (existing.length > 0) {
+                        currentPartId = existing[0].id;
+                    } else {
+                        const { rows } = await db.query(
+                            'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+                            [reference, designation || '', 0, false, 0, 0, 0, '']
+                        );
+                        currentPartId = rows[0].id;
+                    }
+                }
+
+                if (!currentPartId) continue; // Safety check
+
                 await this.repo.addOrderItem(db, {
                     order_id: order.id,
-                    part_id: partId,
-                    designation,
+                    part_id: currentPartId,
+                    designation: designation || '',
                     quantity_ordered: quantity,
                     stock_type: stockType === 'contract' ? 'contract' : 'general'
                 });
                 
                 // Increment ordered_quantity on the part
-                const stockTypeEnum = (stockType === 'contract' || stockType === StockType.FOSS || stockType === StockType.CONTRACT) 
+                const stockTypeEnum = (stockType === StockType.FOSS) 
                     ? StockType.FOSS 
                     : StockType.GENERAL;
                     
-                await inventoryService.updatePartOrderedQuantity(db, partId, quantity, stockTypeEnum);
+                await inventoryService.updatePartOrderedQuantity(db, currentPartId, quantity, stockTypeEnum);
             }
             
             return order;
@@ -66,27 +86,122 @@ export class PartsOrderService {
                 await inventoryService.updatePartStock(db, orderItem.part_id, {
                     quantity: qty,
                     fromOrder: true,
-                    targetStock: (orderItem.stock_type === 'contract' || orderItem.stock_type === StockType.FOSS) ? StockType.FOSS : StockType.GENERAL,
+                    targetStock: (orderItem.stock_type === StockType.FOSS) ? StockType.FOSS : StockType.GENERAL,
                     notes: `Receção Encomenda #${order.document_number}`,
                     type: 'PURCHASE_ORDER',
                     reference_id: String(orderId)
                 }, userId);
             }
             
-            // Check if order is fully completed
-            const updatedOrder = await this.repo.getOrderById(db, orderId);
-            const allCompleted = updatedOrder.items.every((i: any) => i.quantity_received >= i.quantity_ordered);
-            const someReceived = updatedOrder.items.some((i: any) => i.quantity_received > 0);
-            
-            let newStatus = 'PENDING';
-            if (allCompleted) newStatus = 'COMPLETED';
-            else if (someReceived) newStatus = 'PARTIAL';
-            
-            if (newStatus !== order.status) {
-                await this.repo.updateOrderStatus(db, orderId, newStatus);
-            }
+            // Re-check status
+            await this.syncOrderStatus(db, orderId);
             
             return this.repo.getOrderById(db, orderId);
+        });
+    }
+
+    async addItemsToOrder(orderId: number, items: any[], userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const order = await this.repo.getOrderById(db, orderId);
+            if (!order) throw new NotFoundError('Encomenda não encontrada');
+
+            for (const item of items) {
+                let { designation, reference, quantity, stockType } = item;
+                let currentPartId = item.partId;
+
+                if (reference) reference = reference.trim().replace(/\s+/g, ' ');
+                if (designation) designation = designation.trim().replace(/\s+/g, ' ');
+
+                if (!currentPartId && reference) {
+                    const { rows: existing } = await db.query('SELECT id FROM parts WHERE reference = $1', [reference]);
+                    if (existing.length > 0) {
+                        currentPartId = existing[0].id;
+                    } else {
+                        const { rows } = await db.query(
+                            'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
+                            [reference, designation || '', 0, false, 0, 0, 0, '']
+                        );
+                        currentPartId = rows[0].id;
+                    }
+                }
+
+                if (!currentPartId) continue; // Safety check
+
+                await this.repo.addOrderItem(db, {
+                    order_id: orderId,
+                    part_id: currentPartId,
+                    designation: designation || '',
+                    quantity_ordered: quantity,
+                    stock_type: stockType === 'contract' ? 'contract' : 'general'
+                });
+
+                // Increment ordered_quantity on the part
+                const stockTypeEnum = (stockType === StockType.FOSS) 
+                    ? StockType.FOSS 
+                    : StockType.GENERAL;
+                    
+                await inventoryService.updatePartOrderedQuantity(db, currentPartId, quantity, stockTypeEnum);
+            }
+
+            // Re-check status
+            await this.syncOrderStatus(db, orderId);
+
+            return this.repo.getOrderById(db, orderId);
+        });
+    }
+
+    private async syncOrderStatus(db: any, orderId: number) {
+        const updatedOrder = await this.repo.getOrderById(db, orderId);
+        const allCompleted = updatedOrder.items.every((i: any) => i.quantity_received >= i.quantity_ordered);
+        const someReceived = updatedOrder.items.some((i: any) => i.quantity_received > 0);
+
+        let newStatus = 'PENDING';
+        if (allCompleted) newStatus = 'COMPLETED';
+        else if (someReceived) newStatus = 'PARTIAL';
+
+        if (newStatus !== updatedOrder.status) {
+            await this.repo.updateOrderStatus(db, orderId, newStatus);
+        }
+    }
+
+    async deleteOrderItem(orderId: number, itemId: number, userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const order = await this.repo.getOrderById(db, orderId);
+            if (!order) throw new NotFoundError('Encomenda não encontrada');
+            const item = order.items.find((i: any) => i.id === itemId);
+            if (!item) throw new NotFoundError('Item de encomenda não encontrado');
+            
+            if (item.quantity_received > 0) {
+                throw new Error('Não é possível apagar um item que já tenha peças recebidas');
+            }
+
+            // Restore ordered count on the physical part
+            const stockEnum = (item.stock_type === 'general' || item.stock_type === 'contract' || item.stock_type === 'msd') ? StockType.GENERAL : StockType.FOSS;
+            await inventoryService.updatePartOrderedQuantity(db, item.part_id, -item.quantity_ordered, stockEnum);
+            
+            // Delete the item
+            await this.repo.deleteOrderItem(db, orderId, itemId);
+        });
+    }
+
+    async deleteOrder(orderId: number, userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const order = await this.repo.getOrderById(db, orderId);
+            if (!order) throw new NotFoundError('Encomenda não encontrada');
+            
+            const someReceived = order.items.some((i: any) => i.quantity_received > 0);
+            if (someReceived) {
+                throw new Error('Não é possível apagar uma encomenda que já tenha peças recebidas');
+            }
+
+            // Delete all items correctly abating stock
+            for (const item of order.items) {
+                const stockEnum = (item.stock_type === 'general' || item.stock_type === 'contract' || item.stock_type === 'msd') ? StockType.GENERAL : StockType.FOSS;
+                await inventoryService.updatePartOrderedQuantity(db, item.part_id, -item.quantity_ordered, stockEnum);
+                await this.repo.deleteOrderItem(db, orderId, item.id);
+            }
+
+            await this.repo.deleteOrder(db, orderId);
         });
     }
 }

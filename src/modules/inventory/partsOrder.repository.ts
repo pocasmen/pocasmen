@@ -85,4 +85,18 @@ export class PartsOrderRepository {
             WHERE id = $2
         `, [status, orderId]);
     }
+
+    async deleteOrderItem(db: QueryRunner, orderId: number, itemId: number): Promise<void> {
+        await db.query(`
+            DELETE FROM parts_order_items
+            WHERE id = $1 AND order_id = $2
+        `, [itemId, orderId]);
+    }
+
+    async deleteOrder(db: QueryRunner, orderId: number): Promise<void> {
+        await db.query(`
+            DELETE FROM parts_orders
+            WHERE id = $1
+        `, [orderId]);
+    }
 }

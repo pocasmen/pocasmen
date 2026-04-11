@@ -49,6 +49,9 @@ router.get('/orders', authenticateToken, authorizeRoles(STAFF), controller.getOr
 router.get('/orders/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.getOrderById);
 router.post('/orders', authenticateToken, authorizeRoles(STAFF), controller.createOrder);
 router.post('/orders/:id/receive', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.receiveItems);
+router.post('/orders/:id/items', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.addItemsToOrder);
+router.delete('/orders/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.deleteOrder);
+router.delete('/orders/:id/items/:itemId', authenticateToken, authorizeRoles(STAFF), controller.deleteOrderItem);
 
 // Generic ID routes (Place after all static paths like /orders to avoid conflict)
 router.get('/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.getPartById);

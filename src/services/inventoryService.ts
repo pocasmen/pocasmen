@@ -91,12 +91,12 @@ export const processReportAbate = (
     let newStockFoss = current.stockFoss;
     let newReservedFoss = current.reservedFoss;
 
-    if (stockType === StockType.FOSS || stockType === StockType.CONTRACT) {
+    if (stockType === StockType.FOSS) {
         newStockFoss = current.stockFoss - quantityUsed; // Permite negativo
         if (!skipReserved) {
             newReservedFoss = Math.max(0, current.reservedFoss - quantityUsed);
         }
-    } else if (stockType === StockType.GENERAL || stockType === StockType.MSD) {
+    } else if (stockType === StockType.GENERAL || stockType === StockType.MSD || stockType === StockType.CONTRACT) {
         newStock = current.stock - quantityUsed; // Permite negativo
         if (!skipReserved) {
             newReserved = Math.max(0, current.reserved - quantityUsed);
@@ -193,7 +193,7 @@ export async function abatePartInventory(
         }, `[DEBUG_INV] Abating Part Inventory via Ledger`);
 
         // Registo na Ledger (Trigger trata de abater stock físico e ordered)
-        const mappedStockType = (stockType === StockType.FOSS || stockType === StockType.CONTRACT) ? 'contract' : 'general';
+        const mappedStockType = (stockType === StockType.FOSS) ? 'contract' : 'general';
         const safeUserId = userId && userId.trim() ? userId : null; // '' is not a valid UUID
         await db.query(`
             INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, reference_id)
@@ -238,7 +238,7 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
     let sqlSet = [];
     let sqlParams = [];
 
-    if (stockType === StockType.FOSS || stockType === StockType.CONTRACT) {
+    if (stockType === StockType.FOSS) {
         const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity_foss || 0) + change);
         sqlSet.push('reserved_quantity_foss = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
@@ -248,8 +248,8 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
             old: currentPart.reserved_quantity_foss,
             change,
             new: newReservedQuantity
-        }, `[DEBUG_INV] Updating Part Reservation (FOSS/CONTRACT)`);
-    } else if (stockType === StockType.GENERAL || stockType === StockType.MSD) {
+        }, `[DEBUG_INV] Updating Part Reservation (FOSS)`);
+    } else if (stockType === StockType.GENERAL || stockType === StockType.MSD || stockType === StockType.CONTRACT) {
         const newReservedQuantity = Math.max(0, (currentPart.reserved_quantity || 0) + change);
         sqlSet.push('reserved_quantity = GREATEST(0, $1)');
         sqlParams.push(newReservedQuantity);
@@ -259,7 +259,7 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
             old: currentPart.reserved_quantity,
             change,
             new: newReservedQuantity
-        }, `[DEBUG_INV] Updating Part Reservation (GENERAL)`);
+        }, `[DEBUG_INV] Updating Part Reservation (GENERAL/MSD/CONTRACT)`);
     }
 
     sqlParams.push(partId);
@@ -347,7 +347,7 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any,
 
     // Se fromOrder, gera transação PURCHASE_ORDER
     const type = fromOrder ? 'PURCHASE_ORDER' : (providedType || 'MANUAL_ADJUST');
-    const mappedStockType = (targetStock === StockType.FOSS || targetStock === StockType.CONTRACT) ? 'contract' : 'general';
+    const mappedStockType = (targetStock === StockType.FOSS) ? 'contract' : 'general';
     const safeUserId = userId && userId.trim() ? userId : null;
 
     await db.query(`
@@ -365,7 +365,7 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any,
 export async function registerDirectSale(db: PoolClient, data: any, userId: string): Promise<Part> {
     const { part_id, quantity, stock_type, notes, reference_id } = data;
     
-    const mappedStockType = (stock_type === 'contract' || stock_type === StockType.FOSS || stock_type === StockType.CONTRACT) ? 'contract' : 'general';
+    const mappedStockType = (stock_type === StockType.FOSS) ? 'contract' : 'general';
     const safeUserId = userId && userId.trim() ? userId : null;
 
     await db.query(`
@@ -409,7 +409,7 @@ export async function syncPartStock(db: PoolClient, partId: number): Promise<Par
     let fossReserved = 0;
 
     rows.forEach((item: { total: number; stock_type: string }) => {
-        if (item.stock_type === StockType.FOSS || item.stock_type === StockType.CONTRACT) fossReserved = Number(item.total);
+        if (item.stock_type === StockType.FOSS) fossReserved = Number(item.total);
         else generalReserved += Number(item.total);
     });
 
@@ -662,7 +662,7 @@ export async function getPartReservations(db: SupabaseClient<Database> | PoolCli
  * Used when placing/cancelling an order.
  */
 export async function updatePartOrderedQuantity(db: PoolClient, partId: number, change: number, stockType: StockType): Promise<void> {
-    const isFoss = stockType === StockType.FOSS || stockType === StockType.CONTRACT;
+    const isFoss = stockType === StockType.FOSS;
     const column = isFoss ? 'ordered_quantity_foss' : 'ordered_quantity';
     
     await db.query(`

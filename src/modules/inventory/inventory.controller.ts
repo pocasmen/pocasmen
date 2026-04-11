@@ -133,4 +133,19 @@ export class InventoryController {
         const result = await this.partsOrderService.receiveItems(+req.params.id, req.body.items, req.user!.id);
         res.json(result);
     });
+
+    addItemsToOrder = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsOrderService.addItemsToOrder(+req.params.id, req.body.items, req.user!.id);
+        res.json(result);
+    });
+
+    deleteOrder = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        await this.partsOrderService.deleteOrder(+req.params.id, req.user!.id);
+        res.status(204).send();
+    });
+
+    deleteOrderItem = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        await this.partsOrderService.deleteOrderItem(+req.params.id, +req.params.itemId, req.user!.id);
+        res.status(204).send();
+    });
 }

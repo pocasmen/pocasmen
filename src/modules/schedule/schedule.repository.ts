@@ -70,7 +70,8 @@ export class ScheduleRepository {
         return rows[0] ?? null;
     }
 
-    async findTasksForCalendar() {
+    async findTasksForCalendar(includeCompleted: boolean = false) {
+        const whereClause = includeCompleted ? '1=1' : 't.completed = false OR t.created_at >= NOW() - INTERVAL \'7 days\'';
         const { rows } = await this.pool.query(`
             SELECT t.*,
                 c.name as "clientName",
@@ -87,7 +88,7 @@ export class ScheduleRepository {
             LEFT JOIN clients c ON t.client_id = c.id
             LEFT JOIN equipments e ON t.equipment_id = e.id
             LEFT JOIN profiles p ON t.user_id = p.id
-            WHERE t.completed = false OR t.created_at >= NOW() - INTERVAL '7 days'
+            WHERE ${whereClause}
             ORDER BY t.created_at DESC
         `);
         return rows;

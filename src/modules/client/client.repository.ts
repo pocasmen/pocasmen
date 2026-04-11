@@ -10,7 +10,7 @@ export class ClientRepository {
         const params: any[] = [];
 
         if (search) {
-            query += ' WHERE name ILIKE $1';
+            query += ' WHERE name ILIKE $1 OR nickname ILIKE $1';
             params.push(`%${search}%`);
         }
 
@@ -25,24 +25,24 @@ export class ClientRepository {
     }
 
     async create(data: CreateClientDto, db: QueryRunner): Promise<Client> {
-        const { name, address, city, postCode, nif } = data;
+        const { name, nickname, address, city, postCode, nif } = data;
         const { rows } = await db.query(
-            `INSERT INTO clients (name, address, city, "postCode", nif)
-             VALUES ($1, $2, $3, $4, $5)
+            `INSERT INTO clients (name, nickname, address, city, "postCode", nif)
+             VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING *`,
-            [name, address, city, postCode, nif]
+            [name, nickname, address, city, postCode, nif]
         );
         return rows[0];
     }
 
     async update(id: number, data: UpdateClientDto, db: QueryRunner): Promise<Client | null> {
-        const { name, address, city, postCode, nif } = data;
+        const { name, nickname, address, city, postCode, nif } = data;
         const { rows } = await db.query(
             `UPDATE clients
-             SET name = $1, address = $2, city = $3, "postCode" = $4, nif = $5
-             WHERE id = $6
+             SET name = $1, nickname = $2, address = $3, city = $4, "postCode" = $5, nif = $6
+             WHERE id = $7
              RETURNING *`,
-            [name, address, city, postCode, nif, id]
+            [name, nickname, address, city, postCode, nif, id]
         );
         return rows[0] ?? null;
     }

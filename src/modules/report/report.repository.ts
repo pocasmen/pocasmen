@@ -31,13 +31,13 @@ export class ReportRepository {
         const total = parseInt(countRes.rows[0].count, 10);
 
         const { rows } = await db.query(`
-            SELECT r.*, c.name as "clientName", e.brand as "equipmentBrand", e.model as "equipmentModel",
+            SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", e.brand as "equipmentBrand", e.model as "equipmentModel",
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
                 COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',pr.designation,'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'image_path',pr.image_path))
                     FROM report_parts rp JOIN parts pr ON rp."partId"=pr.id WHERE rp."reportId"=r.id),'[]') as parts
             ${joinSql} ${whereSql}
-            ORDER BY r."serviceDate" DESC
+            ORDER BY r."serviceDate" DESC, r.id DESC
             LIMIT $${params.length + 1} OFFSET $${params.length + 2}
         `, [...params, limit, offset]);
 
@@ -46,7 +46,7 @@ export class ReportRepository {
 
     async findById(id: number, db: QueryRunner): Promise<any | null> {
         const { rows } = await db.query(`
-            SELECT r.*, c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif",
+            SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif",
                 e.brand as "equipmentBrand", e.model as "equipmentModel", e."serialNumber" as "equipmentSerialNumber",
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,

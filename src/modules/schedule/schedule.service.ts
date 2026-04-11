@@ -26,7 +26,7 @@ export class ScheduleService {
             s.parts || []
         ));
 
-        const tasksRaw = await this.repo.findTasksForCalendar();
+        const tasksRaw = await this.repo.findTasksForCalendar(includeCompleted);
         tasksRaw.forEach((task: any) => {
             const tech = task.assignee_id ? { id: task.assignee_id, name: task.assignee_name, color: task.assignee_color } : null;
             const clientName = task.clientName || 'Interno';

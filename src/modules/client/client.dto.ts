@@ -1,5 +1,6 @@
 export interface CreateClientDto {
     name: string;
+    nickname?: string;
     address?: string;
     city?: string;
     postCode?: string;

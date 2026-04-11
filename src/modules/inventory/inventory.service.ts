@@ -129,7 +129,11 @@ export class InventoryService {
 
     async createPart(data: any, userId: string) {
         return withTransactionAs(userId, async (db) => {
-            const { reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes } = data;
+            let { reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes } = data;
+            
+            if (reference) reference = reference.trim().replace(/\s+/g, ' ');
+            if (designation) designation = designation.trim().replace(/\s+/g, ' ');
+            
             const { rows: existing } = await db.query('SELECT 1 FROM parts WHERE reference = $1', [reference]);
             if (existing.length > 0) throw new BadRequestError('Já existe uma peça com esta referência.');
             const { rows } = await db.query<Part>(
@@ -146,7 +150,11 @@ export class InventoryService {
 
     async updatePart(id: number, data: any, userId: string) {
         return withTransactionAs(userId, async (db) => {
-            const { reference, designation, min_stock, min_stock_foss, price, notes } = data;
+            let { reference, designation, min_stock, min_stock_foss, price, notes } = data;
+            
+            if (reference) reference = reference.trim().replace(/\s+/g, ' ');
+            if (designation) designation = designation.trim().replace(/\s+/g, ' ');
+            
             const { rows, rowCount } = await db.query<Part>(
                 'UPDATE parts SET reference = $1, designation = $2, min_stock = $3, min_stock_foss = $4, price = $5, notes = $6 WHERE id = $7 RETURNING *',
                 [reference, designation, min_stock || 0, min_stock_foss || 0, price || 0, notes || '', id]
