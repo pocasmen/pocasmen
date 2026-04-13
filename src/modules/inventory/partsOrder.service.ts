@@ -181,6 +181,9 @@ export class PartsOrderService {
             
             // Delete the item
             await this.repo.deleteOrderItem(db, orderId, itemId);
+
+            // Re-check status (e.g. if the removed item was the only non-received one, it should go to COMPLETED)
+            await this.syncOrderStatus(db, orderId);
         });
     }
 
