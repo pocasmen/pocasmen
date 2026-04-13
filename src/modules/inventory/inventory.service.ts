@@ -70,6 +70,7 @@ export class InventoryService {
             if (deps.hasSchedules)     throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em agendamentos existentes.');
             if (deps.hasReports)       throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em relatórios existentes.');
             if (deps.isComponentOfKit) throw new BadRequestError('Não é possível apagar a peça: Faz parte da composição de outros itens (Kits).');
+            if (deps.hasOrders)        throw new BadRequestError('Não é possível apagar a peça: Faz parte de uma ou mais encomendas.');
             await this.repo.delete(partId, db);
         });
     }

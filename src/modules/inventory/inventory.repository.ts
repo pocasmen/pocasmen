@@ -81,15 +81,17 @@ export class InventoryRepository {
     }
 
     async checkDependencies(id: number, db: QueryRunner) {
-        const [scheRes, repRes, compRes] = await Promise.all([
+        const [scheRes, repRes, compRes, orderRes] = await Promise.all([
             db.query('SELECT 1 FROM schedule_parts WHERE "partId" = $1 LIMIT 1', [id]),
             db.query('SELECT 1 FROM report_parts WHERE "partId" = $1 LIMIT 1', [id]),
             db.query('SELECT 1 FROM part_components WHERE child_part_id = $1 LIMIT 1', [id]),
+            db.query('SELECT 1 FROM parts_order_items WHERE part_id = $1 LIMIT 1', [id]),
         ]);
         return {
             hasSchedules: scheRes.rows.length > 0,
             hasReports: repRes.rows.length > 0,
             isComponentOfKit: compRes.rows.length > 0,
+            hasOrders: orderRes.rows.length > 0,
         };
     }
 
