@@ -126,7 +126,7 @@ export async function abatePartInventory(
     }
 
     const { rows } = await db.query<Part>(
-        'SELECT stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss, designation, is_composed FROM parts WHERE id = $1 FOR UPDATE',
+        'SELECT stock_quantity, reserved_quantity, stock_quantity_foss, reserved_quantity_foss, designation, is_composed, track_stock FROM parts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
         [partId]
     );
 
@@ -134,6 +134,11 @@ export async function abatePartInventory(
 
     if (!currentPart) {
         logger.error(`[ERROR_INV] Part not found ${partId}:`);
+        return;
+    }
+
+    if (currentPart.track_stock === false) {
+        logger.debug({ partId, designation: currentPart.designation }, `[DEBUG_INV] Skipping inventory abatement: Part is virtual (track_stock=false).`);
         return;
     }
 
@@ -224,7 +229,7 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
     }
 
     const { rows } = await db.query<Part>(
-        'SELECT reserved_quantity, reserved_quantity_foss, designation, is_composed FROM parts WHERE id = $1 FOR UPDATE',
+        'SELECT reserved_quantity, reserved_quantity_foss, designation, is_composed, track_stock FROM parts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
         [partId]
     );
 
@@ -232,6 +237,11 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
 
     if (!currentPart) {
         logger.error(`[ERROR_INV] Part not found ${partId}:`);
+        return;
+    }
+
+    if (currentPart.track_stock === false) {
+        logger.debug({ partId, designation: currentPart.designation }, `[DEBUG_INV] Skipping reservation update: Part is virtual (track_stock=false).`);
         return;
     }
 
@@ -288,13 +298,13 @@ export async function updatePartReservation(db: PoolClient, partId: number, chan
 export async function createComposedPart(db: PoolClient, data: any): Promise<any> {
     const { reference, designation, components, price, notes } = data;
 
-    const { rows: existingRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1', [reference]);
+    const { rows: existingRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1 AND deleted_at IS NULL', [reference]);
     if (existingRows.length > 0) throw new Error('Já existe uma peça com esta referência.');
 
     const { rows } = await db.query<Part>(
-        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, price, notes) 
-         VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0, $3, $4) RETURNING *`,
-        [reference, designation, price || 0, notes || '']
+        `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, price, notes, track_stock) 
+         VALUES ($1, $2, true, 0, 0, 0, 0, 0, 0, $3, $4, $5) RETURNING *`,
+        [reference, designation, price || 0, notes || '', data.track_stock !== false]
     );
     const parentPart = rows[0];
 
@@ -318,8 +328,8 @@ export async function updateComposedPart(db: PoolClient, partId: number, data: a
     const { reference, designation, components, price, notes } = data;
 
     const { rows } = await db.query<Part>(
-        'UPDATE parts SET reference = $1, designation = $2, price = $3, notes = $4 WHERE id = $5 RETURNING *',
-        [reference, designation, price || 0, notes || '', partId]
+        'UPDATE parts SET reference = $1, designation = $2, price = $3, notes = $4, track_stock = $5 WHERE id = $6 RETURNING *',
+        [reference, designation, price || 0, notes || '', data.track_stock !== false, partId]
     );
     const parentPart = rows[0];
     if (!parentPart) throw new Error('Part not found');
@@ -409,8 +419,11 @@ export async function syncPartStock(db: PoolClient, partId: number): Promise<Par
     let fossReserved = 0;
 
     rows.forEach((item: { total: number; stock_type: string }) => {
-        if (item.stock_type === StockType.FOSS) fossReserved = Number(item.total);
-        else generalReserved += Number(item.total);
+        if (item.stock_type === StockType.FOSS) {
+            fossReserved = Number(item.total);
+        } else if (item.stock_type === StockType.GENERAL || item.stock_type === StockType.MSD || item.stock_type === StockType.CONTRACT) {
+            generalReserved += Number(item.total);
+        }
     });
 
     const { rows: updatedRows } = await db.query<Part>(
@@ -466,7 +479,8 @@ export async function getEnrichedInventory(
         // Supabase Client
         let query = db
             .from('parts')
-            .select('*', { count: 'exact' });
+            .select('*', { count: 'exact' })
+            .is('deleted_at', null);
 
         if (search) {
             query = query.or(`reference.ilike.%${search}%,designation.ilike.%${search}%`);
@@ -481,8 +495,8 @@ export async function getEnrichedInventory(
         totalCount = count || 0;
     } else {
         // Pool Client (PG)
-        let countQuery = 'SELECT COUNT(*) FROM parts WHERE 1=1';
-        let dataQuery = 'SELECT * FROM parts WHERE 1=1';
+        let countQuery = 'SELECT COUNT(*) FROM parts WHERE deleted_at IS NULL';
+        let dataQuery = 'SELECT * FROM parts WHERE deleted_at IS NULL';
         let params: any[] = [];
         let dataParams: any[] = [];
 
@@ -492,6 +506,17 @@ export async function getEnrichedInventory(
             dataQuery += ` AND ${searchCondition}`;
             params.push(`%${search}%`);
             dataParams.push(`%${search}%`);
+        }
+
+        if (view === 'virtual') {
+            countQuery += ` AND track_stock = false`;
+            dataQuery += ` AND track_stock = false`;
+        } else if (view === 'all_search') {
+            // No extra filter on track_stock, returns both
+        } else {
+            // Default views (all, low_stock, reserved) show physical items only
+            countQuery += ` AND track_stock = true`;
+            dataQuery += ` AND track_stock = true`;
         }
 
         if (view === 'low_stock') {

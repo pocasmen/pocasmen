@@ -46,6 +46,10 @@ Thumbs.db
 uploads/
 tmp/
 
+# Database Backups and SQL scripts
+*.sql
+!migrations/*.sql
+
 # Tools & Diagnostic Scripts
 scripts/
 services/__tests__/

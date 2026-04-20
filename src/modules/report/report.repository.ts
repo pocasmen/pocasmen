@@ -32,11 +32,16 @@ export class ReportRepository {
 
         const { rows } = await db.query(`
             SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", e.brand as "equipmentBrand", e.model as "equipmentModel",
+                COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
-                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',pr.designation,'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'image_path',pr.image_path))
+                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',COALESCE(NULLIF(rp.designation, ''), pr.designation),'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'image_path',pr.image_path,'track_stock',pr.track_stock))
                     FROM report_parts rp JOIN parts pr ON rp."partId"=pr.id WHERE rp."reportId"=r.id),'[]') as parts
-            ${joinSql} ${whereSql}
+            FROM reports r 
+            LEFT JOIN clients c ON r."clientId" = c.id 
+            LEFT JOIN equipments e ON r."equipmentId" = e.id
+            LEFT JOIN billing_tasks bt ON bt.report_id = r.id
+            ${whereSql}
             ORDER BY r."serviceDate" DESC, r.id DESC
             LIMIT $${params.length + 1} OFFSET $${params.length + 2}
         `, [...params, limit, offset]);
@@ -48,13 +53,15 @@ export class ReportRepository {
         const { rows } = await db.query(`
             SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif",
                 e.brand as "equipmentBrand", e.model as "equipmentModel", e."serialNumber" as "equipmentSerialNumber",
+                COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
-                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',pr.designation,'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'stock_quantity',pr.stock_quantity,'reserved_quantity',pr.reserved_quantity,'stock_quantity_foss',pr.stock_quantity_foss,'reserved_quantity_foss',pr.reserved_quantity_foss,'image_path',pr.image_path))
+                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',COALESCE(NULLIF(rp.designation, ''), pr.designation),'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'stock_quantity',pr.stock_quantity,'reserved_quantity',pr.reserved_quantity,'stock_quantity_foss',pr.stock_quantity_foss,'reserved_quantity_foss',pr.reserved_quantity_foss,'image_path',pr.image_path,'track_stock',pr.track_stock))
                     FROM report_parts rp JOIN parts pr ON rp."partId"=pr.id WHERE rp."reportId"=r.id),'[]') as parts
             FROM reports r
             LEFT JOIN clients c ON r."clientId"=c.id
             LEFT JOIN equipments e ON r."equipmentId"=e.id
+            LEFT JOIN billing_tasks bt ON bt.report_id = r.id
             WHERE r.id=$1 AND r.deleted_at IS NULL
         `, [id]);
         return rows[0] ?? null;

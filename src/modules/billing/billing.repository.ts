@@ -17,7 +17,7 @@ export class BillingRepository {
             ${whereSql} GROUP BY bt.status
         `, params);
 
-        const stats = { total: 0, report_issued: 0, pending_completion: 0, ready_for_billing: 0, billed: 0 };
+        const stats = { total: 0, report_issued: 0, pending_completion: 0, ready_for_billing: 0, billed: 0, needs_review: 0 };
         rows.forEach((row: any) => {
             const count = parseInt(row.count, 10);
             stats.total += count;
@@ -25,6 +25,7 @@ export class BillingRepository {
             else if (row.status === 'pending_completion') stats.pending_completion = count;
             else if (row.status === 'ready_for_billing') stats.ready_for_billing = count;
             else if (row.status === 'billed') stats.billed = count;
+            else if (row.status === 'needs_review') stats.needs_review = count;
         });
         return stats;
     }

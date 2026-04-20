@@ -61,6 +61,7 @@ export class ScheduleService {
         if (technicianIds?.length > 0) {
             await scheduleService.sendScheduleNotificationToTechnicians(supabase, scheduleId, technicianIds);
         }
+        await scheduleService.sendScheduleNotificationToClients(supabase, scheduleId);
 
         broadcastCalendarUpdate(supabase, scheduleId);
 
@@ -89,6 +90,9 @@ export class ScheduleService {
 
         if (technicianIds?.length > 0 && !isCompleted && result.hasSignificantChanges) {
             await scheduleService.sendScheduleNotificationToTechnicians(supabase, scheduleId, technicianIds, true);
+        }
+        if (result.hasSignificantChanges && !isCompleted) {
+            await scheduleService.sendScheduleNotificationToClients(supabase, scheduleId, true);
         }
 
         broadcastCalendarUpdate(supabase, scheduleId);

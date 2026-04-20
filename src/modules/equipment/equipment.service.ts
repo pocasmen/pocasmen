@@ -44,10 +44,32 @@ export class EquipmentService {
         });
     }
 
-    async getEquipmentHistory(equipmentId: number) {
+    async getEquipmentHistory(equipmentId: number, requestingClientId?: number) {
         const equipment = await this.repo.findById(equipmentId, pool);
         if (!equipment) throw new NotFoundError('Equipamento não encontrado.');
-        const history = await this.repo.getHistory(equipmentId, pool);
+        
+        const history = await this.repo.getHistory(equipmentId, pool, requestingClientId);
         return { details: equipment, ...history };
+    }
+
+    async getOwnershipHistory(id: number) {
+        return this.repo.getOwnershipHistory(id, pool);
+    }
+
+    async transferEquipment(id: number, data: { newClientId: number, transferDate: string }, userId: string) {
+        const { newClientId, transferDate } = data;
+        return withTransactionAs(userId, async (db) => {
+            const equipment = await this.repo.findById(id, db);
+            if (!equipment) throw new NotFoundError('Equipamento não encontrado.');
+
+            await this.repo.transferOwnership(id, newClientId, transferDate, db);
+            return this.repo.findById(id, db);
+        });
+    }
+
+    async updateOwnershipPeriod(periodId: number, data: { start_date?: string, end_date?: string }, userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            await this.repo.updateOwnershipPeriod(periodId, data, db);
+        });
     }
 }

@@ -18,3 +18,18 @@ export const broadcastCalendarUpdate = (supabase: SupabaseClient, scheduleId?: n
         }
     });
 };
+export const broadcastTicketUpdate = (supabase: SupabaseClient, ticketId?: number | string) => {
+    const channel = supabase.channel('ticket_updates');
+    channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            channel.send({
+                type: 'broadcast',
+                event: 'ticket_changed',
+                payload: { ticketId, timestamp: new Date().toISOString() }
+            }).then(() => {
+                logger.debug({ ticketId }, `[DEBUG:BROADCAST] Ticket update broadcasted`);
+                setTimeout(() => supabase.removeChannel(channel), 1000);
+            });
+        }
+    });
+};

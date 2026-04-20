@@ -67,10 +67,16 @@ export class InventoryService {
     async deletePart(partId: number, userId: string) {
         return withTransactionAs(userId, async (db) => {
             const deps = await this.repo.checkDependencies(partId, db);
-            if (deps.hasSchedules)     throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em agendamentos existentes.');
-            if (deps.hasReports)       throw new BadRequestError('Não é possível apagar a peça: Está a ser utilizada em relatórios existentes.');
-            if (deps.isComponentOfKit) throw new BadRequestError('Não é possível apagar a peça: Faz parte da composição de outros itens (Kits).');
-            if (deps.hasOrders)        throw new BadRequestError('Não é possível apagar a peça: Faz parte de uma ou mais encomendas.');
+            
+            // Se estiver em agendamentos, relatórios ou encomendas, NÃO podemos apagar fisicamente.
+            // Nestes casos, usamos soft delete para manter a integridade referencial e o histórico.
+            if (deps.hasSchedules || deps.hasReports || deps.isComponentOfKit || deps.hasOrders) {
+                await this.repo.softDelete(partId, userId, db);
+                return;
+            }
+
+            // Se apenas tiver transações (movimentos de stock manuais, etc.) ou nada, 
+            // apagamos completamente conforme solicitado, incluindo as transações.
             await this.repo.delete(partId, db);
         });
     }
@@ -130,7 +136,7 @@ export class InventoryService {
 
     async createPart(data: any, userId: string) {
         return withTransactionAs(userId, async (db) => {
-            let { reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes } = data;
+            let { reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes, track_stock } = data;
             
             if (reference) reference = reference.trim().replace(/\s+/g, ' ');
             if (designation) designation = designation.trim().replace(/\s+/g, ' ');
@@ -138,8 +144,8 @@ export class InventoryService {
             const { rows: existing } = await db.query('SELECT 1 FROM parts WHERE reference = $1', [reference]);
             if (existing.length > 0) throw new BadRequestError('Já existe uma peça com esta referência.');
             const { rows } = await db.query<Part>(
-                'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-                [reference, designation, stock_quantity || 0, !!is_composed, min_stock || 0, min_stock_foss || 0, price || 0, notes || '']
+                'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes, track_stock) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+                [reference, designation, stock_quantity || 0, !!is_composed, min_stock || 0, min_stock_foss || 0, price || 0, notes || '', track_stock !== false]
             );
             return rows[0];
         });
@@ -151,14 +157,14 @@ export class InventoryService {
 
     async updatePart(id: number, data: any, userId: string) {
         return withTransactionAs(userId, async (db) => {
-            let { reference, designation, min_stock, min_stock_foss, price, notes } = data;
+            let { reference, designation, min_stock, min_stock_foss, price, notes, track_stock } = data;
             
             if (reference) reference = reference.trim().replace(/\s+/g, ' ');
             if (designation) designation = designation.trim().replace(/\s+/g, ' ');
             
             const { rows, rowCount } = await db.query<Part>(
-                'UPDATE parts SET reference = $1, designation = $2, min_stock = $3, min_stock_foss = $4, price = $5, notes = $6 WHERE id = $7 RETURNING *',
-                [reference, designation, min_stock || 0, min_stock_foss || 0, price || 0, notes || '', id]
+                'UPDATE parts SET reference = $1, designation = $2, min_stock = $3, min_stock_foss = $4, price = $5, notes = $6, track_stock = $7 WHERE id = $8 RETURNING *',
+                [reference, designation, min_stock || 0, min_stock_foss || 0, price || 0, notes || '', track_stock !== false, id]
             );
             if (rowCount === 0) throw new NotFoundError('Peça não encontrada.');
             return inventoryService.enrichPart(rows[0]);

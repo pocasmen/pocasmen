@@ -5,7 +5,7 @@ import { CreateEquipmentDto, UpdateEquipmentDto } from './equipment.dto';
 
 export class EquipmentRepository {
     private readonly SELECT_WITH_CLIENT = `
-        SELECT e.id, e.brand, e.model, e."serialNumber", e."additionalInfo", e."clientId", c.name as "clientName"
+        SELECT e.id, e.brand, e.model, e."serialNumber", e."additionalInfo", e."clientId", e.status, c.name as "clientName"
         FROM equipments e
         LEFT JOIN clients c ON e."clientId" = c.id
     `;
@@ -51,20 +51,43 @@ export class EquipmentRepository {
     }
 
     async create(data: CreateEquipmentDto, db: QueryRunner): Promise<Equipment> {
-        const { brand, model, serialNumber, clientId, additionalInfo } = data;
+        const { brand, model, serialNumber, clientId, additionalInfo, status } = data;
         const { rows } = await db.query(
-            'INSERT INTO equipments (brand, model, "serialNumber", "clientId", "additionalInfo") VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [brand, model, serialNumber, clientId, additionalInfo]
+            'INSERT INTO equipments (brand, model, "serialNumber", "clientId", "additionalInfo", status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [brand, model, serialNumber, clientId, additionalInfo, status || 'active']
         );
         return rows[0];
     }
 
     async update(id: number, data: UpdateEquipmentDto, db: QueryRunner): Promise<Equipment | null> {
-        const { brand, model, serialNumber, clientId, additionalInfo } = data;
-        const { rows } = await db.query(
-            'UPDATE equipments SET brand=$1, model=$2, "serialNumber"=$3, "clientId"=$4, "additionalInfo"=$5 WHERE id=$6 RETURNING *',
-            [brand, model, serialNumber, clientId, additionalInfo, id]
-        );
+        const fields: string[] = [];
+        const params: any[] = [];
+        let index = 1;
+
+        // Map DTO keys to DB column names
+        const fieldMap: Record<string, string> = {
+            brand: 'brand',
+            model: 'model',
+            serialNumber: '"serialNumber"',
+            clientId: '"clientId"',
+            additionalInfo: '"additionalInfo"',
+            status: 'status'
+        };
+
+        for (const [key, value] of Object.entries(data)) {
+            if (value !== undefined && fieldMap[key]) {
+                fields.push(`${fieldMap[key]} = $${index}`);
+                params.push(value);
+                index++;
+            }
+        }
+
+        if (fields.length === 0) return this.findById(id, db);
+
+        const query = `UPDATE equipments SET ${fields.join(', ')} WHERE id = $${index} RETURNING *`;
+        params.push(id);
+
+        const { rows } = await db.query(query, params);
         return rows[0] ?? null;
     }
 
@@ -73,20 +96,55 @@ export class EquipmentRepository {
         return (rowCount ?? 0) > 0;
     }
 
-    async getHistory(id: number, db: QueryRunner) {
+    async getHistory(id: number, db: QueryRunner, requestingClientId?: number) {
+        // Filtro de propriedade: se houver um client_id a pedir, só vê o que aconteceu nos seus períodos de posse
+        const ownershipFilter = requestingClientId ? `
+            AND EXISTS (
+                SELECT 1 FROM equipment_ownership eo 
+                WHERE eo.equipment_id = $1 
+                AND eo.client_id = $2
+                AND $3 >= eo.start_date
+                AND (eo.end_date IS NULL OR $3 <= eo.end_date)
+            )
+        ` : '';
+
+        const params = (dateField: string) => requestingClientId ? [id, requestingClientId, dateField] : [id];
+
+        // Nota: A lógica de parâmetros SQL dinâmica aqui é complexa devido aos diferentes campos de data.
+        // Vamos usar sub-queries ou filtragem manual se for mais legível, mas para manter performance:
+        
+        const ticketsQuery = `
+            SELECT * FROM tickets 
+            WHERE "equipmentId" = $1
+            ${requestingClientId ? `AND EXISTS (SELECT 1 FROM equipment_ownership eo WHERE eo.equipment_id = $1 AND eo.client_id = $2 AND tickets."createdAt" >= eo.start_date AND (eo.end_date IS NULL OR tickets."createdAt" <= eo.end_date))` : ''}
+            ORDER BY "createdAt" DESC
+        `;
+
+        const schedulesQuery = `
+            SELECT s.id, s.title, s."startDate", s."isCompleted",
+                json_agg(CONCAT(p.first_name, ' ', p.last_name)) as technicians
+            FROM schedules s
+            LEFT JOIN schedule_technicians st ON s.id = st."scheduleId"
+            LEFT JOIN profiles p ON st."technicianId" = p.id
+            WHERE s."equipmentId" = $1
+            ${requestingClientId ? `AND EXISTS (SELECT 1 FROM equipment_ownership eo WHERE eo.equipment_id = $1 AND eo.client_id = $2 AND s."startDate" >= eo.start_date AND (eo.end_date IS NULL OR s."startDate" <= eo.end_date))` : ''}
+            GROUP BY s.id
+            ORDER BY s."startDate" DESC
+        `;
+
+        const reportsQuery = `
+            SELECT * FROM reports 
+            WHERE "equipmentId" = $1 AND deleted_at IS NULL
+            ${requestingClientId ? `AND EXISTS (SELECT 1 FROM equipment_ownership eo WHERE eo.equipment_id = $1 AND eo.client_id = $2 AND reports."serviceDate" >= eo.start_date AND (eo.end_date IS NULL OR reports."serviceDate" <= eo.end_date))` : ''}
+            ORDER BY "serviceDate" DESC
+        `;
+
+        const commonParams = requestingClientId ? [id, requestingClientId] : [id];
+
         const [ticketsRes, schedulesRes, reportsRes] = await Promise.all([
-            db.query('SELECT * FROM tickets WHERE "equipmentId" = $1 ORDER BY "createdAt" DESC', [id]),
-            db.query(`
-                SELECT s.id, s.title, s."startDate", s."isCompleted",
-                    json_agg(CONCAT(p.first_name, ' ', p.last_name)) as technicians
-                FROM schedules s
-                LEFT JOIN schedule_technicians st ON s.id = st."scheduleId"
-                LEFT JOIN profiles p ON st."technicianId" = p.id
-                WHERE s."equipmentId" = $1
-                GROUP BY s.id
-                ORDER BY s."startDate" DESC
-            `, [id]),
-            db.query('SELECT * FROM reports WHERE "equipmentId" = $1 AND deleted_at IS NULL ORDER BY "serviceDate" DESC', [id]),
+            db.query(ticketsQuery, commonParams),
+            db.query(schedulesQuery, commonParams),
+            db.query(reportsQuery, commonParams),
         ]);
 
         return {
@@ -94,6 +152,46 @@ export class EquipmentRepository {
             schedules: schedulesRes.rows,
             reports: reportsRes.rows,
         };
+    }
+
+    async getOwnershipHistory(id: number, db: QueryRunner) {
+        const query = `
+            SELECT eo.*, c.name as "clientName"
+            FROM equipment_ownership eo
+            JOIN clients c ON eo.client_id = c.id
+            WHERE eo.equipment_id = $1
+            ORDER BY eo.start_date DESC
+        `;
+        const { rows } = await db.query(query, [id]);
+        return rows;
+    }
+
+    async transferOwnership(id: number, newClientId: number, transferDate: string, db: QueryRunner) {
+        // 1. Fechar o período atual
+        await db.query(
+            'UPDATE equipment_ownership SET end_date = $1 WHERE equipment_id = $2 AND end_date IS NULL',
+            [transferDate, id]
+        );
+
+        // 2. Abrir o novo período
+        await db.query(
+            'INSERT INTO equipment_ownership (equipment_id, client_id, start_date) VALUES ($1, $2, $3)',
+            [id, newClientId, transferDate]
+        );
+
+        // 3. Atualizar o clientId no equipamento (atalho para compatibilidade)
+        await db.query(
+            'UPDATE equipments SET "clientId" = $1 WHERE id = $2',
+            [newClientId, id]
+        );
+    }
+
+    async updateOwnershipPeriod(periodId: number, data: { start_date?: string, end_date?: string }, db: QueryRunner) {
+        const { start_date, end_date } = data;
+        await db.query(
+            'UPDATE equipment_ownership SET start_date = COALESCE($1, start_date), end_date = $2 WHERE id = $3',
+            [start_date, end_date, periodId]
+        );
     }
 
     /** Leitura simples — usa pool diretamente (sem transação). */

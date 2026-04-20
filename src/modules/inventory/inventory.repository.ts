@@ -4,12 +4,12 @@ import { Part } from '../../types/supabase';
 
 export class InventoryRepository {
     async findById(id: number, db: QueryRunner): Promise<Part | null> {
-        const { rows } = await db.query('SELECT * FROM parts WHERE id = $1', [id]);
+        const { rows } = await db.query('SELECT * FROM parts WHERE id = $1 AND deleted_at IS NULL', [id]);
         return rows[0] ?? null;
     }
 
     async findByReference(reference: string): Promise<Part | null> {
-        const { rows } = await pool.query('SELECT * FROM parts WHERE reference = $1', [reference]);
+        const { rows } = await pool.query('SELECT * FROM parts WHERE reference = $1 AND deleted_at IS NULL', [reference]);
         return rows[0] ?? null;
     }
 
@@ -17,15 +17,15 @@ export class InventoryRepository {
         const { search, page = 1, limit = 100 } = filters;
         const offset = (page - 1) * limit;
 
-        let countQuery = 'SELECT COUNT(*) FROM parts';
-        let dataQuery = 'SELECT * FROM parts ORDER BY designation ASC LIMIT $1 OFFSET $2';
+        let countQuery = 'SELECT COUNT(*) FROM parts WHERE deleted_at IS NULL';
+        let dataQuery = 'SELECT * FROM parts WHERE deleted_at IS NULL ORDER BY designation ASC LIMIT $1 OFFSET $2';
         let countParams: any[] = [];
         let dataParams: any[] = [limit, offset];
 
         if (search) {
-            countQuery = 'SELECT COUNT(*) FROM parts WHERE reference ILIKE $1 OR designation ILIKE $1';
+            countQuery = 'SELECT COUNT(*) FROM parts WHERE deleted_at IS NULL AND (reference ILIKE $1 OR designation ILIKE $1)';
             countParams = [`%${search}%`];
-            dataQuery = 'SELECT * FROM parts WHERE reference ILIKE $3 OR designation ILIKE $3 ORDER BY designation ASC LIMIT $1 OFFSET $2';
+            dataQuery = 'SELECT * FROM parts WHERE deleted_at IS NULL AND (reference ILIKE $3 OR designation ILIKE $3) ORDER BY designation ASC LIMIT $1 OFFSET $2';
             dataParams = [limit, offset, `%${search}%`];
         }
 
@@ -81,23 +81,34 @@ export class InventoryRepository {
     }
 
     async checkDependencies(id: number, db: QueryRunner) {
-        const [scheRes, repRes, compRes, orderRes] = await Promise.all([
+        const [scheRes, repRes, compRes, orderRes, transRes] = await Promise.all([
             db.query('SELECT 1 FROM schedule_parts WHERE "partId" = $1 LIMIT 1', [id]),
             db.query('SELECT 1 FROM report_parts WHERE "partId" = $1 LIMIT 1', [id]),
             db.query('SELECT 1 FROM part_components WHERE child_part_id = $1 LIMIT 1', [id]),
             db.query('SELECT 1 FROM parts_order_items WHERE part_id = $1 LIMIT 1', [id]),
+            db.query('SELECT 1 FROM parts_transactions WHERE part_id = $1 LIMIT 1', [id]),
         ]);
         return {
             hasSchedules: scheRes.rows.length > 0,
             hasReports: repRes.rows.length > 0,
             isComponentOfKit: compRes.rows.length > 0,
             hasOrders: orderRes.rows.length > 0,
+            hasTransactions: transRes.rows.length > 0,
         };
     }
 
     async delete(id: number, db: QueryRunner): Promise<boolean> {
         await db.query('DELETE FROM part_components WHERE parent_part_id = $1', [id]);
+        await db.query('DELETE FROM parts_transactions WHERE part_id = $1', [id]);
         const { rowCount } = await db.query('DELETE FROM parts WHERE id = $1', [id]);
+        return (rowCount ?? 0) > 0;
+    }
+
+    async softDelete(id: number, userId: string, db: QueryRunner): Promise<boolean> {
+        const { rowCount } = await db.query(
+            'UPDATE parts SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2',
+            [userId, id]
+        );
         return (rowCount ?? 0) > 0;
     }
 

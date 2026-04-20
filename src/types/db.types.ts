@@ -236,6 +236,7 @@ export type Database = {
           serialNumber: string | null
           clientId: number
           additionalInfo: string | null
+          status: string | null
         }
         Insert: {
           id?: number
@@ -244,6 +245,7 @@ export type Database = {
           serialNumber?: string | null
           clientId: number
           additionalInfo?: string | null
+          status?: string | null
         }
         Update: {
           id?: number
@@ -252,6 +254,7 @@ export type Database = {
           serialNumber?: string | null
           clientId?: number
           additionalInfo?: string | null
+          status?: string | null
         }
         Relationships: [
           {
@@ -260,7 +263,49 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "clients"
             referencedColumns: ["id"]
+          }
+        ]
+      }
+      equipment_ownership: {
+        Row: {
+          id: number
+          equipment_id: number
+          client_id: number
+          start_date: string
+          end_date: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: number
+          equipment_id: number
+          client_id: number
+          start_date: string
+          end_date?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: number
+          equipment_id?: number
+          client_id?: number
+          start_date?: string
+          end_date?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "equipment_ownership_equipment_id_fkey"
+            columns: ["equipment_id"]
+            isOneToOne: false
+            referencedRelation: "equipments"
+            referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "equipment_ownership_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          }
         ]
       }
       invoice_items: {
@@ -501,6 +546,7 @@ export type Database = {
           image_path: string | null
           price: number | null
           notes: string | null
+          track_stock: boolean | null
         }
         Insert: {
           id?: number
@@ -520,6 +566,7 @@ export type Database = {
           image_path?: string | null
           price?: number | null
           notes?: string | null
+          track_stock?: boolean | null
         }
         Update: {
           id?: number
@@ -539,6 +586,7 @@ export type Database = {
           image_path?: string | null
           price?: number | null
           notes?: string | null
+          track_stock?: boolean | null
         }
         Relationships: []
       }
@@ -748,6 +796,7 @@ export type Database = {
           quantity: number
           stock_type: string | null
           is_applied: boolean | null
+          designation: string | null
         }
         Insert: {
           scheduleId: number
@@ -755,6 +804,7 @@ export type Database = {
           quantity: number
           stock_type?: string | null
           is_applied?: boolean | null
+          designation?: string | null
         }
         Update: {
           scheduleId?: number
@@ -762,6 +812,7 @@ export type Database = {
           quantity?: number
           stock_type?: string | null
           is_applied?: boolean | null
+          designation?: string | null
         }
         Relationships: [
           {
@@ -1211,18 +1262,21 @@ export type Database = {
           partId: number
           quantity: number
           stock_type: string | null
+          designation: string | null
         }
         Insert: {
           reportId: number
           partId: number
           quantity: number
           stock_type?: string | null
+          designation?: string | null
         }
         Update: {
           reportId?: number
           partId?: number
           quantity?: number
           stock_type?: string | null
+          designation?: string | null
         }
         Relationships: [
           {

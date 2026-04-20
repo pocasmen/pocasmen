@@ -5,6 +5,8 @@ import * as billingService from './billingService';
 import { logger } from '../utils/logger';
 import { StockType, BillingStatus } from '../types';
 import { Report, Part, Schedule, ReportPart, BillingTask } from '../types/supabase';
+import { notifyUsers } from './notificationService';
+import { pool } from '../config/db';
 
 /**
  * Generates a report number in the format YYYYXXXX
@@ -51,13 +53,16 @@ async function syncReportTechnicians(db: PoolClient, reportId: number, technicia
 
 async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: any[], isUpdate: boolean = false, oldParts: any[] = [], userId: string = '') {
     // 1. Summarize NEW parts
-    const finalMap = new Map<string, { partId: number; quantity: number; stockType: StockType }>();
+    const finalMap = new Map<string, { partId: number; quantity: number; stockType: StockType; designation: string }>();
     if (Array.isArray(parts)) {
         for (const p of parts) {
             let pId = p.id;
             if (!pId && p.reference) {
-                const { rows } = await db.query('SELECT id FROM parts WHERE reference = $1', [p.reference]);
-                if (rows.length > 0) pId = rows[0].id;
+                const { rows } = await db.query('SELECT id, track_stock FROM parts WHERE reference = $1', [p.reference]);
+                if (rows.length > 0) {
+                    pId = rows[0].id;
+                    p.track_stock = rows[0].track_stock;
+                }
             }
             if (!pId) continue;
 
@@ -66,13 +71,17 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
 
             // Handle different property names from frontend
             const st = (p.stockType || p.stock_type || StockType.GENERAL) as StockType;
-            const key = `${pId}_${st}`;
+            const designation = p.designation || '';
+            
+            // If it's a virtual part, we might NOT want to merge them if they have different designations.
+            // Even if we merge, we need the designation in the key to distinguish variations.
+            const key = `${pId}_${st}_${designation}`;
 
             const existing = finalMap.get(key);
             if (existing) {
                 existing.quantity += qty;
             } else {
-                finalMap.set(key, { partId: pId, quantity: qty, stockType: st });
+                finalMap.set(key, { partId: pId, quantity: qty, stockType: st, designation });
             }
         }
     }
@@ -80,7 +89,7 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
     // 2. Summarize OLD parts
     const oldMap = new Map<string, number>();
     for (const op of oldParts) {
-        const key = `${op.partId}_${op.stock_type || StockType.GENERAL}`;
+        const key = `${op.partId}_${op.stock_type || StockType.GENERAL}_${op.designation || ''}`;
         oldMap.set(key, Number(op.quantity));
     }
 
@@ -93,8 +102,9 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
         const delta = newQty - oldQty;
 
         if (delta !== 0) {
-            const [pIdStr, st] = key.split('_');
-            const pId = parseInt(pIdStr, 10);
+            const parts = key.split('_');
+            const pId = parseInt(parts[0], 10);
+            const st = parts[1];
             
             // Note: delta > 0 means more parts used (decrement stock)
             // delta < 0 means parts removed (increment stock)
@@ -107,10 +117,46 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
     await db.query('DELETE FROM report_parts WHERE "reportId" = $1', [reportId]);
     for (const part of finalMap.values()) {
         await db.query(
-            'INSERT INTO report_parts ("reportId", "partId", "quantity", "stock_type") VALUES ($1, $2, $3, $4)',
-            [reportId, part.partId, part.quantity, part.stockType]
+            'INSERT INTO report_parts ("reportId", "partId", "quantity", "stock_type", "designation") VALUES ($1, $2, $3, $4, $5)',
+            [reportId, part.partId, part.quantity, part.stockType, part.designation]
         );
     }
+}
+
+/**
+ * Detects if incoming parts list differs from current DB parts in billing-affecting ways:
+ * quantity change, stock_type change, addition or removal of parts.
+ */
+function detectBillingPartsChange(oldParts: ReportPart[], newPartsRaw: any[]): boolean {
+    // Build old map: key = partId_stockType_designation → quantity
+    const oldMap = new Map<string, number>();
+    for (const op of oldParts) {
+        const key = `${op.partId}_${op.stock_type || StockType.GENERAL}_${op.designation || ''}`;
+        oldMap.set(key, Number(op.quantity));
+    }
+
+    // Build new map from incoming data
+    const newMap = new Map<string, number>();
+    if (Array.isArray(newPartsRaw)) {
+        for (const p of newPartsRaw) {
+            const pId = p.id || p.partId;
+            if (!pId) continue;
+            const qty = Number(p.quantity) || 0;
+            if (qty <= 0) continue;
+            const st = p.stockType || p.stock_type || StockType.GENERAL;
+            const designation = p.designation || '';
+            const key = `${pId}_${st}_${designation}`;
+            newMap.set(key, (newMap.get(key) || 0) + qty);
+        }
+    }
+
+    if (oldMap.size !== newMap.size) return true;
+
+    for (const [key, oldQty] of oldMap) {
+        const newQty = newMap.get(key);
+        if (newQty === undefined || newQty !== oldQty) return true;
+    }
+    return false;
 }
 
 /**
@@ -164,7 +210,60 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
 
     await billingService.createBillingTask(db, reportId, isBillingPending === true);
 
+    // Notificar clientes
+    setImmediate(async () => {
+        try {
+            await sendReportNotificationToClients(reportId);
+        } catch (err) {
+            logger.error({ err, reportId }, 'Failed to trigger report notification');
+        }
+    });
+
     return reportId;
+}
+
+/**
+ * Notifica os utilizadores associados ao cliente sobre a disponibilidade de um novo relatório técnico.
+ */
+export async function sendReportNotificationToClients(reportId: number) {
+    try {
+        const { rows } = await pool.query(`
+            SELECT r.id, r.report_number, r."clientId", c.name as client_name, e.brand, e.model
+            FROM reports r
+            JOIN clients c ON r."clientId" = c.id
+            JOIN equipments e ON r."equipmentId" = e.id
+            WHERE r.id = $1
+        `, [reportId]);
+
+        if (rows.length === 0) return;
+        const report = rows[0];
+
+        const { rows: recipients } = await pool.query(`
+            SELECT cu.user_id 
+            FROM client_users cu
+            JOIN profiles p ON p.id = cu.user_id
+            WHERE cu.client_id = $1 AND p.role = 'client'
+        `, [report.clientId]);
+
+        if (recipients.length > 0) {
+            const userIds = recipients.map(r => r.user_id);
+            const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+            const equipInfo = `${report.brand} ${report.model}`;
+
+            await notifyUsers(userIds, 'new_report', {
+                templateKey: 'new_report',
+                variables: {
+                    reportId: String(reportId),
+                    reportNumber: report.report_number,
+                    equipInfo: equipInfo,
+                    clientUrl: clientUrl
+                },
+                telegramText: `📑 *RELATÓRIO TÉCNICO DISPONÍVEL*\n\n*Número:* ${report.report_number}\n*Equipamento:* ${equipInfo}\n\nO relatório da intervenção já pode ser consultado no portal.\n\n[Ver Relatório](${clientUrl}/reports/${reportId})`
+            });
+        }
+    } catch (err) {
+        logger.error({ err, reportId }, 'Error sending report notification to clients');
+    }
 }
 
 /**
@@ -179,7 +278,14 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
         timeBlocks, client_signer_name
     } = data;
 
-    const { rows: oldParts } = await db.query<ReportPart>('SELECT "partId", quantity, stock_type FROM report_parts WHERE "reportId" = $1', [reportId]);
+    const { rows: oldParts } = await db.query<ReportPart>('SELECT "partId", quantity, stock_type, designation FROM report_parts WHERE "reportId" = $1', [reportId]);
+
+    // Fetch current report data BEFORE update to detect billing-affecting changes
+    const { rows: currentReportRows } = await db.query<Report>(
+        'SELECT hours, includes_travel FROM reports WHERE id = $1',
+        [reportId]
+    );
+    const currentReport = currentReportRows[0];
 
     await db.query(
         `UPDATE reports SET 
@@ -202,6 +308,23 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
     await syncReportTechnicians(db, reportId, technicianIds, technicianSignatures);
     await syncReportPartsAndAbate(db, reportId, parts, true, oldParts, userId);
 
+    // Check if billing task is BILLED and any billing-affecting field changed → NEEDS_REVIEW
+    {
+        const { rows: taskRows } = await db.query<BillingTask>('SELECT id, status FROM billing_tasks WHERE report_id = $1', [reportId]);
+        const task = taskRows[0];
+
+        if (task?.status === BillingStatus.BILLED && currentReport) {
+            const hoursChanged = Number(currentReport.hours) !== Number(hours);
+            const travelChanged = Boolean(currentReport.includes_travel) !== Boolean(includesTravel);
+            const partsChanged = detectBillingPartsChange(oldParts, parts);
+
+            if (hoursChanged || travelChanged || partsChanged) {
+                logger.info({ reportId, hoursChanged, travelChanged, partsChanged }, 'Billed report edited with billing-affecting changes → NEEDS_REVIEW');
+                await billingService.updateBillingTaskStatus(db, task.id, BillingStatus.NEEDS_REVIEW);
+            }
+        }
+    }
+
     if (isBillingPending !== undefined) {
         const isPending = isBillingPending === true;
         const { rows: taskRows } = await db.query<BillingTask>('SELECT id, status FROM billing_tasks WHERE report_id = $1', [reportId]);
@@ -209,7 +332,7 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
 
         if (task) {
             if (isPending) {
-                if (task.status !== BillingStatus.BILLED && task.status !== BillingStatus.PENDING_COMPLETION) {
+                if (task.status !== BillingStatus.BILLED && task.status !== BillingStatus.PENDING_COMPLETION && task.status !== BillingStatus.NEEDS_REVIEW) {
                     await billingService.updateBillingTaskStatus(db, task.id, BillingStatus.PENDING_COMPLETION);
                 }
             } else {

@@ -40,17 +40,32 @@ export class EquipmentController {
         const equipmentId = +req.params.id;
         if (!req.user) throw new ApiError(401, 'Unauthorized');
 
-        // Client role: verify ownership before fetching history
+        // Se for um utilizador do portal do cliente, extraímos o client_id associado a ele
+        let requestingClientId: number | undefined;
         if (req.user.user_metadata?.role === UserRole.CLIENT) {
             const { rows } = await pool.query('SELECT client_id FROM profiles WHERE id = $1', [req.user.id]);
-            const result = await this.equipmentService.getEquipmentHistory(equipmentId);
-            if (rows.length === 0 || rows[0].client_id !== result.details.clientId) {
-                throw new ForbiddenError('Permission denied');
+            if (rows.length === 0 || !rows[0].client_id) {
+                throw new ForbiddenError('Perfil de cliente não configurado corretamente.');
             }
-            return res.json(result);
+            requestingClientId = rows[0].client_id;
         }
 
-        const result = await this.equipmentService.getEquipmentHistory(equipmentId);
+        const result = await this.equipmentService.getEquipmentHistory(equipmentId, requestingClientId);
         res.json(result);
+    });
+
+    getOwnershipHistory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.equipmentService.getOwnershipHistory(+req.params.id);
+        res.json(result);
+    });
+
+    transferEquipment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.equipmentService.transferEquipment(+req.params.id, req.body, req.user!.id);
+        res.json(result);
+    });
+
+    updateOwnershipPeriod = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        await this.equipmentService.updateOwnershipPeriod(+req.params.periodId, req.body, req.user!.id);
+        res.sendStatus(204);
     });
 }

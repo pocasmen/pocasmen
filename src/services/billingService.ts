@@ -16,12 +16,17 @@ export const createBillingTask = async (db: PoolClient, reportId: number, isPend
         'INSERT INTO billing_tasks (report_id, status, assigned_role) VALUES ($1, $2, $3) RETURNING *',
         [reportId, status, assignedRole]
     );
+
+    // Sync denormalized field in reports table
+    await db.query('UPDATE reports SET billing_status = $1 WHERE id = $2', [status, reportId]);
+
     return result.rows[0];
 };
 
 export const updateBillingTaskStatus = async (db: PoolClient, taskId: number, status: BillingStatus, notes?: string, invoiceNumber?: string): Promise<BillingTask | undefined> => {
     const updatedAt = new Date().toISOString();
     let billedAt: string | null = null;
+    // Only stamp billed_at when actually marking as billed (not on NEEDS_REVIEW)
     if (status === BillingStatus.BILLED) billedAt = new Date().toISOString();
 
     const values: any[] = [status, updatedAt, taskId];

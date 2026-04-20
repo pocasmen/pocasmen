@@ -8,6 +8,9 @@ import { supabase } from '../config/supabase';
 import { Database } from '../types/db.types';
 import { Profile, Client, Equipment, Schedule, SchedulePart, ScheduleTechnician, ScheduleTimeBlock, Ticket, Part } from '../types/supabase';
 import { StockType, ScheduleStatus, TicketStatus } from '../types';
+import { broadcastTicketUpdate } from './realtimeService';
+import { notifyUsers } from './notificationService';
+import { pool } from '../config/db';
 
 export const SERVICE_TYPE_MAP: Record<string, string> = {
     'manutencao': 'Manutenção',
@@ -232,6 +235,61 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
 }
 
 /**
+ * Notifica os utilizadores associados ao cliente sobre um novo agendamento ou reagendamento.
+ */
+export async function sendScheduleNotificationToClients(supabase: SupabaseClient<Database>, scheduleId: number, isUpdate: boolean = false) {
+    try {
+        const { data: s, error } = await supabase
+            .from('schedules')
+            .select('id, title, startDate, endDate, serviceType, clientId, clients(name), equipments(brand, model, serialNumber)')
+            .eq('id', scheduleId)
+            .single();
+
+        if (error || !s) return;
+
+        const schedule = s as any;
+        const clientName = schedule.clients?.name || 'Cliente';
+        const serviceTypeLabel = formatServiceType(schedule.serviceType);
+        
+        const eq = Array.isArray(schedule.equipments) ? schedule.equipments[0] : schedule.equipments;
+        const equipmentInfo = eq ? `${eq.brand || ''} ${eq.model || ''}${eq.serialNumber ? ` (S/N: ${eq.serialNumber})` : ''}`.trim() : 'Não especificado';
+
+        const startDate = schedule.startDate ? new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
+        const endDate = schedule.endDate ? new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
+
+        // Obter utilizadores do tipo 'client' associados
+        const { rows: recipients } = await pool.query(`
+            SELECT cu.user_id 
+            FROM client_users cu
+            JOIN profiles p ON p.id = cu.user_id
+            WHERE cu.client_id = $1 AND p.role = 'client'
+        `, [schedule.clientId]);
+
+        if (recipients.length > 0) {
+            const userIds = recipients.map(r => r.user_id);
+            const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+            const notificationTitle = isUpdate ? '🔄 Agendamento Atualizado' : '📅 Novo Agendamento';
+
+            await notifyUsers(userIds, 'new_schedule', {
+                templateKey: 'new_schedule',
+                variables: {
+                    scheduleId: String(scheduleId),
+                    scheduleTitle: schedule.title,
+                    serviceType: serviceTypeLabel,
+                    equipmentInfo: equipmentInfo,
+                    startDate: startDate,
+                    endDate: endDate,
+                    clientUrl: clientUrl
+                },
+                telegramText: `${isUpdate ? '🔄' : '📅'} *${notificationTitle.toUpperCase()}*\n\n*Serviço:* ${serviceTypeLabel}\n*Equipamento:* ${equipmentInfo}\n*Início:* ${startDate}\n*Fim:* ${endDate}\n\n[Ver Agenda](${clientUrl}/schedules)`
+            });
+        }
+    } catch (err) {
+        logger.error({ err, scheduleId }, 'Failed to send schedule notifications to clients');
+    }
+}
+
+/**
  * Syncs time blocks for a schedule
  */
 async function syncTimeBlocks(db: PoolClient, scheduleId: number, timeBlocks: any[], startDate?: string, endDate?: string) {
@@ -269,7 +327,7 @@ export async function syncPartsAndReservations(db: PoolClient, scheduleId: numbe
         wasAlreadyCompleted = currentStatus.length > 0 && currentStatus[0].isCompleted;
     }
 
-    const { rows: originalParts } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
+    const { rows: originalParts } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type, designation FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
 
     // Track all parts involved for later synchronization
     const affectedPartIds = new Set<number>();
@@ -278,13 +336,16 @@ export async function syncPartsAndReservations(db: PoolClient, scheduleId: numbe
     await db.query('DELETE FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
 
     if (Array.isArray(parts) && parts.length > 0) {
+        // Group parts by partId, stockType and designation to avoid PK conflicts and consolidate quantities
+        const finalMap = new Map<string, { partId: number, quantity: number, stockType: StockType, designation: string, isApplied: boolean }>();
+
         for (const p of parts) {
             let partId = p.id;
-            if (!partId && p.reference && p.designation) {
+            if (!partId && p.reference) {
                 const { rows: existingPartRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1', [p.reference]);
                 if (existingPartRows.length > 0) {
                     partId = existingPartRows[0].id;
-                } else {
+                } else if (p.designation) {
                     const { rows: newPartRows } = await db.query<Part>(
                         'INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, is_composed) VALUES ($1, $2, 0, 0, 0, 0, 0, 0, false) RETURNING id',
                         [p.reference, p.designation]
@@ -295,11 +356,31 @@ export async function syncPartsAndReservations(db: PoolClient, scheduleId: numbe
 
             if (partId && p.quantity > 0) {
                 affectedPartIds.add(partId);
-                await db.query<SchedulePart>(
-                    'INSERT INTO schedule_parts ("scheduleId", "partId", quantity, stock_type, is_applied) VALUES ($1, $2, $3, $4, $5)',
-                    [scheduleId, partId, Number(p.quantity), p.stockType || StockType.GENERAL, p.isApplied !== false]
-                );
+                const st = (p.stockType || StockType.GENERAL) as StockType;
+                const designation = (p.designation || '').trim();
+                const key = `${partId}_${st}_${designation}`;
+
+                const existing = finalMap.get(key);
+                if (existing) {
+                    existing.quantity += Number(p.quantity);
+                } else {
+                    finalMap.set(key, { 
+                        partId, 
+                        quantity: Number(p.quantity), 
+                        stockType: st, 
+                        designation,
+                        isApplied: p.isApplied !== false 
+                    });
+                }
             }
+        }
+
+        // Insert grouped parts
+        for (const part of finalMap.values()) {
+            await db.query(
+                'INSERT INTO schedule_parts ("scheduleId", "partId", quantity, stock_type, is_applied, designation) VALUES ($1, $2, $3, $4, $5, $6)',
+                [scheduleId, part.partId, part.quantity, part.stockType, part.isApplied, part.designation]
+            );
         }
     }
 
@@ -353,6 +434,7 @@ export async function createFullSchedule(db: PoolClient, data: any) {
 
     if (ticketId) {
         await db.query<Ticket>('UPDATE tickets SET "scheduleId" = $1, status = $2 WHERE id = $3', [scheduleId, TicketStatus.SCHEDULED, ticketId]);
+        broadcastTicketUpdate(supabase, ticketId);
     }
 
     return insertedSchedule;
@@ -401,9 +483,9 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
     if (JSON.stringify(existingTechIds) !== JSON.stringify(incomingTechIds)) hasSignificantChanges = true;
 
     // Check parts changes
-    const { rows: existingPartRows } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
-    const existingParts = existingPartRows.map(p => ({ id: p.partId, qty: Number(p.quantity), st: p.stock_type || StockType.GENERAL })).sort((a, b) => (a.id || 0) - (b.id || 0));
-    const incomingParts = (parts || []).map((p: any) => ({ id: p.id, qty: Number(p.quantity), st: p.stockType || StockType.GENERAL })).sort((a: any, b: any) => (a.id || 0) - (b.id || 0));
+    const { rows: existingPartRows } = await db.query<SchedulePart>('SELECT "partId", quantity, stock_type, designation FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
+    const existingParts = existingPartRows.map(p => ({ id: p.partId, qty: Number(p.quantity), st: p.stock_type || StockType.GENERAL, d: p.designation || '' })).sort((a, b) => (a.id || 0) - (b.id || 0));
+    const incomingParts = (parts || []).map((p: any) => ({ id: p.id, qty: Number(p.quantity), st: p.stockType || StockType.GENERAL, d: p.designation || '' })).sort((a: any, b: any) => (a.id || 0) - (b.id || 0));
     if (JSON.stringify(existingParts) !== JSON.stringify(incomingParts)) hasSignificantChanges = true;
 
     // Check time blocks changes
@@ -458,6 +540,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, isCompleted ? TicketStatus.CLOSED : TicketStatus.SCHEDULED, startDate, ticketId]);
+        broadcastTicketUpdate(supabase, ticketId);
     }
 
     return { updatedSchedule, hasSignificantChanges, googleEventIdsToCleanup };
@@ -493,6 +576,7 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, TicketStatus.CLOSED, startDate, ticketId]);
+        broadcastTicketUpdate(supabase, ticketId);
     }
 
     return { updated, googleEventIdsToCleanup };

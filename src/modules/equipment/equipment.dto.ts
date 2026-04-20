@@ -4,6 +4,7 @@ export interface CreateEquipmentDto {
     serialNumber?: string;
     clientId: number;
     additionalInfo?: string;
+    status?: string;
 }
 
 export interface UpdateEquipmentDto extends Partial<CreateEquipmentDto> {}
