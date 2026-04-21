@@ -35,7 +35,7 @@ export class TicketAttachmentService {
         });
     }
 
-    async deleteAttachment(attachmentId: number, userId: string) {
+    async deleteAttachment(attachmentId: string, userId: string) {
         await withTransactionAs(userId, async (db) => {
             const att = await this.attachmentRepo.findById(attachmentId, db);
 

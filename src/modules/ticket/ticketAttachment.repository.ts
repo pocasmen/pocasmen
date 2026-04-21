@@ -7,7 +7,7 @@ export class TicketAttachmentRepository {
         return rows;
     }
 
-    async findById(id: number, db: QueryRunner) {
+    async findById(id: string, db: QueryRunner) {
         const query = 'SELECT * FROM ticket_attachments WHERE id = $1';
         const { rows } = await db.query(query, [id]);
         return rows[0] || null;

@@ -25,7 +25,7 @@ export class TicketAttachmentController {
 
     deleteAttachment = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         if (!req.user) throw new UnauthorizedError();
-        const attachmentId = Number(req.params.attachmentId);
+        const attachmentId = req.params.attachmentId;
         
         await this.service.deleteAttachment(attachmentId, req.user.id);
         res.sendStatus(204);
