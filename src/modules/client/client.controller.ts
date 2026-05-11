@@ -9,6 +9,7 @@ export class ClientController {
     getClients = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const clients = await this.clientService.getClients({
             search: req.query.search as string | undefined,
+            is_blacklisted: req.query.is_blacklisted === 'true' ? true : req.query.is_blacklisted === 'false' ? false : undefined,
         });
         res.json(clients);
     });

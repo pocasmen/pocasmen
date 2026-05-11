@@ -52,7 +52,8 @@ export class TicketRepository {
 
     async findById(id: number, db: QueryRunner): Promise<any | null> {
         const { rows } = await db.query(`
-            SELECT t.*, c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif",
+            SELECT t.*, c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif", 
+                c.is_blacklisted, c.blacklist_reason,
                 CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
                 p.first_name as "userFirstName", p.last_name as "userLastName"
             FROM tickets t

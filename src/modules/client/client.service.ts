@@ -6,7 +6,7 @@ import { CreateClientDto, UpdateClientDto } from './client.dto';
 export class ClientService {
     constructor(private repo: ClientRepository) {}
 
-    async getClients(filters: { search?: string }) {
+    async getClients(filters: { search?: string, is_blacklisted?: boolean }) {
         return this.repo.findAll(pool, filters);
     }
 

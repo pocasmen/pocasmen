@@ -102,12 +102,10 @@ export class AuthService {
         const isConfirmed = !!currentUser.email_confirmed_at;
 
         const updatedUser = await withTransactionAs(adminUserId, async (db) => {
-            const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
-
             // Update local profile
             const { rowCount } = await db.query(
-                'UPDATE profiles SET client_id = $1, role = $2 WHERE id = $3',
-                [primaryClientId, UserRole.CLIENT, targetUserId]
+                'UPDATE profiles SET role = $1 WHERE id = $2',
+                [UserRole.CLIENT, targetUserId]
             );
             if (rowCount === 0) throw new NotFoundError('Perfil não encontrado.');
 

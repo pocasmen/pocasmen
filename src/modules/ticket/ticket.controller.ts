@@ -44,9 +44,20 @@ export class TicketController {
         res.json(result);
     });
 
+
     markTicketAsRead = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         if (!req.user) throw new UnauthorizedError();
         await this.ticketService.markTicketAsRead(+req.params.id, req.user.id);
         res.status(200).send('Marked as read');
+    });
+
+    linkTicketToSchedule = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const ticketId = Number(req.params.id);
+        const scheduleId = Number(req.params.scheduleId);
+        if (!ticketId || !scheduleId) throw new BadRequestError('Invalid IDs');
+        
+        const result = await this.ticketService.linkTicketToSchedule(ticketId, scheduleId, req.user.id);
+        res.json(result);
     });
 }

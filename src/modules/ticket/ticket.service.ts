@@ -47,6 +47,7 @@ export class TicketService {
         });
     }
 
+
     async markTicketAsRead(ticketId: number, userId: string) {
         await withTransactionAs(userId, (db) =>
             db.query(
@@ -54,5 +55,9 @@ export class TicketService {
                 [ticketId, userId]
             )
         );
+    }
+
+    async linkTicketToSchedule(ticketId: number, scheduleId: number, userId: string) {
+        return withTransactionAs(userId, (db) => ticketService.linkTicketToSchedule(db, ticketId, scheduleId, userId));
     }
 }

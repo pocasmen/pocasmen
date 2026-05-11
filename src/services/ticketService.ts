@@ -100,3 +100,49 @@ export async function replyToFullTicket(db: PoolClient, ticketId: number, userId
 
     return updatedRows[0] || null;
 }
+
+/**
+ * Links a ticket to an existing schedule (bidirectional)
+ */
+export async function linkTicketToSchedule(db: PoolClient, ticketId: number, scheduleId: number, userId: string) {
+    // 1. Update Ticket
+    const { rows: ticketRows } = await db.query<Ticket>(
+        'UPDATE tickets SET "scheduleId" = $1, status = $2, "updatedAt" = $3 WHERE id = $4 RETURNING *',
+        [scheduleId, TicketStatus.SCHEDULED, new Date().toISOString(), ticketId]
+    );
+
+    if (ticketRows.length === 0) throw new Error('Ticket not found');
+
+    // 2. Update Schedule
+    await db.query(
+        'UPDATE schedules SET "ticketId" = $1 WHERE id = $2',
+        [ticketId, scheduleId]
+    );
+
+    const ticket = ticketRows[0];
+
+    // Side effects (Notifications & Realtime)
+    setImmediate(async () => {
+        try {
+            broadcastTicketUpdate(supabase, ticketId);
+
+            // Get schedule info for the notification
+            const { data: scheduleData } = await supabase
+                .from('schedules')
+                .select('startDate, title')
+                .eq('id', scheduleId)
+                .single();
+
+            const dateStr = scheduleData?.startDate
+                ? new Date(scheduleData.startDate).toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : 'Data não definida';
+
+            const telegramMessage = `🔗 *Ticket Vinculado a Agendamento*\n\n*Ticket:* #${ticketId} - ${ticket.title}\n*Agendamento:* ${scheduleData?.title || 'Visita Técnica'}\n*Data:* ${dateStr}\n\nO ticket foi associado a um agendamento existente.`;
+            sendTelegramNotification(telegramMessage);
+        } catch (err) {
+            logger.error({ err }, 'Failed to process ticket link side effects');
+        }
+    });
+
+    return ticket;
+}

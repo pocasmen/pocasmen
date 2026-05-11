@@ -66,18 +66,16 @@ export class ProfileRepository {
             daily_notifications_enabled, notification_time, phone,
             google_calendar_color_id, client_role, client_ids, notification_prefs } = data;
 
-        const primaryClientId = Array.isArray(client_ids) && client_ids.length > 0 ? Number(client_ids[0]) : null;
-
         const { rows, rowCount } = await db.query(`
             UPDATE profiles SET
                 first_name = $1, last_name = $2, color = $3, telegramchatid = $4,
                 signature = $5, daily_notifications_enabled = $6, notification_time = $7,
                 phone = $8, google_calendar_color_id = $9, client_role = $10,
-                client_id = $11, notification_prefs = $12
-            WHERE id = $13 RETURNING *
+                notification_prefs = $11
+            WHERE id = $12 RETURNING *
         `, [first_name, last_name, color, telegramchatid, signature,
             daily_notifications_enabled, notification_time, phone,
-            google_calendar_color_id, client_role, primaryClientId, notification_prefs, id]);
+            google_calendar_color_id, client_role, notification_prefs, id]);
 
         if (rowCount !== 0 && client_ids !== undefined) {
             // Update many-to-many associations

@@ -37,7 +37,9 @@ router.get('/:id', authenticateToken, authorizeRoles(ALL_ROLES), validate(ticket
 router.post('/', authenticateToken, authorizeRoles(ALL_ROLES), validate(ticketValidation.createTicketSchema), controller.createTicket);
 router.post('/:id/responses', authenticateToken, authorizeRoles(ALL_ROLES), validate(ticketValidation.replyToTicketSchema), controller.replyToTicket);
 router.delete('/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), validate(ticketValidation.ticketIdSchema), controller.deleteTicket);
+
 router.put('/:id/mark-as-read', authenticateToken, authorizeRoles(STAFF), controller.markTicketAsRead);
+router.put('/:id/link-schedule/:scheduleId', authenticateToken, authorizeRoles(STAFF), controller.linkTicketToSchedule);
 
 // Ticket Attachments
 router.get('/:id/attachments', authenticateToken, authorizeRoles(ALL_ROLES), attController.getAttachments);

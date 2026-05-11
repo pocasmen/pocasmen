@@ -10,8 +10,15 @@ export class ScheduleController {
     getSchedules = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const page  = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
-        const includeCompleted = req.query.includeCompleted === 'true';
-        const { data, total } = await this.scheduleService.getSchedules(page, limit, includeCompleted);
+        const includeCompleted = req.query.includeCompleted === 'true' || req.query.isCompleted === 'true'; // Permitir isCompleted=true também
+        const clientId = req.query.clientId ? Number(req.query.clientId) : undefined;
+        const equipmentId = req.query.equipmentId ? Number(req.query.equipmentId) : undefined;
+        const isTask = req.query.isTask === 'true' ? true : (req.query.isTask === 'false' ? false : undefined);
+        
+        // Se isCompleted=false for passado explicitamente (como no LinkModal)
+        const finalIncludeCompleted = req.query.isCompleted === 'false' ? false : includeCompleted;
+
+        const { data, total } = await this.scheduleService.getSchedules(page, limit, finalIncludeCompleted, clientId, equipmentId, isTask);
         res.json({ data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
     });
 

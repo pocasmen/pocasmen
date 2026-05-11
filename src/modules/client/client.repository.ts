@@ -4,14 +4,19 @@ import { Client } from '../../types/supabase';
 import { CreateClientDto, UpdateClientDto } from './client.dto';
 
 export class ClientRepository {
-    async findAll(db: QueryRunner, filters: { search?: string } = {}): Promise<Client[]> {
-        const { search } = filters;
-        let query = 'SELECT * FROM clients';
+    async findAll(db: QueryRunner, filters: { search?: string, is_blacklisted?: boolean } = {}): Promise<Client[]> {
+        const { search, is_blacklisted } = filters;
+        let query = 'SELECT * FROM clients WHERE 1=1';
         const params: any[] = [];
 
         if (search) {
-            query += ' WHERE name ILIKE $1 OR nickname ILIKE $1';
             params.push(`%${search}%`);
+            query += ` AND (name ILIKE $${params.length} OR nickname ILIKE $${params.length})`;
+        }
+
+        if (is_blacklisted !== undefined) {
+            params.push(is_blacklisted);
+            query += ` AND is_blacklisted = $${params.length}`;
         }
 
         query += ' ORDER BY name ASC';
@@ -25,24 +30,25 @@ export class ClientRepository {
     }
 
     async create(data: CreateClientDto, db: QueryRunner): Promise<Client> {
-        const { name, nickname, address, city, postCode, nif } = data;
+        const { name, nickname, address, city, postCode, nif, is_blacklisted, blacklist_reason } = data;
         const { rows } = await db.query(
-            `INSERT INTO clients (name, nickname, address, city, "postCode", nif)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            `INSERT INTO clients (name, nickname, address, city, "postCode", nif, is_blacklisted, blacklist_reason)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING *`,
-            [name, nickname, address, city, postCode, nif]
+            [name, nickname, address, city, postCode, nif, is_blacklisted ?? false, blacklist_reason]
         );
         return rows[0];
     }
 
     async update(id: number, data: UpdateClientDto, db: QueryRunner): Promise<Client | null> {
-        const { name, nickname, address, city, postCode, nif } = data;
+        const { name, nickname, address, city, postCode, nif, is_blacklisted, blacklist_reason } = data;
         const { rows } = await db.query(
             `UPDATE clients
-             SET name = $1, nickname = $2, address = $3, city = $4, "postCode" = $5, nif = $6
-             WHERE id = $7
+             SET name = $1, nickname = $2, address = $3, city = $4, "postCode" = $5, nif = $6, 
+                 is_blacklisted = $7, blacklist_reason = $8
+             WHERE id = $9
              RETURNING *`,
-            [name, nickname, address, city, postCode, nif, id]
+            [name, nickname, address, city, postCode, nif, is_blacklisted, blacklist_reason, id]
         );
         return rows[0] ?? null;
     }
@@ -54,10 +60,11 @@ export class ClientRepository {
 
     async findUsersByClientId(clientId: number, db: QueryRunner) {
         const { rows } = await db.query(
-            `SELECT id, first_name, last_name, email
-             FROM profiles
-             WHERE client_id = $1
-             ORDER BY first_name ASC`,
+            `SELECT p.id, p.first_name, p.last_name, p.email
+             FROM profiles p
+             JOIN client_users cu ON cu.user_id = p.id
+             WHERE cu.client_id = $1
+             ORDER BY p.first_name ASC`,
             [clientId]
         );
         return rows;
@@ -67,9 +74,7 @@ export class ClientRepository {
     async validateAccess(userId: string, clientId: number): Promise<boolean> {
         const idNum = Number(clientId);
         const { rowCount } = await pool.query(
-            `SELECT 1 FROM client_users WHERE user_id = $1 AND client_id = $2
-             UNION
-             SELECT 1 FROM profiles WHERE id = $1 AND client_id = $2`,
+            `SELECT 1 FROM client_users WHERE user_id = $1 AND client_id = $2`,
             [userId, idNum]
         );
         return (rowCount ?? 0) > 0;
@@ -80,9 +85,8 @@ export class ClientRepository {
         const { rows } = await pool.query(
             `SELECT DISTINCT c.*
              FROM clients c
-             LEFT JOIN client_users cu ON c.id = cu.client_id
-             LEFT JOIN profiles p ON c.id = p.client_id
-             WHERE cu.user_id = $1 OR p.id = $1
+             INNER JOIN client_users cu ON c.id = cu.client_id
+             WHERE cu.user_id = $1
              ORDER BY c.name ASC`,
             [userId]
         );

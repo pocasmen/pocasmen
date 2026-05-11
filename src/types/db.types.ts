@@ -111,6 +111,8 @@ export type Database = {
           nif: string | null
           postCode: string | null
           city: string | null
+          is_blacklisted: boolean | null
+          blacklist_reason: string | null
         }
         Insert: {
           id?: number
@@ -119,6 +121,8 @@ export type Database = {
           nif?: string | null
           postCode?: string | null
           city?: string | null
+          is_blacklisted?: boolean | null
+          blacklist_reason?: string | null
         }
         Update: {
           id?: number
@@ -127,6 +131,8 @@ export type Database = {
           nif?: string | null
           postCode?: string | null
           city?: string | null
+          is_blacklisted?: boolean | null
+          blacklist_reason?: string | null
         }
         Relationships: []
       }
@@ -355,7 +361,6 @@ export type Database = {
           first_name: string | null
           last_name: string | null
           phone_number: string | null
-          client_id: number | null
           color: string | null
           created_at: string
           updated_at: string
@@ -375,7 +380,6 @@ export type Database = {
           first_name?: string | null
           last_name?: string | null
           phone_number?: string | null
-          client_id?: number | null
           color?: string | null
           created_at?: string
           updated_at?: string
@@ -395,7 +399,6 @@ export type Database = {
           first_name?: string | null
           last_name?: string | null
           phone_number?: string | null
-          client_id?: number | null
           color?: string | null
           created_at?: string
           updated_at?: string
@@ -410,15 +413,7 @@ export type Database = {
           google_calendar_color_id?: string | null
           client_role?: string | null
         }
-        Relationships: [
-          {
-            foreignKeyName: "profiles_client_id_fkey"
-            columns: ["client_id"]
-            isOneToOne: false
-            referencedRelation: "clients"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
       schedule_technicians: {
         Row: {

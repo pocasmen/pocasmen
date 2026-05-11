@@ -15,26 +15,50 @@ import { ScheduleRepository } from './schedule.repository';
 export class ScheduleService {
     constructor(private repo: ScheduleRepository) {}
 
-    async getSchedules(page: number, limit: number, includeCompleted?: boolean) {
-        const { data: schedulesRaw, total: schedulesTotal } = await this.repo.findAll({ page, limit, includeCompleted });
+    async getSchedules(page: number, limit: number, includeCompleted?: boolean, clientId?: number, equipmentId?: number, isTask?: boolean) {
+        let result: any[] = [];
+        let schedulesTotal = 0;
+        let tasksTotal = 0;
 
-        const result = schedulesRaw.map((s: any) => mapScheduleDatabaseToResponse(
-            s,
-            s.clientName || 'Cliente Desconhecido',
-            s.equipmentModel || 'Modelo Desconhecido',
-            s.technicians || [],
-            s.parts || []
-        ));
+        // Fetch Agendamentos (Schedules)
+        if (isTask === undefined || isTask === false) {
+            const { data: schedulesRaw, total: sTotal } = await this.repo.findAll({ page, limit, includeCompleted, clientId, equipmentId });
+            schedulesTotal = sTotal;
+            result = schedulesRaw.map((s: any) => mapScheduleDatabaseToResponse(
+                s,
+                s.clientName || 'Cliente Desconhecido',
+                s.equipmentModel || 'Modelo Desconhecido',
+                s.technicians || [],
+                s.parts || []
+            ));
+        }
 
-        const tasksRaw = await this.repo.findTasksForCalendar(includeCompleted);
-        tasksRaw.forEach((task: any) => {
-            const tech = task.assignee_id ? { id: task.assignee_id, name: task.assignee_name, color: task.assignee_color } : null;
-            const clientName = task.clientName || 'Interno';
-            const equipInfo = `${task.equipmentBrand || ''} ${task.equipmentModel || ''}`.trim() || 'N/A';
-            result.push(mapTaskToScheduleResponse(task, clientName, equipInfo, tech));
-        });
+        // Fetch Tarefas (Internal Tasks)
+        if (isTask === undefined || isTask === true) {
+            // Se o filtro for por equipamento, as tarefas internas normalmente não têm equipamento associado na mesma lógica
+            // Mas para o calendário elas são buscadas. Se isTask for false (como no modal), saltamos isto.
+            const tasksRaw = await this.repo.findTasksForCalendar(includeCompleted);
+            tasksTotal = tasksRaw.length;
+            
+            // Filtrar tarefas por clientId/equipmentId se necessário (as tarefas têm esses campos?)
+            let filteredTasks = tasksRaw;
+            if (clientId) {
+                filteredTasks = filteredTasks.filter((t: any) => t.client_id === clientId);
+            }
+            if (equipmentId) {
+                filteredTasks = filteredTasks.filter((t: any) => t.equipment_id === equipmentId);
+            }
 
-        return { data: result, total: schedulesTotal + tasksRaw.length };
+            filteredTasks.forEach((task: any) => {
+                const tech = task.assignee_id ? { id: task.assignee_id, name: task.assignee_name, color: task.assignee_color } : null;
+                const clientName = task.clientName || 'Interno';
+                const equipInfo = `${task.equipmentBrand || ''} ${task.equipmentModel || ''}`.trim() || 'N/A';
+                result.push(mapTaskToScheduleResponse(task, clientName, equipInfo, tech));
+            });
+            tasksTotal = filteredTasks.length;
+        }
+
+        return { data: result, total: schedulesTotal + tasksTotal };
     }
 
     async getScheduleById(id: number) {

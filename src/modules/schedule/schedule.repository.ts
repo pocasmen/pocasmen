@@ -4,13 +4,39 @@ import { QueryRunner } from '../../types/db.types';
 export class ScheduleRepository {
     constructor(private pool: Pool) { }
 
-    async findAll(options: { page?: number; limit?: number; includeCompleted?: boolean } = {}) {
-        const { page = 1, limit = 200, includeCompleted = false } = options;
+    async findAll(options: { page?: number; limit?: number; includeCompleted?: boolean; clientId?: number; equipmentId?: number; isTask?: boolean } = {}) {
+        const { page = 1, limit = 200, includeCompleted = false, clientId, equipmentId, isTask } = options;
         const offset = (page - 1) * limit;
 
-        const whereClause = includeCompleted ? '1=1' : '"isCompleted" = false';
-        const countRes = await this.pool.query(`SELECT COUNT(*) FROM schedules WHERE ${whereClause}`);
+        let whereConditions = [];
+        let queryParams = [];
+        let paramIndex = 1;
+
+        if (!includeCompleted) {
+            whereConditions.push('s."isCompleted" = false');
+        }
+
+        if (clientId) {
+            whereConditions.push(`s."clientId" = $${paramIndex++}`);
+            queryParams.push(clientId);
+        }
+
+        if (equipmentId) {
+            whereConditions.push(`s."equipmentId" = $${paramIndex++}`);
+            queryParams.push(equipmentId);
+        }
+
+        const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+
+        // Count total
+        const countRes = await this.pool.query(`SELECT COUNT(*) FROM schedules s ${whereClause}`, queryParams);
         const total = parseInt(countRes.rows[0].count, 10);
+
+        // Principal Query
+        const currentParams = [...queryParams];
+        const limitIdx = paramIndex++;
+        const offsetIdx = paramIndex++;
+        currentParams.push(limit, offset);
 
         const { rows } = await this.pool.query(`
             SELECT s.*,
@@ -34,10 +60,10 @@ export class ScheduleRepository {
             FROM schedules s
             LEFT JOIN clients c ON s."clientId" = c.id
             LEFT JOIN equipments e ON s."equipmentId" = e.id
-            WHERE ${whereClause}
+            ${whereClause}
             ORDER BY s."startDate" ASC NULLS LAST
-            LIMIT $1 OFFSET $2
-        `, [limit, offset]);
+            LIMIT $${limitIdx} OFFSET $${offsetIdx}
+        `, currentParams);
 
         return { data: rows, total };
     }
