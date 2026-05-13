@@ -10,6 +10,7 @@ import { Profile, Client, Equipment, Schedule, SchedulePart, ScheduleTechnician,
 import { StockType, ScheduleStatus, TicketStatus } from '../types';
 import { broadcastTicketUpdate } from './realtimeService';
 import { notifyUsers } from './notificationService';
+import { notifyTicketClosed } from './ticketService';
 import { pool } from '../config/db';
 
 export const SERVICE_TYPE_MAP: Record<string, string> = {
@@ -541,6 +542,10 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, isCompleted ? TicketStatus.CLOSED : TicketStatus.SCHEDULED, startDate, ticketId]);
         broadcastTicketUpdate(supabase, ticketId);
+        
+        if (isCompleted) {
+            setImmediate(() => notifyTicketClosed(ticketId));
+        }
     }
 
     return { updatedSchedule, hasSignificantChanges, googleEventIdsToCleanup };
@@ -577,6 +582,7 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, TicketStatus.CLOSED, startDate, ticketId]);
         broadcastTicketUpdate(supabase, ticketId);
+        setImmediate(() => notifyTicketClosed(ticketId));
     }
 
     return { updated, googleEventIdsToCleanup };

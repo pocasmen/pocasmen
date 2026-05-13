@@ -8,8 +8,19 @@ export class AuthController {
     constructor(private authService: AuthService) {}
 
     login = catchAsync(async (req: Request, res: Response) => {
-        const data = await this.authService.login(req.body);
+        const metadata = {
+            ip: req.ip || req.socket.remoteAddress,
+            userAgent: req.headers['user-agent']
+        };
+        const data = await this.authService.login(req.body, metadata);
         res.json(data);
+    });
+
+    getAuditLogs = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 50;
+        const result = await this.authService.getAuditLogs(page, limit);
+        res.json(result);
     });
 
     getImpersonatedUser = catchAsync(async (req: AuthenticatedRequest, res: Response) => {

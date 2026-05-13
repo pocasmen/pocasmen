@@ -10,7 +10,7 @@ const repo = new SettingRepository();
 const service = new SettingService(repo);
 const controller = new SettingController(service);
 
-router.get('/', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), controller.getSettings);
+router.get('/', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.TECHNICIAN]), controller.getSettings);
 router.put('/', authenticateToken, authorizeRoles([UserRole.SUPER_ADMIN]), controller.updateSettings);
 
 export default router;

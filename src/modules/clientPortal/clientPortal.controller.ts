@@ -92,4 +92,10 @@ export class ClientPortalController {
         const result = await this.service.signMyReport(Number(req.params.id), req.user.id);
         res.json(result);
     });
+
+    updateMyEquipmentNickname = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const result = await this.service.updateMyEquipmentNickname(Number(req.params.id), req.body.nickname, req.user.id);
+        res.json(result);
+    });
 }

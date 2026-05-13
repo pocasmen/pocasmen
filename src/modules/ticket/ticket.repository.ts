@@ -39,7 +39,11 @@ export class TicketRepository {
 
         const { rows } = await db.query(
             `SELECT t.*, c.name as "clientName",
-                CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
+                CONCAT(
+                    e.brand, ' ', e.model, 
+                    CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END,
+                    CASE WHEN e.nickname IS NOT NULL AND e.nickname != '' THEN CONCAT(' [', e.nickname, ']') ELSE '' END
+                ) as "equipmentInfo",
                 p.first_name as "userFirstName", p.last_name as "userLastName"
             ${baseQuery} ${whereClause}
             ORDER BY t."createdAt" DESC
@@ -54,7 +58,11 @@ export class TicketRepository {
         const { rows } = await db.query(`
             SELECT t.*, c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif", 
                 c.is_blacklisted, c.blacklist_reason,
-                CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
+                CONCAT(
+                    e.brand, ' ', e.model, 
+                    CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END,
+                    CASE WHEN e.nickname IS NOT NULL AND e.nickname != '' THEN CONCAT(' [', e.nickname, ']') ELSE '' END
+                ) as "equipmentInfo",
                 p.first_name as "userFirstName", p.last_name as "userLastName"
             FROM tickets t
             LEFT JOIN clients c ON t.client_id = c.id
@@ -105,7 +113,11 @@ export class TicketRepository {
             pool.query('SELECT COUNT(*) FROM tickets WHERE client_id = $1 AND status != $2', [clientId, TicketStatus.DELETED]),
             pool.query(`
                 SELECT t.*,
-                    CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
+                    CONCAT(
+                        e.brand, ' ', e.model, 
+                        CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END,
+                        CASE WHEN e.nickname IS NOT NULL AND e.nickname != '' THEN CONCAT(' [', e.nickname, ']') ELSE '' END
+                    ) as "equipmentInfo",
                     s."startDate", s."endDate", s."hasReport",
                     COALESCE(
                         (SELECT r.signature IS NOT NULL AND r.signature != '' FROM reports r WHERE r."scheduleId" = s.id AND r.deleted_at IS NULL LIMIT 1),

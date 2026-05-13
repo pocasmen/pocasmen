@@ -30,6 +30,31 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
             const { data: equipData } = await supabase.from('equipments').select('brand, model').eq('id', Number(equipmentId)).single();
             const telegramMessage = `🆕 *Novo Ticket Criado *\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipData ? `${equipData.brand} ${equipData.model}` : '?'}\n*Descrição:* ${faultDescription}`;
             sendTelegramNotification(telegramMessage);
+
+            // Notificar o cliente que criou o ticket (e outros associados ao mesmo cliente)
+            const { rows: recipients } = await pool.query(`
+                SELECT cu.user_id, p.first_name
+                FROM client_users cu
+                JOIN profiles p ON p.id = cu.user_id
+                WHERE cu.client_id = $1 AND p.role = 'client'
+            `, [Number(client_id)]);
+
+            if (recipients.length > 0) {
+                const userIds = recipients.map(r => r.user_id);
+                const firstName = recipients.find(r => r.user_id === creatorId)?.first_name || 'Cliente';
+                const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
+                await notifyUsers(userIds, 'ticket_opened', {
+                    templateKey: 'ticket_opened',
+                    variables: {
+                        first_name: firstName,
+                        ticketId: String(ticket.id),
+                        ticketTitle: title,
+                        clientUrl: clientUrl
+                    },
+                    telegramText: `🆕 *Confirmação de Ticket Aberto*\n\nRecebemos o seu pedido: *#${ticket.id} - ${title}*\n\n[Acompanhar no Portal](${clientUrl}/tickets/${ticket.id})`
+                });
+            }
         } catch (err) {
             logger.error({ err }, 'Failed to process ticket side effects');
         }
@@ -145,4 +170,45 @@ export async function linkTicketToSchedule(db: PoolClient, ticketId: number, sch
     });
 
     return ticket;
+}
+
+/**
+ * Notifica os clientes quando um ticket é fechado/resolvido.
+ */
+export async function notifyTicketClosed(ticketId: number) {
+    try {
+        const { rows: ticketRows } = await pool.query(`
+            SELECT t.id, t.title, t.client_id
+            FROM tickets t
+            WHERE t.id = $1
+        `, [ticketId]);
+
+        if (ticketRows.length === 0) return;
+        const ticket = ticketRows[0];
+
+        const { rows: recipients } = await pool.query(`
+            SELECT cu.user_id, p.first_name
+            FROM client_users cu
+            JOIN profiles p ON p.id = cu.user_id
+            WHERE cu.client_id = $1 AND p.role = 'client'
+        `, [ticket.client_id]);
+
+        if (recipients.length > 0) {
+            const userIds = recipients.map(r => r.user_id);
+            const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
+            await notifyUsers(userIds, 'ticket_closed', {
+                templateKey: 'ticket_closed',
+                variables: {
+                    first_name: recipients[0].first_name || 'Cliente',
+                    ticketId: String(ticket.id),
+                    ticketTitle: ticket.title,
+                    clientUrl: clientUrl
+                },
+                telegramText: `✅ *Ticket Fechado*\n\nO seu pedido *#${ticket.id} - ${ticket.title}* foi fechado.\n\n[Ver Detalhes](${clientUrl}/tickets/${ticket.id})`
+            });
+        }
+    } catch (err) {
+        logger.error({ err, ticketId }, 'Failed to send ticket closed notifications');
+    }
 }

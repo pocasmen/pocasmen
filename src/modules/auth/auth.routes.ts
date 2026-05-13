@@ -8,11 +8,13 @@ import { technicianController } from '../technician/technician.routes';
 import { ClientRepository } from '../client/client.repository';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+import { AuthAuditRepository } from './auth-audit.repository';
 
 const router = Router();
 
 const clientRepo = new ClientRepository();
-const authService = new AuthService(clientRepo);
+const auditRepo = new AuthAuditRepository();
+const authService = new AuthService(clientRepo, auditRepo);
 const controller = new AuthController(authService);
 
 /**
@@ -56,6 +58,12 @@ router.post('/admin/resend-invite/:userId',
     authenticateToken,
     authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]),
     controller.resendInvite
+);
+
+router.get('/admin/audit-logs',
+    authenticateToken,
+    authorizeRoles([UserRole.SUPER_ADMIN]),
+    controller.getAuditLogs
 );
 
 router.get('/users', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN, UserRole.OFFICE_STAFF]), technicianController.getExternalUsers);

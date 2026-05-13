@@ -7,14 +7,64 @@ import * as emailService from '../../services/emailService';
 import { logger } from '../../utils/logger';
 import { UserRole } from '../../constants/enums';
 
-export class AuthService {
-    constructor(private clientRepo: ClientRepository) {}
+import { AuthAuditRepository } from './auth-audit.repository';
 
-    async login(data: any) {
+export class AuthService {
+    constructor(
+        private clientRepo: ClientRepository,
+        private auditRepo: AuthAuditRepository
+    ) {}
+
+    async login(data: any, metadata: { ip?: string, userAgent?: string }) {
         const { email, password } = data;
-        const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw new UnauthorizedError(error.message);
-        return authData;
+        let loginError: any = null;
+
+        try {
+            const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password });
+            loginError = error;
+            
+            if (loginError) {
+                await this.auditRepo.create({
+                    email,
+                    status: 'failure',
+                    ip: metadata.ip,
+                    userAgent: metadata.userAgent,
+                    reason: loginError.message
+                });
+                throw new UnauthorizedError(loginError.message);
+            }
+
+            await this.auditRepo.create({
+                email,
+                status: 'success',
+                ip: metadata.ip,
+                userAgent: metadata.userAgent,
+                userId: authData.user?.id
+            });
+
+            return authData;
+        } catch (err: any) {
+            // Se ainda não foi registado como falha (ou seja, foi uma exceção inesperada)
+            if (!loginError) {
+                await this.auditRepo.create({
+                    email,
+                    status: 'failure',
+                    ip: metadata.ip,
+                    userAgent: metadata.userAgent,
+                    reason: err.message || 'Erro interno no login'
+                });
+            }
+            throw err;
+        }
+    }
+
+    async getAuditLogs(page: number = 1, limit: number = 50) {
+        const offset = (page - 1) * limit;
+        const [logs, total] = await Promise.all([
+            this.auditRepo.findAll(limit, offset),
+            this.auditRepo.count()
+        ]);
+        return { logs, total, page, limit };
     }
 
     async getImpersonatedUser(id: string) {

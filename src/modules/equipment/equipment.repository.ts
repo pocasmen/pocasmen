@@ -5,7 +5,7 @@ import { CreateEquipmentDto, UpdateEquipmentDto } from './equipment.dto';
 
 export class EquipmentRepository {
     private readonly SELECT_WITH_CLIENT = `
-        SELECT e.id, e.brand, e.model, e."serialNumber", e."additionalInfo", e."clientId", e.status, c.name as "clientName"
+        SELECT e.id, e.brand, e.model, e."serialNumber", e.nickname, e."additionalInfo", e."clientId", e.status, c.name as "clientName"
         FROM equipments e
         LEFT JOIN clients c ON e."clientId" = c.id
     `;
@@ -16,7 +16,7 @@ export class EquipmentRepository {
         const params: any[] = [];
 
         if (search) {
-            query += ` WHERE e.brand ILIKE $1 OR e.model ILIKE $1 OR e."serialNumber" ILIKE $1 OR c.name ILIKE $1`;
+            query += ` WHERE e.brand ILIKE $1 OR e.model ILIKE $1 OR e."serialNumber" ILIKE $1 OR e.nickname ILIKE $1 OR c.name ILIKE $1`;
             params.push(`%${search}%`);
         }
         query += ' ORDER BY e.id ASC';
@@ -51,10 +51,10 @@ export class EquipmentRepository {
     }
 
     async create(data: CreateEquipmentDto, db: QueryRunner): Promise<Equipment> {
-        const { brand, model, serialNumber, clientId, additionalInfo, status } = data;
+        const { brand, model, serialNumber, clientId, nickname, additionalInfo, status } = data;
         const { rows } = await db.query(
-            'INSERT INTO equipments (brand, model, "serialNumber", "clientId", "additionalInfo", status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-            [brand, model, serialNumber, clientId, additionalInfo, status || 'active']
+            'INSERT INTO equipments (brand, model, "serialNumber", nickname, "clientId", "additionalInfo", status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+            [brand, model, serialNumber, nickname, clientId, additionalInfo, status || 'active']
         );
         return rows[0];
     }
@@ -69,6 +69,7 @@ export class EquipmentRepository {
             brand: 'brand',
             model: 'model',
             serialNumber: '"serialNumber"',
+            nickname: 'nickname',
             clientId: '"clientId"',
             additionalInfo: '"additionalInfo"',
             status: 'status'

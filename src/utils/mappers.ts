@@ -88,8 +88,30 @@ export const mapTaskToScheduleResponse = (
         id: `task_${task.id}`, // Prefix to distinguish from regular schedules
         scheduleId: task.id,    // Store original ID
         title: `${titlePrefix}Tarefa - ${task.title}`,
-        startDate: timeBlocks.length > 0 ? timeBlocks[0].start : undefined,
-        endDate: timeBlocks.length > 0 ? timeBlocks[timeBlocks.length - 1].end : undefined,
+        startDate: (() => {
+            if (timeBlocks.length > 0) return timeBlocks[0].start;
+            const createdDate = new Date(task.created_at);
+            const day = createdDate.getDay();
+            if (day === 0 || day === 6) {
+                const daysToAdd = day === 6 ? 2 : 1;
+                createdDate.setDate(createdDate.getDate() + daysToAdd);
+                createdDate.setHours(0, 0, 0, 0);
+            }
+            return createdDate.toISOString();
+        })(),
+        endDate: (() => {
+            if (timeBlocks.length > 0) return timeBlocks[timeBlocks.length - 1].end;
+            const createdDate = new Date(task.created_at);
+            const day = createdDate.getDay();
+            if (day === 0 || day === 6) {
+                const daysToAdd = day === 6 ? 2 : 1;
+                createdDate.setDate(createdDate.getDate() + daysToAdd);
+                createdDate.setHours(23, 59, 59, 999);
+            } else {
+                createdDate.setHours(createdDate.getHours() + 1);
+            }
+            return createdDate.toISOString();
+        })(),
         status: task.completed ? ScheduleStatus.COMPLETED : ScheduleStatus.PENDING,
         isCompleted: !!task.completed,
         hasReport: false,

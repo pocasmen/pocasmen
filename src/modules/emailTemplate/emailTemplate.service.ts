@@ -1,33 +1,18 @@
 import { withTransactionAs } from '../../config/db';
 import { SettingRepository } from '../setting/setting.repository';
 
-const DEFAULT_TEMPLATES = {
-    approval: {
-        name: 'Aprovação Cliente',
-        from: '',
-        subject: '',
-        body: '',
-    },
-    approval_pending_password: {
-        name: 'Aprovação Cliente (Senha Pendente)',
-        from: '',
-        subject: '',
-        body: '',
-    },
-};
 
 export class EmailTemplateService {
     constructor(private settingRepo: SettingRepository) {}
 
     async getTemplates() {
         const value = await this.settingRepo.findByKey('email_templates');
-        if (!value) return DEFAULT_TEMPLATES;
+        if (!value) return {};
 
         try {
-            const parsed = typeof value === 'string' ? JSON.parse(value) : value;
-            return { ...DEFAULT_TEMPLATES, ...parsed };
+            return typeof value === 'string' ? JSON.parse(value) : value;
         } catch {
-            return DEFAULT_TEMPLATES;
+            return {};
         }
     }
 

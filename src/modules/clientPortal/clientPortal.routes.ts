@@ -69,4 +69,10 @@ router.post('/my-report/:id/sign',
     controller.signMyReport
 );
 
+router.put('/my-equipments/:id/nickname',
+    authenticateToken,
+    authorizeRoles([UserRole.CLIENT]),
+    controller.updateMyEquipmentNickname
+);
+
 export default router;

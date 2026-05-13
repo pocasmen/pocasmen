@@ -155,4 +155,17 @@ export class ClientPortalService {
             return { success: true };
         });
     }
+
+    async updateMyEquipmentNickname(equipmentId: number, nickname: string, userId: string) {
+        return await withTransactionAs(userId, async (db) => {
+            const equipment = await this.equipmentRepo.findById(equipmentId, db);
+            if (!equipment) throw new NotFoundError('Equipamento não encontrado.');
+
+            // Validate access to the client of this equipment
+            await this.getValidatedClientId(userId, equipment.clientId);
+
+            // Update only the nickname
+            return await this.equipmentRepo.update(equipmentId, { nickname }, db);
+        });
+    }
 }
