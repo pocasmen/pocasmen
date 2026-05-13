@@ -159,7 +159,7 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
         const { data: profiles, error: pError } = await supabase
             .from('profiles')
             .select('id, telegramchatid, role, first_name, last_name')
-            .or(`id.in.(${technicianIds.map(id => `"${id}"`).join(',')}),role.eq.admin,role.eq.super_admin`);
+            .or(`id.in.(${technicianIds.join(',')}),role.eq.admin,role.eq.super_admin`);
 
         if (pError || !profiles) {
             logger.error(pError, 'Error fetching admin and technician profiles for notification');
