@@ -1,5 +1,5 @@
 import { pool } from '../../config/db';
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 
 export class ProfileRepository {
     async findTechnicians(db: QueryRunner): Promise<any[]> {

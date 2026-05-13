@@ -78,7 +78,7 @@ export class ScheduleService {
         const { technicianIds, startDate, endDate } = data;
 
         const inserted = await withTransactionAs(userId, (db) =>
-            scheduleService.createFullSchedule(db, data)
+            scheduleService.createFullSchedule(db, data, userId)
         );
 
         const scheduleId = inserted.id;
@@ -103,7 +103,7 @@ export class ScheduleService {
         const { startDate, endDate, technicianIds, isCompleted } = data;
 
         const result = await withTransactionAs(userId, (db) =>
-            scheduleService.updateFullSchedule(db, scheduleId, data)
+            scheduleService.updateFullSchedule(db, scheduleId, data, userId)
         );
 
         const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
@@ -127,7 +127,7 @@ export class ScheduleService {
         const { startDate, endDate } = data;
 
         const result = await withTransactionAs(userId, (db) =>
-            scheduleService.completeFullSchedule(db, scheduleId, data)
+            scheduleService.completeFullSchedule(db, scheduleId, data, userId)
         );
 
         const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;

@@ -1,4 +1,4 @@
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 import { ParsedInvoice, ParsedInvoiceItem } from '../../utils/pdfParser';
 
 export class InvoiceRepository {

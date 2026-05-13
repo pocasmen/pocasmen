@@ -1,5 +1,5 @@
 import { pool } from '../../config/db';
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 import { Client } from '../../types/supabase';
 import { CreateClientDto, UpdateClientDto } from './client.dto';
 

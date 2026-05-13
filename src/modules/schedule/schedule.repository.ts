@@ -1,5 +1,5 @@
 import { Pool, PoolClient } from 'pg';
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 
 export class ScheduleRepository {
     constructor(private pool: Pool) { }
@@ -42,6 +42,8 @@ export class ScheduleRepository {
             SELECT s.*,
                 c.name as "clientName",
                 CONCAT(e.brand, ' ', e.model) as "equipmentModel",
+                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
+                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -60,6 +62,8 @@ export class ScheduleRepository {
             FROM schedules s
             LEFT JOIN clients c ON s."clientId" = c.id
             LEFT JOIN equipments e ON s."equipmentId" = e.id
+            LEFT JOIN profiles p_creator ON s.created_by = p_creator.id
+            LEFT JOIN profiles p_updater ON s.updated_by = p_updater.id
             ${whereClause}
             ORDER BY s."startDate" ASC NULLS LAST
             LIMIT $${limitIdx} OFFSET $${offsetIdx}
@@ -73,6 +77,8 @@ export class ScheduleRepository {
             SELECT s.*,
                 c.name as "clientName",
                 CONCAT(e.brand, ' ', e.model) as "equipmentModel",
+                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
+                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -91,6 +97,8 @@ export class ScheduleRepository {
             FROM schedules s
             LEFT JOIN clients c ON s."clientId" = c.id
             LEFT JOIN equipments e ON s."equipmentId" = e.id
+            LEFT JOIN profiles p_creator ON s.created_by = p_creator.id
+            LEFT JOIN profiles p_updater ON s.updated_by = p_updater.id
             WHERE s.id = $1
         `, [id]);
         return rows[0] ?? null;
@@ -157,6 +165,8 @@ export class ScheduleRepository {
             SELECT s.*,
                 c.name as "clientName",
                 e.model as "equipmentModel",
+                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
+                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -175,6 +185,8 @@ export class ScheduleRepository {
             FROM schedules s
             LEFT JOIN clients c ON s."clientId" = c.id
             LEFT JOIN equipments e ON s."equipmentId" = e.id
+            LEFT JOIN profiles p_creator ON s.created_by = p_creator.id
+            LEFT JOIN profiles p_updater ON s.updated_by = p_updater.id
             WHERE s."startDate" >= $1 AND s."startDate" <= $2
             ORDER BY s."startDate" ASC
         `, [startDate, endDate]);
@@ -222,6 +234,8 @@ export class ScheduleRepository {
                 SELECT s.*, 
                     (EXISTS (SELECT 1 FROM reports r WHERE r."scheduleId" = s.id AND r.deleted_at IS NULL)) as "hasReport",
                     CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
+                    CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
+                    CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
                     COALESCE(
                         (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                          FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -238,6 +252,8 @@ export class ScheduleRepository {
                     ) as parts
                 FROM schedules s
                 LEFT JOIN equipments e ON s."equipmentId" = e.id
+                LEFT JOIN profiles p_creator ON s.created_by = p_creator.id
+                LEFT JOIN profiles p_updater ON s.updated_by = p_updater.id
                 WHERE s."clientId" = $1
                 ORDER BY s."startDate" DESC
                 LIMIT $2 OFFSET $3

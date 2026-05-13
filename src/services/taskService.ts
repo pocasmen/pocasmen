@@ -47,14 +47,15 @@ export async function createFullTask(db: PoolClient, creatorId: string, data: an
 
     const { rows } = await db.query<InternalTask>(
         `INSERT INTO internal_tasks (
-            user_id, created_by, title, description, type, priority, 
+            user_id, created_by, updated_by, title, description, type, priority, 
             client_id, equipment_id, is_private, show_on_calendar,
             completed, completed_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
         RETURNING *`,
         [
             user_id || creatorId, // Assignee (defaults to creator)
             creatorId,           // Creator
+            creatorId,           // updated_by (initially same as creator)
             title,
             description,
             type || 'other',
@@ -81,7 +82,7 @@ export async function createFullTask(db: PoolClient, creatorId: string, data: an
 /**
  * Updates a full internal task with time blocks.
  */
-export async function updateFullTask(db: PoolClient, taskId: number, data: any) {
+export async function updateFullTask(db: PoolClient, taskId: number, data: any, userId: string) {
     const {
         user_id, title, description, type, priority, client_id, equipment_id,
         is_private, show_on_calendar, timeBlocks
@@ -91,8 +92,8 @@ export async function updateFullTask(db: PoolClient, taskId: number, data: any) 
         `UPDATE internal_tasks SET 
             user_id = $1, title = $2, description = $3, type = $4, priority = $5, 
             client_id = $6, equipment_id = $7, is_private = $8, show_on_calendar = $9,
-            completed = $10, completed_at = $11
-        WHERE id = $12 RETURNING *`,
+            completed = $10, completed_at = $11, updated_by = $12
+        WHERE id = $13 RETURNING *`,
         [
             user_id,
             title,
@@ -105,6 +106,7 @@ export async function updateFullTask(db: PoolClient, taskId: number, data: any) 
             show_on_calendar || false,
             data.completed !== undefined ? data.completed : false,
             data.completed_at !== undefined ? data.completed_at : null,
+            userId,
             taskId
         ]
     );

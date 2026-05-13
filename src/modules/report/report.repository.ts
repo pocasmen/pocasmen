@@ -1,5 +1,5 @@
 import { pool } from '../../config/db';
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 import { StockType } from '../../types';
 
 export class ReportRepository {
@@ -31,7 +31,9 @@ export class ReportRepository {
         const total = parseInt(countRes.rows[0].count, 10);
 
         const { rows } = await db.query(`
-            SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", e.brand as "equipmentBrand", e.model as "equipmentModel",
+            SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", e.brand as "equipmentBrand", e.model as "equipmentModel", e.nickname as "equipmentNickname",
+                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
+                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
                 COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
@@ -40,6 +42,8 @@ export class ReportRepository {
             FROM reports r 
             LEFT JOIN clients c ON r."clientId" = c.id 
             LEFT JOIN equipments e ON r."equipmentId" = e.id
+            LEFT JOIN profiles p_creator ON r.created_by = p_creator.id
+            LEFT JOIN profiles p_updater ON r.updated_by = p_updater.id
             LEFT JOIN billing_tasks bt ON bt.report_id = r.id
             ${whereSql}
             ORDER BY r."serviceDate" DESC, r.id DESC
@@ -52,7 +56,9 @@ export class ReportRepository {
     async findById(id: number, db: QueryRunner): Promise<any | null> {
         const { rows } = await db.query(`
             SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif",
-                e.brand as "equipmentBrand", e.model as "equipmentModel", e."serialNumber" as "equipmentSerialNumber",
+                e.brand as "equipmentBrand", e.model as "equipmentModel", e."serialNumber" as "equipmentSerialNumber", e.nickname as "equipmentNickname",
+                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
+                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
                 COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
@@ -61,6 +67,8 @@ export class ReportRepository {
             FROM reports r
             LEFT JOIN clients c ON r."clientId"=c.id
             LEFT JOIN equipments e ON r."equipmentId"=e.id
+            LEFT JOIN profiles p_creator ON r.created_by = p_creator.id
+            LEFT JOIN profiles p_updater ON r.updated_by = p_updater.id
             LEFT JOIN billing_tasks bt ON bt.report_id = r.id
             WHERE r.id=$1 AND r.deleted_at IS NULL
         `, [id]);

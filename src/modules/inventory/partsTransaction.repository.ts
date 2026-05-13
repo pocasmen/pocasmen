@@ -1,4 +1,4 @@
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 import { Tables } from '../../types/supabase';
 
 export type PartTransaction = Tables<'parts_transactions'>;

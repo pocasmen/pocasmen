@@ -1,5 +1,5 @@
 import { pool } from '../../config/db';
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 
 export class SettingRepository {
     async findAll(db: QueryRunner): Promise<Record<string, string>> {

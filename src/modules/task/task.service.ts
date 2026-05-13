@@ -33,7 +33,7 @@ export class TaskService {
             throw new NotFoundError('Task not found');
         }
 
-        return withTransactionAs(userId, (db) => taskService.updateFullTask(db, taskId, data));
+        return withTransactionAs(userId, (db) => taskService.updateFullTask(db, taskId, data, userId));
     }
 
     async deleteTask(taskId: number, userId: string, role: string) {

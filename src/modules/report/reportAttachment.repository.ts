@@ -1,4 +1,4 @@
-import { QueryRunner } from '../../types/db.types';
+import { QueryRunner } from '../../types';
 
 export class ReportAttachmentRepository {
     async findByReportId(reportId: number, db: QueryRunner) {

@@ -1,4 +1,7 @@
+import { Pool, PoolClient } from 'pg';
 import { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification, SchedulePriority, BillingStatus } from '../constants/enums';
+
+export type QueryRunner = Pool | PoolClient;
 
 export { UserRole, TicketStatus, ScheduleStatus, StockType, ServiceClassification, SchedulePriority, BillingStatus };
 

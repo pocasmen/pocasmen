@@ -178,9 +178,9 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
             "clientId", "equipmentId", "scheduleId", "serviceDate", "hours",
             "description", "damage", "serviceType", "internal_notes",
             "report_number", "signature", "technician_signature",
-            "includes_travel", "classification", "created_by", "time_blocks",
+            "includes_travel", "classification", "created_by", "updated_by", "time_blocks",
             "client_signer_name"
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING id`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING id`,
         [
             clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage || '', JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])), internalNotes || '',
@@ -188,6 +188,7 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
             creatorId,
+            creatorId, // updated_by also creator initially
             timeBlocks ? JSON.stringify(timeBlocks) : null,
             client_signer_name || null
         ]
@@ -292,8 +293,9 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
             "clientId" = $1, "equipmentId" = $2, "scheduleId" = $3, "serviceDate" = $4, "hours" = $5,
             "description" = $6, "damage" = $7, "serviceType" = $8, "internal_notes" = $9,
             "signature" = $10, "technician_signature" = $11, "includes_travel" = $12,
-            "classification" = $13, "time_blocks" = $14, "client_signer_name" = $15
-        WHERE id = $16`,
+            "classification" = $13, "time_blocks" = $14, "client_signer_name" = $15,
+            "updated_by" = $16
+        WHERE id = $17`,
         [
             clientId, equipmentId, scheduleId, serviceDate, hours,
             description, damage || '', JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])), internalNotes || '',
@@ -301,6 +303,7 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
             classification || 'geral',
             timeBlocks ? JSON.stringify(timeBlocks) : null,
             client_signer_name || null,
+            userId,
             reportId
         ]
     );

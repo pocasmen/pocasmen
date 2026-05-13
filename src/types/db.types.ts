@@ -1,12 +1,3 @@
-/**
- * Contrato mínimo de acesso à base de dados.
- * Satisfeito tanto por Pool como por PoolClient — permite que os Repositories
- * sejam desacoplados e facilmente mockáveis em testes unitários.
- */
-export type QueryRunner = {
-    query: (text: string, values?: any[]) => Promise<{ rows: any[]; rowCount: number | null }>;
-};
-
 export type Json =
   | string
   | number
@@ -111,6 +102,7 @@ export type Database = {
           nif: string | null
           postCode: string | null
           city: string | null
+          nickname: string | null
           is_blacklisted: boolean | null
           blacklist_reason: string | null
         }
@@ -121,6 +113,7 @@ export type Database = {
           nif?: string | null
           postCode?: string | null
           city?: string | null
+          nickname?: string | null
           is_blacklisted?: boolean | null
           blacklist_reason?: string | null
         }
@@ -131,6 +124,7 @@ export type Database = {
           nif?: string | null
           postCode?: string | null
           city?: string | null
+          nickname?: string | null
           is_blacklisted?: boolean | null
           blacklist_reason?: string | null
         }
@@ -234,86 +228,6 @@ export type Database = {
           },
         ]
       }
-      equipments: {
-        Row: {
-          id: number
-          brand: string
-          model: string | null
-          serialNumber: string | null
-          clientId: number
-          additionalInfo: string | null
-          status: string | null
-        }
-        Insert: {
-          id?: number
-          brand: string
-          model?: string | null
-          serialNumber?: string | null
-          clientId: number
-          additionalInfo?: string | null
-          status?: string | null
-        }
-        Update: {
-          id?: number
-          brand?: string
-          model?: string | null
-          serialNumber?: string | null
-          clientId?: number
-          additionalInfo?: string | null
-          status?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "equipments_clientId_fkey"
-            columns: ["clientId"]
-            isOneToOne: false
-            referencedRelation: "clients"
-            referencedColumns: ["id"]
-          }
-        ]
-      }
-      equipment_ownership: {
-        Row: {
-          id: number
-          equipment_id: number
-          client_id: number
-          start_date: string
-          end_date: string | null
-          created_at: string | null
-        }
-        Insert: {
-          id?: number
-          equipment_id: number
-          client_id: number
-          start_date: string
-          end_date?: string | null
-          created_at?: string | null
-        }
-        Update: {
-          id?: number
-          equipment_id?: number
-          client_id?: number
-          start_date?: string
-          end_date?: string | null
-          created_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "equipment_ownership_equipment_id_fkey"
-            columns: ["equipment_id"]
-            isOneToOne: false
-            referencedRelation: "equipments"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "equipment_ownership_client_id_fkey"
-            columns: ["client_id"]
-            isOneToOne: false
-            referencedRelation: "clients"
-            referencedColumns: ["id"]
-          }
-        ]
-      }
       invoice_items: {
         Row: {
           id: string
@@ -360,7 +274,7 @@ export type Database = {
           id: string
           first_name: string | null
           last_name: string | null
-          phone_number: string | null
+          client_id: number | null
           color: string | null
           created_at: string
           updated_at: string
@@ -374,12 +288,13 @@ export type Database = {
           phone: string | null
           google_calendar_color_id: string | null
           client_role: string | null
+          notification_prefs: Json | null
         }
         Insert: {
           id?: string
           first_name?: string | null
           last_name?: string | null
-          phone_number?: string | null
+          client_id?: number | null
           color?: string | null
           created_at?: string
           updated_at?: string
@@ -393,12 +308,13 @@ export type Database = {
           phone?: string | null
           google_calendar_color_id?: string | null
           client_role?: string | null
+          notification_prefs?: Json | null
         }
         Update: {
           id?: string
           first_name?: string | null
           last_name?: string | null
-          phone_number?: string | null
+          client_id?: number | null
           color?: string | null
           created_at?: string
           updated_at?: string
@@ -412,8 +328,17 @@ export type Database = {
           phone?: string | null
           google_calendar_color_id?: string | null
           client_role?: string | null
+          notification_prefs?: Json | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "profiles_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       schedule_technicians: {
         Row: {
@@ -522,6 +447,89 @@ export type Database = {
         }
         Relationships: []
       }
+      equipment_ownership: {
+        Row: {
+          id: number
+          equipment_id: number
+          client_id: number
+          start_date: string
+          end_date: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: number
+          equipment_id: number
+          client_id: number
+          start_date?: string
+          end_date?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: number
+          equipment_id?: number
+          client_id?: number
+          start_date?: string
+          end_date?: string | null
+          created_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "equipment_ownership_equipment_id_fkey"
+            columns: ["equipment_id"]
+            isOneToOne: false
+            referencedRelation: "equipments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "equipment_ownership_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      equipments: {
+        Row: {
+          id: number
+          brand: string
+          model: string | null
+          serialNumber: string | null
+          clientId: number
+          additionalInfo: string | null
+          status: string | null
+          nickname: string | null
+        }
+        Insert: {
+          id?: number
+          brand: string
+          model?: string | null
+          serialNumber?: string | null
+          clientId: number
+          additionalInfo?: string | null
+          status?: string | null
+          nickname?: string | null
+        }
+        Update: {
+          id?: number
+          brand?: string
+          model?: string | null
+          serialNumber?: string | null
+          clientId?: number
+          additionalInfo?: string | null
+          status?: string | null
+          nickname?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "equipments_clientId_fkey"
+            columns: ["clientId"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       parts: {
         Row: {
           id: number
@@ -541,6 +549,8 @@ export type Database = {
           image_path: string | null
           price: number | null
           notes: string | null
+          deleted_at: string | null
+          deleted_by: string | null
           track_stock: boolean | null
         }
         Insert: {
@@ -561,6 +571,8 @@ export type Database = {
           image_path?: string | null
           price?: number | null
           notes?: string | null
+          deleted_at?: string | null
+          deleted_by?: string | null
           track_stock?: boolean | null
         }
         Update: {
@@ -581,9 +593,19 @@ export type Database = {
           image_path?: string | null
           price?: number | null
           notes?: string | null
+          deleted_at?: string | null
+          deleted_by?: string | null
           track_stock?: boolean | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "parts_deleted_by_fkey"
+            columns: ["deleted_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       parts_order_items: {
         Row: {
@@ -791,7 +813,7 @@ export type Database = {
           quantity: number
           stock_type: string | null
           is_applied: boolean | null
-          designation: string | null
+          designation: string
         }
         Insert: {
           scheduleId: number
@@ -799,7 +821,7 @@ export type Database = {
           quantity: number
           stock_type?: string | null
           is_applied?: boolean | null
-          designation?: string | null
+          designation?: string
         }
         Update: {
           scheduleId?: number
@@ -807,7 +829,7 @@ export type Database = {
           quantity?: number
           stock_type?: string | null
           is_applied?: boolean | null
-          designation?: string | null
+          designation?: string
         }
         Relationships: [
           {
@@ -952,6 +974,42 @@ export type Database = {
           },
         ]
       }
+      auth_audit_logs: {
+        Row: {
+          id: number
+          timestamp: string | null
+          email: string
+          status: string
+          ip: string | null
+          user_agent: string | null
+          reason: string | null
+          user_id: string | null
+          created_at: string | null
+        }
+        Insert: {
+          id?: number
+          timestamp?: string | null
+          email: string
+          status: string
+          ip?: string | null
+          user_agent?: string | null
+          reason?: string | null
+          user_id?: string | null
+          created_at?: string | null
+        }
+        Update: {
+          id?: number
+          timestamp?: string | null
+          email?: string
+          status?: string
+          ip?: string | null
+          user_agent?: string | null
+          reason?: string | null
+          user_id?: string | null
+          created_at?: string | null
+        }
+        Relationships: []
+      }
       schedules: {
         Row: {
           id: number
@@ -969,6 +1027,10 @@ export type Database = {
           includes_travel: boolean | null
           classification: string | null
           priority: string | null
+          created_at: string | null
+          updated_at: string | null
+          created_by: string | null
+          updated_by: string | null
         }
         Insert: {
           id?: number
@@ -986,6 +1048,10 @@ export type Database = {
           includes_travel?: boolean | null
           classification?: string | null
           priority?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+          created_by?: string | null
+          updated_by?: string | null
         }
         Update: {
           id?: number
@@ -1003,6 +1069,10 @@ export type Database = {
           includes_travel?: boolean | null
           classification?: string | null
           priority?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+          created_by?: string | null
+          updated_by?: string | null
         }
         Relationships: [
           {
@@ -1026,110 +1096,16 @@ export type Database = {
             referencedRelation: "tickets"
             referencedColumns: ["id"]
           },
-        ]
-      }
-      reports: {
-        Row: {
-          id: number
-          clientId: number | null
-          equipmentId: number | null
-          serviceDate: string | null
-          hours: number | null
-          description: string | null
-          scheduleId: number | null
-          serviceType: Json | null
-          damage: string | null
-          internal_notes: string | null
-          report_number: number | null
-          signature: string | null
-          technician_signature: string | null
-          includes_travel: boolean | null
-          classification: string | null
-          deleted_at: string | null
-          deleted_by: string | null
-          created_by: string | null
-          billing_status: string | null
-          time_blocks: Json | null
-          client_signer_name: string | null
-        }
-        Insert: {
-          id?: number
-          clientId?: number | null
-          equipmentId?: number | null
-          serviceDate?: string | null
-          hours?: number | null
-          description?: string | null
-          scheduleId?: number | null
-          serviceType?: Json | null
-          damage?: string | null
-          internal_notes?: string | null
-          report_number?: number | null
-          signature?: string | null
-          technician_signature?: string | null
-          includes_travel?: boolean | null
-          classification?: string | null
-          deleted_at?: string | null
-          deleted_by?: string | null
-          created_by?: string | null
-          billing_status?: string | null
-          time_blocks?: Json | null
-          client_signer_name?: string | null
-        }
-        Update: {
-          id?: number
-          clientId?: number | null
-          equipmentId?: number | null
-          serviceDate?: string | null
-          hours?: number | null
-          description?: string | null
-          scheduleId?: number | null
-          serviceType?: Json | null
-          damage?: string | null
-          internal_notes?: string | null
-          report_number?: number | null
-          signature?: string | null
-          technician_signature?: string | null
-          includes_travel?: boolean | null
-          classification?: string | null
-          deleted_at?: string | null
-          deleted_by?: string | null
-          created_by?: string | null
-          billing_status?: string | null
-          time_blocks?: Json | null
-          client_signer_name?: string | null
-        }
-        Relationships: [
           {
-            foreignKeyName: "reports_clientId_fkey"
-            columns: ["clientId"]
-            isOneToOne: false
-            referencedRelation: "clients"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "reports_equipmentId_fkey"
-            columns: ["equipmentId"]
-            isOneToOne: false
-            referencedRelation: "equipments"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "reports_scheduleid_fkey"
-            columns: ["scheduleId"]
-            isOneToOne: false
-            referencedRelation: "schedules"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "reports_deleted_by_fkey"
-            columns: ["deleted_by"]
+            foreignKeyName: "schedules_created_by_fkey"
+            columns: ["created_by"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "reports_created_by_fkey"
-            columns: ["created_by"]
+            foreignKeyName: "schedules_updated_by_fkey"
+            columns: ["updated_by"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
@@ -1165,113 +1141,27 @@ export type Database = {
           },
         ]
       }
-      internal_tasks: {
-        Row: {
-          id: number
-          user_id: string
-          created_by: string
-          title: string
-          description: string
-          type: string
-          priority: string
-          client_id: number | null
-          equipment_id: number | null
-          is_private: boolean
-          show_on_calendar: boolean
-          estimated_hours: number | null
-          created_at: string
-          updated_at: string
-          completed: boolean | null
-          completed_at: string | null
-        }
-        Insert: {
-          id?: number
-          user_id: string
-          created_by: string
-          title: string
-          description: string
-          type: string
-          priority: string
-          client_id?: number | null
-          equipment_id?: number | null
-          is_private?: boolean
-          show_on_calendar?: boolean
-          estimated_hours?: number | null
-          created_at?: string
-          updated_at?: string
-          completed?: boolean | null
-          completed_at?: string | null
-        }
-        Update: {
-          id?: number
-          user_id?: string
-          created_by?: string
-          title?: string
-          description?: string
-          type?: string
-          priority?: string
-          client_id?: number | null
-          equipment_id?: number | null
-          is_private?: boolean
-          show_on_calendar?: boolean
-          estimated_hours?: number | null
-          created_at?: string
-          updated_at?: string
-          completed?: boolean | null
-          completed_at?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "internal_tasks_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "internal_tasks_created_by_fkey"
-            columns: ["created_by"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "internal_tasks_client_id_fkey"
-            columns: ["client_id"]
-            isOneToOne: false
-            referencedRelation: "clients"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "internal_tasks_equipment_id_fkey"
-            columns: ["equipment_id"]
-            isOneToOne: false
-            referencedRelation: "equipments"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       report_parts: {
         Row: {
           reportId: number
           partId: number
           quantity: number
           stock_type: string | null
-          designation: string | null
+          designation: string
         }
         Insert: {
           reportId: number
           partId: number
           quantity: number
           stock_type?: string | null
-          designation?: string | null
+          designation?: string
         }
         Update: {
           reportId?: number
           partId?: number
           quantity?: number
           stock_type?: string | null
-          designation?: string | null
+          designation?: string
         }
         Relationships: [
           {
@@ -1335,6 +1225,226 @@ export type Database = {
           {
             foreignKeyName: "parts_transactions_user_id_fkey"
             columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      reports: {
+        Row: {
+          id: number
+          clientId: number | null
+          equipmentId: number | null
+          serviceDate: string | null
+          hours: number | null
+          description: string | null
+          scheduleId: number | null
+          serviceType: Json | null
+          damage: string | null
+          internal_notes: string | null
+          report_number: number | null
+          signature: string | null
+          technician_signature: string | null
+          includes_travel: boolean | null
+          classification: string | null
+          deleted_at: string | null
+          deleted_by: string | null
+          created_by: string | null
+          billing_status: string | null
+          time_blocks: Json | null
+          client_signer_name: string | null
+          created_at: string | null
+          updated_at: string | null
+          updated_by: string | null
+        }
+        Insert: {
+          id?: number
+          clientId?: number | null
+          equipmentId?: number | null
+          serviceDate?: string | null
+          hours?: number | null
+          description?: string | null
+          scheduleId?: number | null
+          serviceType?: Json | null
+          damage?: string | null
+          internal_notes?: string | null
+          report_number?: number | null
+          signature?: string | null
+          technician_signature?: string | null
+          includes_travel?: boolean | null
+          classification?: string | null
+          deleted_at?: string | null
+          deleted_by?: string | null
+          created_by?: string | null
+          billing_status?: string | null
+          time_blocks?: Json | null
+          client_signer_name?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Update: {
+          id?: number
+          clientId?: number | null
+          equipmentId?: number | null
+          serviceDate?: string | null
+          hours?: number | null
+          description?: string | null
+          scheduleId?: number | null
+          serviceType?: Json | null
+          damage?: string | null
+          internal_notes?: string | null
+          report_number?: number | null
+          signature?: string | null
+          technician_signature?: string | null
+          includes_travel?: boolean | null
+          classification?: string | null
+          deleted_at?: string | null
+          deleted_by?: string | null
+          created_by?: string | null
+          billing_status?: string | null
+          time_blocks?: Json | null
+          client_signer_name?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "reports_clientId_fkey"
+            columns: ["clientId"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reports_equipmentId_fkey"
+            columns: ["equipmentId"]
+            isOneToOne: false
+            referencedRelation: "equipments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reports_scheduleid_fkey"
+            columns: ["scheduleId"]
+            isOneToOne: false
+            referencedRelation: "schedules"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reports_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reports_deleted_by_fkey"
+            columns: ["deleted_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "reports_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      internal_tasks: {
+        Row: {
+          id: number
+          user_id: string
+          created_by: string
+          title: string
+          description: string
+          type: string
+          priority: string
+          client_id: number | null
+          equipment_id: number | null
+          is_private: boolean
+          show_on_calendar: boolean
+          estimated_hours: number | null
+          created_at: string
+          updated_at: string
+          completed: boolean | null
+          completed_at: string | null
+          updated_by: string | null
+        }
+        Insert: {
+          id?: number
+          user_id: string
+          created_by: string
+          title: string
+          description: string
+          type: string
+          priority: string
+          client_id?: number | null
+          equipment_id?: number | null
+          is_private?: boolean
+          show_on_calendar?: boolean
+          estimated_hours?: number | null
+          created_at?: string
+          updated_at?: string
+          completed?: boolean | null
+          completed_at?: string | null
+          updated_by?: string | null
+        }
+        Update: {
+          id?: number
+          user_id?: string
+          created_by?: string
+          title?: string
+          description?: string
+          type?: string
+          priority?: string
+          client_id?: number | null
+          equipment_id?: number | null
+          is_private?: boolean
+          show_on_calendar?: boolean
+          estimated_hours?: number | null
+          created_at?: string
+          updated_at?: string
+          completed?: boolean | null
+          completed_at?: string | null
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "internal_tasks_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "internal_tasks_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "internal_tasks_client_id_fkey"
+            columns: ["client_id"]
+            isOneToOne: false
+            referencedRelation: "clients"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "internal_tasks_equipment_id_fkey"
+            columns: ["equipment_id"]
+            isOneToOne: false
+            referencedRelation: "equipments"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "internal_tasks_updated_by_fkey"
+            columns: ["updated_by"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]

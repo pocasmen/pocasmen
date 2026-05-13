@@ -407,7 +407,7 @@ export async function syncPartsAndReservations(db: PoolClient, scheduleId: numbe
 /**
  * Creates a full schedule with all relations
  */
-export async function createFullSchedule(db: PoolClient, data: any) {
+export async function createFullSchedule(db: PoolClient, data: any, userId: string) {
     const {
         startDate, endDate, clientId, equipmentId, technicianIds,
         ticketId, internalNotes, serviceType, parts, timeBlocks,
@@ -420,9 +420,10 @@ export async function createFullSchedule(db: PoolClient, data: any) {
         `INSERT INTO schedules (
             title, "startDate", "endDate", "clientId", "equipmentId", 
             "isCompleted", "additionalInfo", "serviceType", "ticketId",
-            "acknowledgementState", "includes_travel", "classification", "priority"
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
-        RETURNING id, title, "startDate", "endDate", "isCompleted", "hasReport", "additionalInfo", "serviceType", "ticketId", "clientId", "equipmentId", "acknowledgementState", "includes_travel", "classification", "priority"`,
+            "acknowledgementState", "includes_travel", "classification", "priority",
+            "created_by", "updated_by"
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) 
+        RETURNING id, title, "startDate", "endDate", "isCompleted", "hasReport", "additionalInfo", "serviceType", "ticketId", "clientId", "equipmentId", "acknowledgementState", "includes_travel", "classification", "priority", "created_by", "updated_by"`,
         [
             generatedTitle,
             startDate || null,
@@ -436,7 +437,9 @@ export async function createFullSchedule(db: PoolClient, data: any) {
             (!startDate) ? ScheduleStatus.PENDING_SCHEDULING : ScheduleStatus.PENDING,
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
-            priority || null
+            priority || null,
+            userId,
+            userId
         ]
     );
     const insertedSchedule = rows[0];
@@ -457,7 +460,7 @@ export async function createFullSchedule(db: PoolClient, data: any) {
 /**
  * Updates a full schedule with all relations
  */
-export async function updateFullSchedule(db: PoolClient, scheduleId: number, data: any) {
+export async function updateFullSchedule(db: PoolClient, scheduleId: number, data: any, userId: string) {
     const {
         startDate, endDate, clientId, equipmentId, technicianIds,
         isCompleted, ticketId, internalNotes, serviceType, parts,
@@ -523,8 +526,9 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
         `UPDATE schedules SET 
             title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, 
             "isCompleted" = $6, "additionalInfo" = $7, "serviceType" = $8, "ticketId" = $9,
-            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12, "priority" = $13
-        WHERE id = $14 RETURNING *`,
+            "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12, "priority" = $13,
+            "updated_by" = $14
+        WHERE id = $15 RETURNING *`,
         [
             generatedTitle,
             startDate || null,
@@ -539,6 +543,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
             data.priority || originalSchedule.priority || null,
+            userId,
             scheduleId
         ]
     );
@@ -567,7 +572,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
 /**
  * Completes a schedule
  */
-export async function completeFullSchedule(db: PoolClient, scheduleId: number, data: any) {
+export async function completeFullSchedule(db: PoolClient, scheduleId: number, data: any, userId: string) {
     const {
         startDate, endDate, clientId, equipmentId, technicianIds,
         ticketId, internalNotes, serviceType, parts, classification,
@@ -580,8 +585,8 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
     const { rows } = await db.query<Schedule>(
-        `UPDATE schedules SET title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, "isCompleted" = true, "additionalInfo" = $6, "serviceType" = $7, "includes_travel" = $8, "classification" = $9 WHERE id = $10 RETURNING *`,
-        [generatedTitle, startDate, endDate, clientId, equipmentId, internalNotes, serviceType, includesTravel || false, classification || 'geral', scheduleId]
+        `UPDATE schedules SET title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, "isCompleted" = true, "additionalInfo" = $6, "serviceType" = $7, "includes_travel" = $8, "classification" = $9, "updated_by" = $10 WHERE id = $11 RETURNING *`,
+        [generatedTitle, startDate, endDate, clientId, equipmentId, internalNotes, serviceType, includesTravel || false, classification || 'geral', userId, scheduleId]
     );
     const updated = rows[0];
 
