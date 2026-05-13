@@ -156,21 +156,28 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
             equipmentInfo = `${brand} ${model}${serialNumber ? ` (S/N: ${serialNumber})` : ''}`.trim();
         }
 
-        const { data: profiles, error: pError } = await supabase
-            .from('profiles')
-            .select('id, telegramchatid, role, first_name, last_name')
-            .or(`id.in.(${technicianIds.join(',')}),role.eq.admin,role.eq.super_admin`);
+        // Garantir que os IDs são únicos e strings limpas
+        const uniqueTechIds = Array.from(new Set(technicianIds.map(id => String(id).trim()))).filter(Boolean);
 
-        if (pError || !profiles) {
-            logger.error(pError, 'Error fetching admin and technician profiles for notification');
-            return;
-        }
+        // Obter perfis de técnicos e admins de forma separada para máxima fiabilidade
+        const [techProfilesRes, adminProfilesRes] = await Promise.all([
+            uniqueTechIds.length > 0 
+                ? supabase.from('profiles').select('id, telegramchatid, role, first_name, last_name').in('id', uniqueTechIds)
+                : Promise.resolve({ data: [], error: null }),
+            supabase.from('profiles').select('id, telegramchatid, role, first_name, last_name').in('role', ['admin', 'super_admin'])
+        ]);
 
-        const typedProfiles = profiles as Profile[];
+        if (techProfilesRes.error) logger.error(techProfilesRes.error, 'Error fetching technicians');
+        if (adminProfilesRes.error) logger.error(adminProfilesRes.error, 'Error fetching admins');
+
+        // Combinar e remover duplicados (caso um admin também seja um técnico escalado)
+        const allProfiles = [...(techProfilesRes.data || []), ...(adminProfilesRes.data || [])];
+        const typedProfiles = Array.from(new Map(allProfiles.map(p => [p.id, p])).values()) as Profile[];
 
         const assignedTechNames = typedProfiles
-            .filter(p => technicianIds.includes(p.id))
+            .filter(p => uniqueTechIds.includes(String(p.id)))
             .map(p => `${p.first_name || ''} ${p.last_name || ''}`.trim())
+            .filter(Boolean)
             .join(', ');
 
         const isBacklog = schedule.acknowledgementState === 'pending_scheduling' || !schedule.startDate;
@@ -209,17 +216,22 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
             ]
         };
 
-        for (const profile of typedProfiles) {
-            if (!profile.telegramchatid) continue;
+        // Usar um Set para garantir que cada chat ID recebe apenas uma notificação
+        const processedChatIds = new Set<string>();
 
-            if (profile.role === 'admin' || profile.role === 'super_admin') {
+        for (const profile of typedProfiles) {
+            if (!profile.telegramchatid || processedChatIds.has(profile.telegramchatid)) continue;
+
+            const isAdmin = profile.role === 'admin' || profile.role === 'super_admin';
+            const isAssignedTech = uniqueTechIds.includes(String(profile.id));
+
+            if (isAdmin) {
                 let adminMessage = baseMessage;
                 adminMessage += `\n*Técnicos Atribuídos:* ${assignedTechNames}\n`;
                 adminMessage += `\n_Aviso informativo para administração._`;
                 await sendTelegramNotification(adminMessage, profile.telegramchatid);
-            }
-
-            if (technicianIds.includes(profile.id)) {
+                processedChatIds.add(profile.telegramchatid);
+            } else if (isAssignedTech) {
                 let techMessage = baseMessage;
                 if (isBacklog) {
                     techMessage += `\nFaça o agendamento assim que possivel! Obrigado!`;
@@ -228,6 +240,7 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
                     techMessage += `\nPor favor, confirme a sua disponibilidade.`;
                     await sendTelegramNotification(techMessage, profile.telegramchatid, replyMarkup);
                 }
+                processedChatIds.add(profile.telegramchatid);
             }
         }
     } catch (err) {
