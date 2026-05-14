@@ -32,8 +32,8 @@ export class ReportRepository {
 
         const { rows } = await db.query(`
             SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", e.brand as "equipmentBrand", e.model as "equipmentModel", e.nickname as "equipmentNickname",
-                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
-                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
+                NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                 COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
@@ -57,8 +57,8 @@ export class ReportRepository {
         const { rows } = await db.query(`
             SELECT r.*, r.internal_notes as "internalNotes", r.time_blocks as "timeBlocks", c.name as "clientName", c.address as "clientAddress", c.nif as "clientNif",
                 e.brand as "equipmentBrand", e.model as "equipmentModel", e."serialNumber" as "equipmentSerialNumber", e.nickname as "equipmentNickname",
-                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
-                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
+                NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                 COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,

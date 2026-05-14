@@ -176,6 +176,12 @@ export interface EnrichedSchedule extends Omit<Schedule, 'additionalInfo'> {
     scheduleId?: number;
     isTask?: boolean;
     acknowledgementState?: ScheduleStatus;
+    creator_name?: string;
+    updater_name?: string;
+    created_at?: string;
+    updated_at?: string;
+    created_by?: string;
+    updated_by?: string;
 }
 
 export interface ReportTechnician {

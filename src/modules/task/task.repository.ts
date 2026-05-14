@@ -12,6 +12,8 @@ export class TaskRepository {
                 COALESCE(json_build_object('first_name', ap.first_name, 'last_name', ap.last_name, 'color', ap.color), NULL) as assignee,
                 COALESCE(json_build_object('first_name', cp.first_name, 'last_name', cp.last_name), NULL) as creator,
                 COALESCE(json_build_object('first_name', up.first_name, 'last_name', up.last_name), NULL) as updater,
+                NULLIF(TRIM(CONCAT(cp.first_name, ' ', cp.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(up.first_name, ' ', up.last_name)), '') as "updater_name",
                 CASE WHEN c.id IS NOT NULL THEN json_build_object('name', c.name) ELSE NULL END as clients,
                 CASE WHEN e.id IS NOT NULL THEN json_build_object('brand', e.brand, 'model', e.model, 'serialNumber', e."serialNumber") ELSE NULL END as equipments,
                 COALESCE((SELECT json_agg(tb.*) FROM internal_task_time_blocks tb WHERE tb.task_id = t.id), '[]') as time_blocks
@@ -35,6 +37,8 @@ export class TaskRepository {
                 COALESCE(json_build_object('first_name', ap.first_name, 'last_name', ap.last_name, 'color', ap.color), NULL) as assignee,
                 COALESCE(json_build_object('first_name', cp.first_name, 'last_name', cp.last_name), NULL) as creator,
                 COALESCE(json_build_object('first_name', up.first_name, 'last_name', up.last_name), NULL) as updater,
+                NULLIF(TRIM(CONCAT(cp.first_name, ' ', cp.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(up.first_name, ' ', up.last_name)), '') as "updater_name",
                 CASE WHEN c.id IS NOT NULL THEN json_build_object('name', c.name) ELSE NULL END as clients,
                 CASE WHEN e.id IS NOT NULL THEN json_build_object('brand', e.brand, 'model', e.model, 'serialNumber', e."serialNumber") ELSE NULL END as equipments,
                 COALESCE((SELECT json_agg(tb.*) FROM internal_task_time_blocks tb WHERE tb.task_id = t.id), '[]') as time_blocks

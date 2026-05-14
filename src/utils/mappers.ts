@@ -61,8 +61,13 @@ export const mapScheduleDatabaseToResponse = (
         includes_travel: schedule.includes_travel || false,
         classification: (schedule.classification as any) || 'geral',
         priority: (schedule.priority as any) || undefined,
-
         timeBlocks: timeBlocks,
+        creator_name: schedule.creator_name,
+        updater_name: schedule.updater_name,
+        created_at: schedule.created_at,
+        updated_at: schedule.updated_at,
+        created_by: schedule.created_by,
+        updated_by: schedule.updated_by,
     };
 };
 
@@ -129,6 +134,12 @@ export const mapTaskToScheduleResponse = (
         priority: task.priority,
         isTask: true,
         timeBlocks: timeBlocks,
+        creator_name: task.creator_name,
+        updater_name: task.updater_name,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        created_by: task.created_by,
+        updated_by: task.updated_by,
     };
 };
 

@@ -42,8 +42,8 @@ export class ScheduleRepository {
             SELECT s.*,
                 c.name as "clientName",
                 CONCAT(e.brand, ' ', e.model) as "equipmentModel",
-                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
-                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
+                NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -77,8 +77,8 @@ export class ScheduleRepository {
             SELECT s.*,
                 c.name as "clientName",
                 CONCAT(e.brand, ' ', e.model) as "equipmentModel",
-                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
-                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
+                NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -114,6 +114,8 @@ export class ScheduleRepository {
                 p.id as assignee_id,
                 CONCAT(p.first_name, ' ', p.last_name) as assignee_name,
                 p.color as assignee_color,
+                NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                 COALESCE(
                     (SELECT json_agg(tb.*) FROM internal_task_time_blocks tb WHERE tb.task_id = t.id),
                     '[]'
@@ -122,6 +124,8 @@ export class ScheduleRepository {
             LEFT JOIN clients c ON t.client_id = c.id
             LEFT JOIN equipments e ON t.equipment_id = e.id
             LEFT JOIN profiles p ON t.user_id = p.id
+            LEFT JOIN profiles p_creator ON t.created_by = p_creator.id
+            LEFT JOIN profiles p_updater ON t.updated_by = p_updater.id
             WHERE ${whereClause}
             ORDER BY t.created_at DESC
         `);
@@ -165,8 +169,8 @@ export class ScheduleRepository {
             SELECT s.*,
                 c.name as "clientName",
                 e.model as "equipmentModel",
-                CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
-                CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
+                NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -198,6 +202,8 @@ export class ScheduleRepository {
             SELECT s.*,
                 c.name as "clientName",
                 e.model as "equipmentModel",
+                NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                 COALESCE(
                     (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                      FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
@@ -216,6 +222,8 @@ export class ScheduleRepository {
             FROM schedules s
             LEFT JOIN clients c ON s."clientId" = c.id
             LEFT JOIN equipments e ON s."equipmentId" = e.id
+            LEFT JOIN profiles p_creator ON s.created_by = p_creator.id
+            LEFT JOIN profiles p_updater ON s.updated_by = p_updater.id
             WHERE s."hasReport" = false 
               AND (s."isCompleted" = true OR (s."isCompleted" = false AND s."endDate" < NOW()))
               AND s."startDate" >= $1 AND s."startDate" <= $2
@@ -234,8 +242,8 @@ export class ScheduleRepository {
                 SELECT s.*, 
                     (EXISTS (SELECT 1 FROM reports r WHERE r."scheduleId" = s.id AND r.deleted_at IS NULL)) as "hasReport",
                     CONCAT(e.brand, ' ', e.model, CASE WHEN e."serialNumber" IS NOT NULL THEN CONCAT(' (', e."serialNumber", ')') ELSE '' END) as "equipmentInfo",
-                    CONCAT(p_creator.first_name, ' ', p_creator.last_name) as "creator_name",
-                    CONCAT(p_updater.first_name, ' ', p_updater.last_name) as "updater_name",
+                    NULLIF(TRIM(CONCAT(p_creator.first_name, ' ', p_creator.last_name)), '') as "creator_name",
+                    NULLIF(TRIM(CONCAT(p_updater.first_name, ' ', p_updater.last_name)), '') as "updater_name",
                     COALESCE(
                         (SELECT json_agg(json_build_object('id', p.id, 'name', CONCAT(p.first_name,' ',p.last_name), 'color', p.color))
                          FROM schedule_technicians st JOIN profiles p ON st."technicianId" = p.id WHERE st."scheduleId" = s.id),
