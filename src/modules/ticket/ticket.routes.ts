@@ -40,6 +40,8 @@ router.delete('/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRol
 
 router.put('/:id/mark-as-read', authenticateToken, authorizeRoles(STAFF), controller.markTicketAsRead);
 router.put('/:id/link-schedule/:scheduleId', authenticateToken, authorizeRoles(STAFF), controller.linkTicketToSchedule);
+router.post('/:id/close', authenticateToken, authorizeRoles(STAFF), validate(ticketValidation.replyToTicketSchema), controller.closeTicketDirectly);
+router.post('/:id/mark-express', authenticateToken, authorizeRoles(STAFF), validate(ticketValidation.ticketIdSchema), controller.markAsExpress);
 
 // Ticket Attachments
 router.get('/:id/attachments', authenticateToken, authorizeRoles(ALL_ROLES), attController.getAttachments);

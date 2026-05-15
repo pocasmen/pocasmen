@@ -60,4 +60,22 @@ export class TicketController {
         const result = await this.ticketService.linkTicketToSchedule(ticketId, scheduleId, req.user.id);
         res.json(result);
     });
+
+    closeTicketDirectly = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const ticketId = Number(req.params.id);
+        const { message } = req.body;
+        if (!ticketId || !message) throw new BadRequestError('ID and message are required');
+
+        const result = await this.ticketService.closeTicketDirectly(ticketId, message, req.user.id);
+        res.json(result);
+    });
+
+    markAsExpress = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        if (!req.user) throw new UnauthorizedError();
+        const ticketId = Number(req.params.id);
+        if (!ticketId) throw new BadRequestError('Invalid ticket ID');
+        const result = await this.ticketService.markAsExpress(ticketId, req.user.id);
+        res.json(result);
+    });
 }

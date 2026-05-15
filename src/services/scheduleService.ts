@@ -1,7 +1,7 @@
 //Horas de desenvolvimento activo=35,5
 import { SupabaseClient } from '@supabase/supabase-js';
 import { PoolClient } from 'pg';
-import { sendTelegramNotification } from './telegramService';
+import { sendTelegramNotification, escapeHTML } from './telegramService';
 import * as inventoryService from './inventoryService';
 import { logger } from '../utils/logger';
 import { supabase } from '../config/supabase';
@@ -124,7 +124,7 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
     try {
         const { data: scheduleRaw, error: sError } = await supabase
             .from('schedules')
-            .select('title, startDate, endDate, serviceType, additionalInfo, clientId, equipmentId, acknowledgementState, clients(name), equipments(brand, model, serialNumber)')
+            .select('title, startDate, endDate, serviceType, additionalInfo, clientId, equipmentId, acknowledgementState, created_by, updated_by, created_at, updated_at, clients(name), equipments(brand, model, serialNumber)')
             .eq('id', scheduleId)
             .single();
 
@@ -138,8 +138,26 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
             .select('quantity, parts(reference, designation)')
             .eq('scheduleId', scheduleId);
 
-        const schedule = scheduleRaw as any; // Temporary cast for nested objects until we fix deep typing
+        const schedule = scheduleRaw as any;
         const clientName = schedule.clients?.name || (Array.isArray(schedule.clients) ? schedule.clients[0]?.name : 'Cliente Desconhecido');
+
+        // Buscar nomes dos utilizadores de auditoria (criador e editor)
+        const auditUserIds = [schedule.created_by, schedule.updated_by].filter(Boolean);
+        let auditNames: Record<string, string> = {};
+        if (auditUserIds.length > 0) {
+            const { data: auditProfiles } = await supabase
+                .from('profiles')
+                .select('id, first_name, last_name')
+                .in('id', auditUserIds);
+            (auditProfiles || []).forEach((p: any) => {
+                auditNames[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Desconhecido';
+            });
+        }
+
+        const creatorName = schedule.created_by ? (auditNames[schedule.created_by] || 'Desconhecido') : 'Desconhecido';
+        const updaterName = schedule.updated_by ? (auditNames[schedule.updated_by] || 'Desconhecido') : null;
+        const createdAt = schedule.created_at ? new Date(schedule.created_at).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
+        const updatedAt = schedule.updated_at ? new Date(schedule.updated_at).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
 
         const startDate = schedule.startDate ? new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
         const endDate = schedule.endDate ? new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
@@ -170,7 +188,7 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
         if (techProfilesRes.error) logger.error(techProfilesRes.error, 'Error fetching technicians');
         if (adminProfilesRes.error) logger.error(adminProfilesRes.error, 'Error fetching admins');
 
-        // Combinar e remover duplicados (caso um admin também seja um técnico escalado)
+        // Combinar e remover duplicados
         const allProfiles = [...(techProfilesRes.data || []), ...(adminProfilesRes.data || [])];
         const typedProfiles = Array.from(new Map(allProfiles.map(p => [p.id, p])).values()) as Profile[];
 
@@ -181,29 +199,30 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
             .join(', ');
 
         const isBacklog = schedule.acknowledgementState === 'pending_scheduling' || !schedule.startDate;
-        const notificationTitle = isBacklog ? '⏳ *Novo Serviço Pendente*' : (isUpdate ? '🔄 *Re-Agendamento*' : '📅 *Novo Agendamento*');
+        const notificationTitle = isBacklog ? '⏳ <b>Novo Serviço Pendente</b>' : (isUpdate ? '🔄 <b>Re-Agendamento</b>' : '📅 <b>Novo Agendamento</b>');
 
+        // Construção da mensagem em HTML com escape de strings dinâmicas
         let baseMessage = `${notificationTitle}\n\n`;
-        baseMessage += `*Tipo de Serviço:* ${serviceTypeLabel}\n`;
-        baseMessage += `*Cliente:* ${clientName}\n`;
-        baseMessage += `*Equipamento:* ${equipmentInfo}\n`;
+        baseMessage += `<b>Tipo de Serviço:</b> ${escapeHTML(serviceTypeLabel)}\n`;
+        baseMessage += `<b>Cliente:</b> ${escapeHTML(clientName)}\n`;
+        baseMessage += `<b>Equipamento:</b> ${escapeHTML(equipmentInfo)}\n`;
 
         if (isBacklog) {
-            baseMessage += `*Estado:* Aguarda Agendamento (Backlog)\n`;
+            baseMessage += `<b>Estado:</b> Aguarda Agendamento (Backlog)\n`;
         } else {
-            baseMessage += `*Início:* ${startDate}\n`;
-            baseMessage += `*Final:* ${endDate}\n`;
+            baseMessage += `<b>Início:</b> ${escapeHTML(startDate)}\n`;
+            baseMessage += `<b>Final:</b> ${escapeHTML(endDate)}\n`;
         }
 
         if (schedule.additionalInfo) {
-            baseMessage += `*Notas Internas:* ${schedule.additionalInfo}\n`;
+            baseMessage += `<b>Notas Internas:</b> ${escapeHTML(schedule.additionalInfo)}\n`;
         }
 
         if (scheduleParts && scheduleParts.length > 0) {
-            baseMessage += `\n*Peças Necessárias:*\n`;
+            baseMessage += `\n<b>Peças Necessárias:</b>\n`;
             scheduleParts.forEach((sp: any) => {
                 const p = sp.parts;
-                baseMessage += `• ${sp.quantity}x ${p.reference} - ${p.designation}\n`;
+                baseMessage += `• ${sp.quantity}x ${escapeHTML(p.reference)} - ${escapeHTML(p.designation)}\n`;
             });
         }
 
@@ -216,7 +235,6 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
             ]
         };
 
-        // Usar um Set para garantir que cada chat ID recebe apenas uma notificação
         const processedChatIds = new Set<string>();
 
         for (const profile of typedProfiles) {
@@ -225,13 +243,8 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
             const isAdmin = profile.role === 'admin' || profile.role === 'super_admin';
             const isAssignedTech = uniqueTechIds.includes(String(profile.id));
 
-            if (isAdmin) {
-                let adminMessage = baseMessage;
-                adminMessage += `\n*Técnicos Atribuídos:* ${assignedTechNames}\n`;
-                adminMessage += `\n_Aviso informativo para administração._`;
-                await sendTelegramNotification(adminMessage, profile.telegramchatid);
-                processedChatIds.add(profile.telegramchatid);
-            } else if (isAssignedTech) {
+            // PRIORIDADE: Se for um técnico atribuído, ele recebe a mensagem com botões, mesmo que seja Admin.
+            if (isAssignedTech) {
                 let techMessage = baseMessage;
                 if (isBacklog) {
                     techMessage += `\nFaça o agendamento assim que possivel! Obrigado!`;
@@ -241,6 +254,35 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
                     await sendTelegramNotification(techMessage, profile.telegramchatid, replyMarkup);
                 }
                 processedChatIds.add(profile.telegramchatid);
+                logger.debug({ chatId: profile.telegramchatid, userId: profile.id }, 'Notification sent to assigned technician');
+            } else if (isAdmin) {
+                // Mensagem apenas informativa para admins que NÃO estão atribuídos ao serviço
+                let adminMessage = baseMessage;
+                adminMessage += `\n<b>Técnicos Atribuídos:</b> ${escapeHTML(assignedTechNames)}\n`;
+
+                // Informação de auditoria
+                if (isUpdate) {
+                    // Re-agendamento: mostrar criação E última alteração
+                    if (creatorName && createdAt) {
+                        adminMessage += `\n<b>Criado por:</b> ${escapeHTML(creatorName)}\n`;
+                        adminMessage += `<b>Criado em:</b> ${escapeHTML(createdAt)}\n`;
+                    }
+                    if (updaterName && updatedAt) {
+                        adminMessage += `<b>Alterado por:</b> ${escapeHTML(updaterName)}\n`;
+                        adminMessage += `<b>Alterado em:</b> ${escapeHTML(updatedAt)}\n`;
+                    }
+                } else {
+                    // Novo agendamento: mostrar quem criou e quando
+                    if (creatorName && createdAt) {
+                        adminMessage += `\n<b>Criado por:</b> ${escapeHTML(creatorName)}\n`;
+                        adminMessage += `<b>Criado em:</b> ${escapeHTML(createdAt)}\n`;
+                    }
+                }
+
+                adminMessage += `\n<i>Aviso informativo para administração.</i>`;
+                await sendTelegramNotification(adminMessage, profile.telegramchatid);
+                processedChatIds.add(profile.telegramchatid);
+                logger.debug({ chatId: profile.telegramchatid, userId: profile.id }, 'Informative notification sent to administrator');
             }
         }
     } catch (err) {

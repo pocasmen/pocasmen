@@ -60,4 +60,19 @@ export class TicketService {
     async linkTicketToSchedule(ticketId: number, scheduleId: number, userId: string) {
         return withTransactionAs(userId, (db) => ticketService.linkTicketToSchedule(db, ticketId, scheduleId, userId));
     }
+
+    async closeTicketDirectly(ticketId: number, message: string, userId: string) {
+        return withTransactionAs(userId, (db) => ticketService.closeTicketDirectly(db, ticketId, userId, message));
+    }
+
+    async markAsExpress(ticketId: number, userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const { rows, rowCount } = await db.query(
+                'UPDATE tickets SET status = $1, "updatedAt" = $2 WHERE id = $3 AND status IN ($4, $5) RETURNING *',
+                [TicketStatus.SCHEDULED, new Date().toISOString(), ticketId, TicketStatus.OPEN, TicketStatus.ACKNOWLEDGED]
+            );
+            if (rowCount === 0) throw new NotFoundError('Ticket not found or already processed');
+            return rows[0];
+        });
+    }
 }

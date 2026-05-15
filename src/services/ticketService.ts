@@ -173,6 +173,80 @@ export async function linkTicketToSchedule(db: PoolClient, ticketId: number, sch
 }
 
 /**
+ * Closes a ticket directly with a mandatory final response.
+ * Used for "Express Tickets" that don't require scheduling.
+ */
+export async function closeTicketDirectly(db: PoolClient, ticketId: number, userId: string, message: string) {
+    if (!message || message.trim().length === 0) {
+        throw new Error('A response message is mandatory to close the ticket.');
+    }
+
+    // 1. Update Ticket Status
+    const { rows: updatedRows } = await db.query<Ticket>(
+        'UPDATE tickets SET status = $1, "updatedAt" = $2 WHERE id = $3 RETURNING *',
+        [TicketStatus.CLOSED, new Date().toISOString(), ticketId]
+    );
+
+    if (updatedRows.length === 0) throw new Error('Ticket not found');
+
+    // 2. Add Final Response
+    await db.query(
+        'INSERT INTO ticket_responses (ticket_id, user_id, message, "isNew", created_at) VALUES ($1, $2, $3, $4, $5)',
+        [ticketId, userId, message.trim(), true, new Date().toISOString()]
+    );
+
+    // Side effects
+    const ticket = updatedRows[0];
+    setImmediate(async () => {
+        try {
+            broadcastTicketUpdate(supabase, ticketId);
+            
+            // Send standard reply notification first
+            const { rows: recipients } = await pool.query(`
+                SELECT cu.user_id, t.title
+                FROM tickets t
+                JOIN client_users cu ON cu.client_id = t.client_id
+                JOIN profiles p ON p.id = cu.user_id
+                WHERE t.id = $1 AND p.role = 'client'
+            `, [ticketId]);
+
+            if (recipients.length > 0) {
+                const userIds = recipients.map(r => r.user_id);
+                const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
+                // Notification for the final reply
+                await notifyUsers(userIds, 'ticket_reply', {
+                    templateKey: 'ticket_reply',
+                    variables: {
+                        ticketId: String(ticketId),
+                        ticketTitle: ticket.title || 'Sem Título',
+                        message: message,
+                        clientUrl: clientUrl
+                    },
+                    telegramText: `💬 *Resposta Final no Ticket #${ticketId}*\n\n*Ticket:* ${ticket.title || 'Sem Título'}\n*Mensagem:* ${message}\n\n[Ver Detalhes](${clientUrl}/tickets/${ticketId})`
+                });
+
+                // Notification for closing
+                await notifyUsers(userIds, 'ticket_closed', {
+                    templateKey: 'ticket_closed',
+                    variables: {
+                        first_name: 'Cliente',
+                        ticketId: String(ticketId),
+                        ticketTitle: ticket.title || 'Sem Título',
+                        clientUrl: clientUrl
+                    },
+                    telegramText: `✅ *Ticket Fechado*\n\nO seu pedido *#${ticketId} - ${ticket.title || 'Sem Título'}* foi concluído.\n\n[Ver Detalhes](${clientUrl}/tickets/${ticketId})`
+                });
+            }
+        } catch (err) {
+            logger.error({ err, ticketId }, 'Failed to process ticket close side effects');
+        }
+    });
+
+    return ticket;
+}
+
+/**
  * Notifica os clientes quando um ticket é fechado/resolvido.
  */
 export async function notifyTicketClosed(ticketId: number) {
