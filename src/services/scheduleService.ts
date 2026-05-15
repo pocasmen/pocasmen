@@ -235,16 +235,40 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
             ]
         };
 
-        const processedChatIds = new Set<string>();
+        // Construir a mensagem de admin (auditoria) uma vez
+        let adminMessage = baseMessage;
+        adminMessage += `\n<b>Técnicos Atribuídos:</b> ${escapeHTML(assignedTechNames)}\n`;
+
+        if (isUpdate) {
+            if (creatorName && createdAt) {
+                adminMessage += `\n<b>Criado por:</b> ${escapeHTML(creatorName)}\n`;
+                adminMessage += `<b>Criado em:</b> ${escapeHTML(createdAt)}\n`;
+            }
+            if (updaterName && updatedAt) {
+                adminMessage += `<b>Alterado por:</b> ${escapeHTML(updaterName)}\n`;
+                adminMessage += `<b>Alterado em:</b> ${escapeHTML(updatedAt)}\n`;
+            }
+        } else {
+            if (creatorName && createdAt) {
+                adminMessage += `\n<b>Criado por:</b> ${escapeHTML(creatorName)}\n`;
+                adminMessage += `<b>Criado em:</b> ${escapeHTML(createdAt)}\n`;
+            }
+        }
+        adminMessage += `\n<i>Aviso informativo para administração.</i>`;
+
+        // Sets separados por tipo de mensagem para evitar duplicados mas permitir envio duplo
+        // a utilizadores que sejam simultaneamente técnicos atribuídos e administradores
+        const sentTechChatIds = new Set<string>();
+        const sentAdminChatIds = new Set<string>();
 
         for (const profile of typedProfiles) {
-            if (!profile.telegramchatid || processedChatIds.has(profile.telegramchatid)) continue;
+            if (!profile.telegramchatid) continue;
 
             const isAdmin = profile.role === 'admin' || profile.role === 'super_admin';
             const isAssignedTech = uniqueTechIds.includes(String(profile.id));
 
-            // PRIORIDADE: Se for um técnico atribuído, ele recebe a mensagem com botões, mesmo que seja Admin.
-            if (isAssignedTech) {
+            // Mensagem técnica (com botões) - enviada a todos os técnicos atribuídos
+            if (isAssignedTech && !sentTechChatIds.has(profile.telegramchatid)) {
                 let techMessage = baseMessage;
                 if (isBacklog) {
                     techMessage += `\nFaça o agendamento assim que possivel! Obrigado!`;
@@ -253,35 +277,14 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
                     techMessage += `\nPor favor, confirme a sua disponibilidade.`;
                     await sendTelegramNotification(techMessage, profile.telegramchatid, replyMarkup);
                 }
-                processedChatIds.add(profile.telegramchatid);
+                sentTechChatIds.add(profile.telegramchatid);
                 logger.debug({ chatId: profile.telegramchatid, userId: profile.id }, 'Notification sent to assigned technician');
-            } else if (isAdmin) {
-                // Mensagem apenas informativa para admins que NÃO estão atribuídos ao serviço
-                let adminMessage = baseMessage;
-                adminMessage += `\n<b>Técnicos Atribuídos:</b> ${escapeHTML(assignedTechNames)}\n`;
+            }
 
-                // Informação de auditoria
-                if (isUpdate) {
-                    // Re-agendamento: mostrar criação E última alteração
-                    if (creatorName && createdAt) {
-                        adminMessage += `\n<b>Criado por:</b> ${escapeHTML(creatorName)}\n`;
-                        adminMessage += `<b>Criado em:</b> ${escapeHTML(createdAt)}\n`;
-                    }
-                    if (updaterName && updatedAt) {
-                        adminMessage += `<b>Alterado por:</b> ${escapeHTML(updaterName)}\n`;
-                        adminMessage += `<b>Alterado em:</b> ${escapeHTML(updatedAt)}\n`;
-                    }
-                } else {
-                    // Novo agendamento: mostrar quem criou e quando
-                    if (creatorName && createdAt) {
-                        adminMessage += `\n<b>Criado por:</b> ${escapeHTML(creatorName)}\n`;
-                        adminMessage += `<b>Criado em:</b> ${escapeHTML(createdAt)}\n`;
-                    }
-                }
-
-                adminMessage += `\n<i>Aviso informativo para administração.</i>`;
+            // Mensagem de admin (informativa) - enviada a todos os admins, incluindo os também técnicos
+            if (isAdmin && !sentAdminChatIds.has(profile.telegramchatid)) {
                 await sendTelegramNotification(adminMessage, profile.telegramchatid);
-                processedChatIds.add(profile.telegramchatid);
+                sentAdminChatIds.add(profile.telegramchatid);
                 logger.debug({ chatId: profile.telegramchatid, userId: profile.id }, 'Informative notification sent to administrator');
             }
         }
