@@ -27,8 +27,19 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
         try {
             broadcastTicketUpdate(supabase, ticket.id);
             const { data: clientData } = await supabase.from('clients').select('name').eq('id', Number(client_id)).single();
-            const { data: equipData } = await supabase.from('equipments').select('brand, model').eq('id', Number(equipmentId)).single();
-            const telegramMessage = `🆕 *Novo Ticket Criado *\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipData ? `${equipData.brand} ${equipData.model}` : '?'}\n*Descrição:* ${faultDescription}`;
+            const { data: equipData } = await supabase.from('equipments').select('brand, model, serialNumber, nickname').eq('id', Number(equipmentId)).single();
+            
+            let equipmentText = '?';
+            if (equipData) {
+                const parts = [];
+                const brandModel = `${equipData.brand || ''} ${equipData.model || ''}`.trim();
+                if (brandModel) parts.push(brandModel);
+                if (equipData.serialNumber) parts.push(`(${equipData.serialNumber})`);
+                if (equipData.nickname) parts.push(`[${equipData.nickname}]`);
+                equipmentText = parts.join(' ');
+            }
+
+            const telegramMessage = `🆕 *Novo Ticket Criado*\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipmentText}\n*Descrição:* ${faultDescription}`;
             sendTelegramNotification(telegramMessage);
 
             // Notificar o cliente que criou o ticket (e outros associados ao mesmo cliente)

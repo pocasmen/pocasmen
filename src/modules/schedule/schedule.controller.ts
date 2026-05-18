@@ -14,11 +14,13 @@ export class ScheduleController {
         const clientId = req.query.clientId ? Number(req.query.clientId) : undefined;
         const equipmentId = req.query.equipmentId ? Number(req.query.equipmentId) : undefined;
         const isTask = req.query.isTask === 'true' ? true : (req.query.isTask === 'false' ? false : undefined);
+        const startDate = req.query.startDate as string | undefined;
+        const endDate = req.query.endDate as string | undefined;
         
         // Se isCompleted=false for passado explicitamente (como no LinkModal)
         const finalIncludeCompleted = req.query.isCompleted === 'false' ? false : includeCompleted;
 
-        const { data, total } = await this.scheduleService.getSchedules(page, limit, finalIncludeCompleted, clientId, equipmentId, isTask);
+        const { data, total } = await this.scheduleService.getSchedules(page, limit, finalIncludeCompleted, clientId, equipmentId, isTask, startDate, endDate);
         res.json({ data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } });
     });
 

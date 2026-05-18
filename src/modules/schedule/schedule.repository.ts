@@ -4,8 +4,8 @@ import { QueryRunner } from '../../types';
 export class ScheduleRepository {
     constructor(private pool: Pool) { }
 
-    async findAll(options: { page?: number; limit?: number; includeCompleted?: boolean; clientId?: number; equipmentId?: number; isTask?: boolean } = {}) {
-        const { page = 1, limit = 200, includeCompleted = false, clientId, equipmentId, isTask } = options;
+    async findAll(options: { page?: number; limit?: number; includeCompleted?: boolean; clientId?: number; equipmentId?: number; isTask?: boolean; startDate?: string; endDate?: string } = {}) {
+        const { page = 1, limit = 200, includeCompleted = false, clientId, equipmentId, isTask, startDate, endDate } = options;
         const offset = (page - 1) * limit;
 
         let whereConditions = [];
@@ -24,6 +24,16 @@ export class ScheduleRepository {
         if (equipmentId) {
             whereConditions.push(`s."equipmentId" = $${paramIndex++}`);
             queryParams.push(equipmentId);
+        }
+
+        if (startDate) {
+            whereConditions.push(`s."startDate" >= $${paramIndex++}`);
+            queryParams.push(startDate);
+        }
+
+        if (endDate) {
+            whereConditions.push(`s."startDate" <= $${paramIndex++}`);
+            queryParams.push(endDate);
         }
 
         const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
@@ -104,8 +114,26 @@ export class ScheduleRepository {
         return rows[0] ?? null;
     }
 
-    async findTasksForCalendar(includeCompleted: boolean = false) {
-        const whereClause = includeCompleted ? '1=1' : 't.completed = false OR t.created_at >= NOW() - INTERVAL \'7 days\'';
+    async findTasksForCalendar(includeCompleted: boolean = false, startDate?: string, endDate?: string) {
+        let whereConditions = [];
+        let queryParams = [];
+        let paramIndex = 1;
+
+        if (!includeCompleted) {
+            whereConditions.push('t.completed = false');
+        }
+
+        if (startDate && endDate) {
+            whereConditions.push(`
+                ((EXISTS (SELECT 1 FROM internal_task_time_blocks tb WHERE tb.task_id = t.id AND tb.start_time >= $${paramIndex} AND tb.start_time <= $${paramIndex + 1}))
+                OR (t.created_at >= $${paramIndex} AND t.created_at <= $${paramIndex + 1}))
+            `);
+            queryParams.push(startDate, endDate);
+            paramIndex += 2;
+        }
+
+        const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : 'WHERE 1=1';
+
         const { rows } = await this.pool.query(`
             SELECT t.*,
                 c.name as "clientName",
@@ -126,9 +154,9 @@ export class ScheduleRepository {
             LEFT JOIN profiles p ON t.user_id = p.id
             LEFT JOIN profiles p_creator ON t.created_by = p_creator.id
             LEFT JOIN profiles p_updater ON t.updated_by = p_updater.id
-            WHERE ${whereClause}
+            ${whereClause}
             ORDER BY t.created_at DESC
-        `);
+        `, queryParams);
         return rows;
     }
 

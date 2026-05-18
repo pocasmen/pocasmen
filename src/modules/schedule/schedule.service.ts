@@ -15,14 +15,14 @@ import { ScheduleRepository } from './schedule.repository';
 export class ScheduleService {
     constructor(private repo: ScheduleRepository) {}
 
-    async getSchedules(page: number, limit: number, includeCompleted?: boolean, clientId?: number, equipmentId?: number, isTask?: boolean) {
+    async getSchedules(page: number, limit: number, includeCompleted?: boolean, clientId?: number, equipmentId?: number, isTask?: boolean, startDate?: string, endDate?: string) {
         let result: any[] = [];
         let schedulesTotal = 0;
         let tasksTotal = 0;
 
         // Fetch Agendamentos (Schedules)
         if (isTask === undefined || isTask === false) {
-            const { data: schedulesRaw, total: sTotal } = await this.repo.findAll({ page, limit, includeCompleted, clientId, equipmentId });
+            const { data: schedulesRaw, total: sTotal } = await this.repo.findAll({ page, limit, includeCompleted, clientId, equipmentId, startDate, endDate });
             schedulesTotal = sTotal;
             result = schedulesRaw.map((s: any) => mapScheduleDatabaseToResponse(
                 s,
@@ -37,7 +37,7 @@ export class ScheduleService {
         if (isTask === undefined || isTask === true) {
             // Se o filtro for por equipamento, as tarefas internas normalmente não têm equipamento associado na mesma lógica
             // Mas para o calendário elas são buscadas. Se isTask for false (como no modal), saltamos isto.
-            const tasksRaw = await this.repo.findTasksForCalendar(includeCompleted);
+            const tasksRaw = await this.repo.findTasksForCalendar(includeCompleted, startDate, endDate);
             tasksTotal = tasksRaw.length;
             
             // Filtrar tarefas por clientId/equipmentId se necessário (as tarefas têm esses campos?)
