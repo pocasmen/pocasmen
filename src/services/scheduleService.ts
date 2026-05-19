@@ -340,7 +340,7 @@ export async function sendScheduleNotificationToClients(supabase: SupabaseClient
                     endDate: endDate,
                     clientUrl: clientUrl
                 },
-                telegramText: `${isUpdate ? '🔄' : '📅'} *${notificationTitle.toUpperCase()}*\n\n*Serviço:* ${serviceTypeLabel}\n*Equipamento:* ${equipmentInfo}\n*Início:* ${startDate}\n*Fim:* ${endDate}\n\n[Ver Agenda](${clientUrl}/schedules)`
+                telegramText: `${isUpdate ? '🔄' : '📅'} <b>${escapeHTML(notificationTitle.toUpperCase())}</b>\n\n<b>Serviço:</b> ${escapeHTML(serviceTypeLabel)}\n<b>Equipamento:</b> ${escapeHTML(equipmentInfo)}\n<b>Início:</b> ${escapeHTML(startDate)}\n<b>Fim:</b> ${escapeHTML(endDate)}\n\n<a href="${clientUrl}/schedules">Ver Agenda</a>`
             });
         }
     } catch (err) {

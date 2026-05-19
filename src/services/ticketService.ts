@@ -2,7 +2,7 @@ import { supabase } from '../config/supabase';
 //Horas de desenvolvimento activo=14,0
 import { PoolClient } from 'pg';
 import { TicketStatus } from '../constants/enums';
-import { sendTelegramNotification } from './telegramService';
+import { sendTelegramNotification, escapeHTML } from './telegramService';
 import { Ticket } from '../types/supabase';
 import { logger } from '../utils/logger';
 import { broadcastTicketUpdate } from './realtimeService';
@@ -39,7 +39,7 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
                 equipmentText = parts.join(' ');
             }
 
-            const telegramMessage = `🆕 *Novo Ticket Criado*\n\n*Título:* ${title}\n*Cliente:* ${clientData?.name || 'Cliente'}\n*Equipamento:* ${equipmentText}\n*Descrição:* ${faultDescription}`;
+            const telegramMessage = `🆕 <b>Novo Ticket Criado</b>\n\n<b>Título:</b> ${escapeHTML(title)}\n<b>Cliente:</b> ${escapeHTML(clientData?.name || 'Cliente')}\n<b>Equipamento:</b> ${escapeHTML(equipmentText)}\n<b>Descrição:</b> ${escapeHTML(faultDescription)}`;
             sendTelegramNotification(telegramMessage);
 
             // Notificar o cliente que criou o ticket (e outros associados ao mesmo cliente)
@@ -63,7 +63,7 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
                         ticketTitle: title,
                         clientUrl: clientUrl
                     },
-                    telegramText: `🆕 *Confirmação de Ticket Aberto*\n\nRecebemos o seu pedido: *#${ticket.id} - ${title}*\n\n[Acompanhar no Portal](${clientUrl}/tickets/${ticket.id})`
+                    telegramText: `🆕 <b>Confirmação de Ticket Aberto</b>\n\nRecebemos o seu pedido: <b>#${ticket.id} - ${escapeHTML(title)}</b>\n\n<a href="${clientUrl}/tickets/${ticket.id}">Acompanhar no Portal</a>`
                 });
             }
         } catch (err) {
@@ -125,7 +125,7 @@ export async function replyToFullTicket(db: PoolClient, ticketId: number, userId
                             message: message,
                             clientUrl: clientUrl
                         },
-                        telegramText: `💬 *Nova resposta no Ticket #${ticketId}*\n\n*Ticket:* ${ticketTitle}\n*Mensagem:* ${message}\n\n[Ver Detalhes](${clientUrl}/tickets/${ticketId})`
+                        telegramText: `💬 <b>Nova resposta no Ticket #${ticketId}</b>\n\n<b>Ticket:</b> ${escapeHTML(ticketTitle)}\n<b>Mensagem:</b> ${escapeHTML(message)}\n\n<a href="${clientUrl}/tickets/${ticketId}">Ver Detalhes</a>`
                     });
                 }
             } catch (err) {
@@ -173,7 +173,7 @@ export async function linkTicketToSchedule(db: PoolClient, ticketId: number, sch
                 ? new Date(scheduleData.startDate).toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
                 : 'Data não definida';
 
-            const telegramMessage = `🔗 *Ticket Vinculado a Agendamento*\n\n*Ticket:* #${ticketId} - ${ticket.title}\n*Agendamento:* ${scheduleData?.title || 'Visita Técnica'}\n*Data:* ${dateStr}\n\nO ticket foi associado a um agendamento existente.`;
+            const telegramMessage = `🔗 <b>Ticket Vinculado a Agendamento</b>\n\n<b>Ticket:</b> #${ticketId} - ${escapeHTML(ticket.title || '')}\n<b>Agendamento:</b> ${escapeHTML(scheduleData?.title || 'Visita Técnica')}\n<b>Data:</b> ${escapeHTML(dateStr)}\n\nO ticket foi associado a um agendamento existente.`;
             sendTelegramNotification(telegramMessage);
         } catch (err) {
             logger.error({ err }, 'Failed to process ticket link side effects');
@@ -234,7 +234,7 @@ export async function closeTicketDirectly(db: PoolClient, ticketId: number, user
                         message: message,
                         clientUrl: clientUrl
                     },
-                    telegramText: `💬 *Resposta Final no Ticket #${ticketId}*\n\n*Ticket:* ${ticket.title || 'Sem Título'}\n*Mensagem:* ${message}\n\n[Ver Detalhes](${clientUrl}/tickets/${ticketId})`
+                    telegramText: `💬 <b>Resposta Final no Ticket #${ticketId}</b>\n\n<b>Ticket:</b> ${escapeHTML(ticket.title || 'Sem Título')}\n<b>Mensagem:</b> ${escapeHTML(message)}\n\n<a href="${clientUrl}/tickets/${ticketId}">Ver Detalhes</a>`
                 });
 
                 // Notification for closing
@@ -246,7 +246,7 @@ export async function closeTicketDirectly(db: PoolClient, ticketId: number, user
                         ticketTitle: ticket.title || 'Sem Título',
                         clientUrl: clientUrl
                     },
-                    telegramText: `✅ *Ticket Fechado*\n\nO seu pedido *#${ticketId} - ${ticket.title || 'Sem Título'}* foi concluído.\n\n[Ver Detalhes](${clientUrl}/tickets/${ticketId})`
+                    telegramText: `✅ <b>Ticket Fechado</b>\n\nO seu pedido <b>#${ticketId} - ${escapeHTML(ticket.title || 'Sem Título')}</b> foi concluído.\n\n<a href="${clientUrl}/tickets/${ticketId}">Ver Detalhes</a>`
                 });
             }
         } catch (err) {
@@ -290,7 +290,7 @@ export async function notifyTicketClosed(ticketId: number) {
                     ticketTitle: ticket.title,
                     clientUrl: clientUrl
                 },
-                telegramText: `✅ *Ticket Fechado*\n\nO seu pedido *#${ticket.id} - ${ticket.title}* foi fechado.\n\n[Ver Detalhes](${clientUrl}/tickets/${ticket.id})`
+                telegramText: `✅ <b>Ticket Fechado</b>\n\nO seu pedido <b>#${ticket.id} - ${escapeHTML(ticket.title)}</b> foi fechado.\n\n<a href="${clientUrl}/tickets/${ticket.id}">Ver Detalhes</a>`
             });
         }
     } catch (err) {

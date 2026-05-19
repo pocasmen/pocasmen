@@ -7,7 +7,7 @@ import * as scheduleService from '../../services/scheduleService';
 import * as inventoryService from '../../services/inventoryService';
 import { broadcastCalendarUpdate } from '../../services/realtimeService';
 import { googleCalendarService } from '../../services/googleCalendarService';
-import { sendTelegramNotification } from '../../services/telegramService';
+import { sendTelegramNotification, escapeHTML } from '../../services/telegramService';
 import { TicketStatus } from '../../types';
 import { Schedule, SchedulePart, ScheduleTechnician, Profile } from '../../types/supabase';
 import { ScheduleRepository } from './schedule.repository';
@@ -166,7 +166,7 @@ export class ScheduleService {
             await db.query('DELETE FROM schedules WHERE id = $1', [scheduleId]);
 
             try {
-                const message = `❌ *Agendamento Cancelado*\n\n*Título:* ${schedule.title}\n*Cliente:* ${schedule.client_name || 'Desconhecido'}\n\n_Este agendamento foi removido do sistema._`;
+                const message = `❌ <b>Agendamento Cancelado</b>\n\n<b>Título:</b> ${escapeHTML(schedule.title || '')}\n<b>Cliente:</b> ${escapeHTML(schedule.client_name || 'Desconhecido')}\n\n<i>Este agendamento foi removido do sistema.</i>`;
                 const { rows: profiles } = await db.query<Profile>('SELECT telegramchatid FROM profiles WHERE id = ANY($1) OR role = \'admin\'', [techIds]);
                 for (const p of profiles) if (p.telegramchatid) await sendTelegramNotification(message, p.telegramchatid);
             } catch (notifErr) { logger.error(notifErr); }

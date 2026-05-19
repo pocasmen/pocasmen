@@ -1,7 +1,7 @@
 //Horas de desenvolvimento activo=14,0
 import * as cron from 'node-cron';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { sendTelegramNotification } from './telegramService';
+import { sendTelegramNotification, escapeHTML } from './telegramService';
 import { logger } from '../utils/logger';
 import { TicketStatus } from '../constants/enums';
 import { Database } from '../types/db.types';
@@ -21,7 +21,7 @@ export async function runTicketCheck(supabase: SupabaseClient<Database>) {
 
         if (error) throw error;
         if (count && count > 0) {
-            const message = `🔔 *Daily Reminder:* There are *${count}* pending ticket(s).`;
+            const message = `🔔 <b>Daily Reminder:</b> There are <b>${count}</b> pending ticket(s).`;
             sendTelegramNotification(message);
         }
     } catch (error) {
@@ -92,8 +92,8 @@ export async function runDailyReminders(supabase: SupabaseClient<Database>) {
                         .lte('schedules.startDate', `${scheduleDateStr}T23:59:59.999Z`);
 
                     if (!sError && techSchedules && techSchedules.length > 0) {
-                        let message = `Olá, *${profile.first_name || 'Técnico'}*!\n\n`;
-                        message += `Lembramos os seus agendamentos para ${dateLabel} (*${scheduleDate.toLocaleDateString('pt-PT')}*):\n\n`;
+                        let message = `Olá, <b>${escapeHTML(profile.first_name || 'Técnico')}</b>!\n\n`;
+                        message += `Lembramos os seus agendamentos para ${dateLabel} (<b>${escapeHTML(scheduleDate.toLocaleDateString('pt-PT'))}</b>):\n\n`;
 
                         techSchedules.forEach((ts: any) => {
                             const s = ts.schedules;
@@ -105,7 +105,7 @@ export async function runDailyReminders(supabase: SupabaseClient<Database>) {
                                 const e = Array.isArray(eq) ? eq[0] : eq;
                                 eqDesc = `${e.brand || ''} ${e.model || ''}`.trim();
                             }
-                            message += `• *${startTime}* - ${s.serviceType || 'Serviço'} | ${clientName}\n  _${eqDesc}_\n\n`;
+                            message += `• <b>${escapeHTML(startTime)}</b> - ${escapeHTML(s.serviceType || 'Serviço')} | ${escapeHTML(clientName)}\n  <i>${escapeHTML(eqDesc)}</i>\n\n`;
                         });
 
                         await sendTelegramNotification(message, profile.telegramchatid);
