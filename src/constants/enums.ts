@@ -4,7 +4,8 @@ export enum UserRole {
     OFFICE_STAFF = 'office_staff',
     TECHNICIAN = 'technician',
     CLIENT = 'client',
-    PENDING_CLIENT = 'pending_client'
+    PENDING_CLIENT = 'pending_client',
+    INACTIVE_TECHNICIAN = 'inactive_technician'
 }
 
 export enum TicketStatus {

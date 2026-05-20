@@ -167,7 +167,7 @@ export class ScheduleService {
 
             try {
                 const message = `❌ <b>Agendamento Cancelado</b>\n\n<b>Título:</b> ${escapeHTML(schedule.title || '')}\n<b>Cliente:</b> ${escapeHTML(schedule.client_name || 'Desconhecido')}\n\n<i>Este agendamento foi removido do sistema.</i>`;
-                const { rows: profiles } = await db.query<Profile>('SELECT telegramchatid FROM profiles WHERE id = ANY($1) OR role = \'admin\'', [techIds]);
+                const { rows: profiles } = await db.query<Profile>('SELECT telegramchatid FROM profiles WHERE id = ANY($1) OR role IN (\'admin\', \'super_admin\')', [techIds]);
                 for (const p of profiles) if (p.telegramchatid) await sendTelegramNotification(message, p.telegramchatid);
             } catch (notifErr) { logger.error(notifErr); }
         });

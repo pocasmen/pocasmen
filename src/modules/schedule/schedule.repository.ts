@@ -26,14 +26,19 @@ export class ScheduleRepository {
             queryParams.push(equipmentId);
         }
 
+        let dateConditions = [];
         if (startDate) {
-            whereConditions.push(`s."startDate" >= $${paramIndex++}`);
+            dateConditions.push(`s."startDate" >= $${paramIndex++}`);
             queryParams.push(startDate);
         }
 
         if (endDate) {
-            whereConditions.push(`s."startDate" <= $${paramIndex++}`);
+            dateConditions.push(`s."startDate" <= $${paramIndex++}`);
             queryParams.push(endDate);
+        }
+
+        if (dateConditions.length > 0) {
+            whereConditions.push(`((${dateConditions.join(' AND ')}) OR s."startDate" IS NULL OR s."acknowledgementState" = 'pending_scheduling')`);
         }
 
         const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';

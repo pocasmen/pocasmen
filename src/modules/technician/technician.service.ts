@@ -49,12 +49,24 @@ export class TechnicianService {
             throw new ForbiddenError('Only admins can delete users.');
         }
 
-        await withTransactionAs(null, (db) => this.profileRepo.delete(targetId, db));
+        await withTransactionAs(null, async (db) => {
+            await db.query(
+                `UPDATE profiles 
+                 SET role = $1, 
+                     daily_notifications_enabled = false, 
+                     telegramchatid = NULL 
+                 WHERE id = $2`,
+                [UserRole.INACTIVE_TECHNICIAN, targetId]
+            );
+        });
 
         try {
-            await supabase.auth.admin.deleteUser(targetId);
+            await supabase.auth.admin.updateUserById(targetId, {
+                user_metadata: { role: UserRole.INACTIVE_TECHNICIAN },
+                ban_duration: '876600h' // Ban the user for 100 years to prevent login
+            });
         } catch (err) {
-            logger.error(err, 'Failed to delete user from auth');
+            logger.error(err, 'Failed to update user role and ban in auth');
         }
     }
 }
