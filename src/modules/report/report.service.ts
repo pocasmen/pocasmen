@@ -12,9 +12,10 @@ export class ReportService {
 
     async getReports(filters: {
         search?: string; dateFilter?: string; serviceType?: string | string[];
+        signedFilter?: 'signed' | 'unsigned';
         page?: number; limit?: number;
     }) {
-        const { dateFilter, serviceType, page, limit } = filters;
+        const { dateFilter, serviceType, page, limit, signedFilter } = filters;
         let search = filters.search;
         let startDate: string | undefined;
         let endDate: string | undefined;
@@ -44,7 +45,7 @@ export class ReportService {
             ? (Array.isArray(serviceType) ? serviceType as string[] : [serviceType as string])
             : undefined;
 
-        return this.repo.findAll(pool, { search, startDate, endDate, serviceTypes, page, limit });
+        return this.repo.findAll(pool, { search, startDate, endDate, serviceTypes, page, limit, signedFilter });
     }
 
     async getReportById(id: number, userId: string, userRole: string) {

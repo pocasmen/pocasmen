@@ -12,8 +12,8 @@ export class TechnicianService {
         return this.profileRepo.findTechnicians(pool);
     }
 
-    async getExternalUsers() {
-        return this.profileRepo.findExternalUsers(pool);
+    async getExternalUsers(filters: { search?: string, category?: string } = {}) {
+        return this.profileRepo.findExternalUsers(pool, filters);
     }
 
     async getMe(userId: string) {

@@ -58,7 +58,8 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
         for (const p of parts) {
             let pId = p.id;
             if (!pId && p.reference) {
-                const { rows } = await db.query('SELECT id, track_stock FROM parts WHERE reference = $1', [p.reference]);
+                const cleanedRef = p.reference.trim();
+                const { rows } = await db.query('SELECT id, track_stock FROM parts WHERE reference = $1 OR TRIM(reference) = $1', [cleanedRef]);
                 if (rows.length > 0) {
                     pId = rows[0].id;
                     p.track_stock = rows[0].track_stock;

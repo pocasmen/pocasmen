@@ -5,20 +5,31 @@ import { CreateEquipmentDto, UpdateEquipmentDto } from './equipment.dto';
 
 export class EquipmentRepository {
     private readonly SELECT_WITH_CLIENT = `
-        SELECT e.id, e.brand, e.model, e."serialNumber", e.nickname, e."additionalInfo", e."clientId", e.status, c.name as "clientName"
+        SELECT e.id, e.brand, e.model, e."serialNumber", e.nickname, e."additionalInfo", e."clientId", e.status, e.category, c.name as "clientName"
         FROM equipments e
         LEFT JOIN clients c ON e."clientId" = c.id
     `;
 
-    async findAll(db: QueryRunner, filters: { search?: string } = {}): Promise<any[]> {
-        const { search } = filters;
+    async findAll(db: QueryRunner, filters: { search?: string, category?: string } = {}): Promise<any[]> {
+        const { search, category } = filters;
         let query = this.SELECT_WITH_CLIENT;
         const params: any[] = [];
+        const whereClauses: string[] = [];
 
         if (search) {
-            query += ` WHERE e.brand ILIKE $1 OR e.model ILIKE $1 OR e."serialNumber" ILIKE $1 OR e.nickname ILIKE $1 OR c.name ILIKE $1`;
             params.push(`%${search}%`);
+            whereClauses.push(`(e.brand ILIKE $${params.length} OR e.model ILIKE $${params.length} OR e."serialNumber" ILIKE $${params.length} OR e.nickname ILIKE $${params.length} OR c.name ILIKE $${params.length})`);
         }
+
+        if (category) {
+            params.push(category);
+            whereClauses.push(`e.category = $${params.length}`);
+        }
+
+        if (whereClauses.length > 0) {
+            query += ` WHERE ${whereClauses.join(' AND ')}`;
+        }
+
         query += ' ORDER BY e.id ASC';
 
         const { rows } = await db.query(query, params);
@@ -51,10 +62,10 @@ export class EquipmentRepository {
     }
 
     async create(data: CreateEquipmentDto, db: QueryRunner): Promise<Equipment> {
-        const { brand, model, serialNumber, clientId, nickname, additionalInfo, status } = data;
+        const { brand, model, serialNumber, clientId, nickname, additionalInfo, status, category } = data;
         const { rows } = await db.query(
-            'INSERT INTO equipments (brand, model, "serialNumber", nickname, "clientId", "additionalInfo", status) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-            [brand, model, serialNumber, nickname, clientId, additionalInfo, status || 'active']
+            'INSERT INTO equipments (brand, model, "serialNumber", nickname, "clientId", "additionalInfo", status, category) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [brand, model, serialNumber, nickname, clientId, additionalInfo, status || 'active', category]
         );
         return rows[0];
     }
@@ -72,7 +83,8 @@ export class EquipmentRepository {
             nickname: 'nickname',
             clientId: '"clientId"',
             additionalInfo: '"additionalInfo"',
-            status: 'status'
+            status: 'status',
+            category: 'category'
         };
 
         for (const [key, value] of Object.entries(data)) {
@@ -199,5 +211,10 @@ export class EquipmentRepository {
     async countByClientId(clientId: number): Promise<number> {
         const { rows } = await pool.query('SELECT COUNT(*) FROM equipments WHERE "clientId" = $1', [clientId]);
         return parseInt(rows[0].count, 10);
+    }
+
+    async getDistinctCategories(): Promise<string[]> {
+        const { rows } = await pool.query('SELECT DISTINCT category FROM equipments WHERE category IS NOT NULL ORDER BY category ASC');
+        return rows.map(r => r.category);
     }
 }

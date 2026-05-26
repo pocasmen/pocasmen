@@ -13,7 +13,11 @@ export class TechnicianController {
     });
 
     getExternalUsers = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
-        const users = await this.technicianService.getExternalUsers();
+        const filters = { 
+            search: req.query.search as string | undefined,
+            category: req.query.category as string | undefined
+        };
+        const users = await this.technicianService.getExternalUsers(filters);
         res.json(users);
     });
 

@@ -11,9 +11,10 @@ export class ReportController {
         const page  = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
         const result = await this.reportService.getReports({
-            search:      req.query.search as string,
-            dateFilter:  req.query.dateFilter as string,
-            serviceType: req.query.serviceType as string | string[],
+            search:       req.query.search as string,
+            dateFilter:   req.query.dateFilter as string,
+            serviceType:  req.query.serviceType as string | string[],
+            signedFilter: req.query.signedFilter as 'signed' | 'unsigned',
             page, limit,
         });
         res.json({ data: result.data, pagination: { page, limit, total: result.total, totalPages: Math.ceil(result.total / limit) } });

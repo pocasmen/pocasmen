@@ -83,12 +83,12 @@ export function formatServiceType(serviceType: any): string {
 export async function generateScheduleTitle(supabase: SupabaseClient<Database>, clientId: number, equipmentId: number, serviceType: string | string[]): Promise<string> {
     try {
         const [clientRes, equipRes] = await Promise.all([
-            supabase.from('clients').select('name').eq('id', clientId).single(),
-            supabase.from('equipments').select('model').eq('id', equipmentId).single()
+            pool.query('SELECT name FROM clients WHERE id = $1', [clientId]),
+            pool.query('SELECT model FROM equipments WHERE id = $1', [equipmentId])
         ]);
 
-        const clientName = clientRes.data?.name || 'Cliente';
-        const equipModel = equipRes.data?.model || 'Equipamento';
+        const clientName = clientRes.rows[0]?.name || 'Cliente';
+        const equipModel = equipRes.rows[0]?.model || 'Equipamento';
         const serviceLabel = formatServiceType(serviceType);
 
         return `${serviceLabel} - ${equipModel} - ${clientName}`;
@@ -122,33 +122,42 @@ export async function isGoogleSyncEnabled(supabase: SupabaseClient<Database>): P
  */
 export async function sendScheduleNotificationToTechnicians(supabase: SupabaseClient<Database>, scheduleId: number, technicianIds: string[], isUpdate: boolean = false) {
     try {
-        const { data: scheduleRaw, error: sError } = await supabase
-            .from('schedules')
-            .select('title, startDate, endDate, serviceType, additionalInfo, clientId, equipmentId, acknowledgementState, created_by, updated_by, created_at, updated_at, clients(name), equipments(brand, model, serialNumber)')
-            .eq('id', scheduleId)
-            .single();
+        const { rows: scheduleRows } = await pool.query(`
+            SELECT 
+                s.title, s."startDate", s."endDate", s."serviceType", s."additionalInfo", 
+                s."clientId", s."equipmentId", s."acknowledgementState", 
+                s.created_by, s.updated_by, s.created_at, s.updated_at,
+                c.name as client_name,
+                e.brand, e.model, e."serialNumber"
+            FROM schedules s
+            LEFT JOIN clients c ON c.id = s."clientId"
+            LEFT JOIN equipments e ON e.id = s."equipmentId"
+            WHERE s.id = $1
+        `, [scheduleId]);
 
-        if (sError || !scheduleRaw) {
-            logger.error(sError, 'Error fetching schedule for notification');
+        if (scheduleRows.length === 0) {
+            logger.error({ scheduleId }, 'Error fetching schedule for notification: not found');
             return;
         }
 
-        const { data: scheduleParts, error: partsError } = await supabase
-            .from('schedule_parts')
-            .select('quantity, parts(reference, designation)')
-            .eq('scheduleId', scheduleId);
+        const { rows: scheduleParts } = await pool.query(`
+            SELECT sp.quantity, p.reference, p.designation
+            FROM schedule_parts sp
+            JOIN parts p ON p.id = sp."partId"
+            WHERE sp."scheduleId" = $1
+        `, [scheduleId]);
 
-        const schedule = scheduleRaw as any;
-        const clientName = schedule.clients?.name || (Array.isArray(schedule.clients) ? schedule.clients[0]?.name : 'Cliente Desconhecido');
+        const schedule = scheduleRows[0];
+        const clientName = schedule.client_name || 'Cliente Desconhecido';
 
         // Buscar nomes dos utilizadores de auditoria (criador e editor)
         const auditUserIds = [schedule.created_by, schedule.updated_by].filter(Boolean);
         let auditNames: Record<string, string> = {};
         if (auditUserIds.length > 0) {
-            const { data: auditProfiles } = await supabase
-                .from('profiles')
-                .select('id, first_name, last_name')
-                .in('id', auditUserIds);
+            const { rows: auditProfiles } = await pool.query<Profile>(
+                'SELECT id, first_name, last_name FROM profiles WHERE id = ANY($1)',
+                [auditUserIds]
+            );
             (auditProfiles || []).forEach((p: any) => {
                 auditNames[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Desconhecido';
             });
@@ -164,32 +173,27 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
 
         const serviceTypeLabel = formatServiceType(schedule.serviceType);
 
-        const equipment = schedule.equipments;
-        let equipmentInfo = 'Não especificado';
-        if (equipment) {
-            const eq = Array.isArray(equipment) ? equipment[0] : equipment;
-            const brand = eq.brand || '';
-            const model = eq.model || '';
-            const serialNumber = eq.serialNumber || '';
-            equipmentInfo = `${brand} ${model}${serialNumber ? ` (S/N: ${serialNumber})` : ''}`.trim();
-        }
+        const brand = schedule.brand || '';
+        const model = schedule.model || '';
+        const serialNumber = schedule.serialNumber || '';
+        const equipmentInfo = `${brand} ${model}${serialNumber ? ` (S/N: ${serialNumber})` : ''}`.trim() || 'Não especificado';
 
         // Garantir que os IDs são únicos e strings limpas
         const uniqueTechIds = Array.from(new Set(technicianIds.map(id => String(id).trim()))).filter(Boolean);
 
         // Obter perfis de técnicos e admins de forma separada para máxima fiabilidade
-        const [techProfilesRes, adminProfilesRes] = await Promise.all([
-            uniqueTechIds.length > 0 
-                ? supabase.from('profiles').select('id, telegramchatid, role, first_name, last_name').in('id', uniqueTechIds)
-                : Promise.resolve({ data: [], error: null }),
-            supabase.from('profiles').select('id, telegramchatid, role, first_name, last_name').in('role', ['admin', 'super_admin'])
+        const [techProfilesResult, adminProfilesResult] = await Promise.all([
+            uniqueTechIds.length > 0
+                ? pool.query<Profile>(
+                    `SELECT id, telegramchatid, role, first_name, last_name FROM profiles WHERE id = ANY($1)`,
+                    [uniqueTechIds]
+                  )
+                : Promise.resolve({ rows: [] }),
+            pool.query<Profile>(`SELECT id, telegramchatid, role, first_name, last_name FROM profiles WHERE role IN ('admin', 'super_admin')`)
         ]);
 
-        if (techProfilesRes.error) logger.error(techProfilesRes.error, 'Error fetching technicians');
-        if (adminProfilesRes.error) logger.error(adminProfilesRes.error, 'Error fetching admins');
-
         // Combinar e remover duplicados
-        const allProfiles = [...(techProfilesRes.data || []), ...(adminProfilesRes.data || [])];
+        const allProfiles = [...(techProfilesResult.rows || []), ...(adminProfilesResult.rows || [])];
         const typedProfiles = Array.from(new Map(allProfiles.map(p => [p.id, p])).values()) as Profile[];
 
         const assignedTechNames = typedProfiles
@@ -221,8 +225,7 @@ export async function sendScheduleNotificationToTechnicians(supabase: SupabaseCl
         if (scheduleParts && scheduleParts.length > 0) {
             baseMessage += `\n<b>Peças Necessárias:</b>\n`;
             scheduleParts.forEach((sp: any) => {
-                const p = sp.parts;
-                baseMessage += `• ${sp.quantity}x ${escapeHTML(p.reference)} - ${escapeHTML(p.designation)}\n`;
+                baseMessage += `• ${sp.quantity}x ${escapeHTML(sp.reference)} - ${escapeHTML(sp.designation)}\n`;
             });
         }
 
@@ -401,18 +404,18 @@ export async function syncPartsAndReservations(db: PoolClient, scheduleId: numbe
         for (const p of parts) {
             let partId = p.id;
             if (!partId && p.reference) {
-                const { rows: existingPartRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1', [p.reference]);
+                const cleanedRef = p.reference.trim();
+                const { rows: existingPartRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1 OR TRIM(reference) = $1', [cleanedRef]);
                 if (existingPartRows.length > 0) {
                     partId = existingPartRows[0].id;
                 } else if (p.designation) {
                     const { rows: newPartRows } = await db.query<Part>(
                         'INSERT INTO parts (reference, designation, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, is_composed) VALUES ($1, $2, 0, 0, 0, 0, 0, 0, false) RETURNING id',
-                        [p.reference, p.designation]
+                        [cleanedRef, p.designation]
                     );
                     partId = newPartRows[0].id;
                 }
             }
-
             if (partId && p.quantity > 0) {
                 affectedPartIds.add(partId);
                 const st = (p.stockType || StockType.GENERAL) as StockType;

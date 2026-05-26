@@ -483,7 +483,8 @@ export async function getEnrichedInventory(
             .is('deleted_at', null);
 
         if (search) {
-            query = query.or(`reference.ilike.%${search}%,designation.ilike.%${search}%`);
+            const trimmedSearch = search.trim();
+            query = query.or(`reference.ilike.%${trimmedSearch}%,designation.ilike.%${trimmedSearch}%`);
         }
 
         const { data, count, error } = await query
@@ -501,11 +502,12 @@ export async function getEnrichedInventory(
         let dataParams: any[] = [];
 
         if (search) {
+            const trimmedSearch = search.trim();
             const searchCondition = `(reference ILIKE $${params.length + 1} OR designation ILIKE $${params.length + 1})`;
             countQuery += ` AND ${searchCondition}`;
             dataQuery += ` AND ${searchCondition}`;
-            params.push(`%${search}%`);
-            dataParams.push(`%${search}%`);
+            params.push(`%${trimmedSearch}%`);
+            dataParams.push(`%${trimmedSearch}%`);
         }
 
         if (view === 'virtual') {

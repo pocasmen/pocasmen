@@ -499,6 +499,7 @@ export type Database = {
           additionalInfo: string | null
           status: string | null
           nickname: string | null
+          category: string | null
         }
         Insert: {
           id?: number
@@ -509,6 +510,7 @@ export type Database = {
           additionalInfo?: string | null
           status?: string | null
           nickname?: string | null
+          category?: string | null
         }
         Update: {
           id?: number
@@ -519,6 +521,7 @@ export type Database = {
           additionalInfo?: string | null
           status?: string | null
           nickname?: string | null
+          category?: string | null
         }
         Relationships: [
           {

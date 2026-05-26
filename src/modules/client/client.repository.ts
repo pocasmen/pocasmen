@@ -4,22 +4,33 @@ import { Client } from '../../types/supabase';
 import { CreateClientDto, UpdateClientDto } from './client.dto';
 
 export class ClientRepository {
-    async findAll(db: QueryRunner, filters: { search?: string, is_blacklisted?: boolean } = {}): Promise<Client[]> {
-        const { search, is_blacklisted } = filters;
-        let query = 'SELECT * FROM clients WHERE 1=1';
+    async findAll(db: QueryRunner, filters: { search?: string, is_blacklisted?: boolean, equipment_category?: string } = {}): Promise<Client[]> {
+        const { search, is_blacklisted, equipment_category } = filters;
+        let query = 'SELECT DISTINCT c.* FROM clients c';
         const params: any[] = [];
+        const whereClauses: string[] = [];
+
+        if (equipment_category) {
+            query += ' INNER JOIN equipments e ON c.id = e."clientId"';
+            params.push(equipment_category);
+            whereClauses.push(`e.category = $${params.length}`);
+        }
 
         if (search) {
             params.push(`%${search}%`);
-            query += ` AND (name ILIKE $${params.length} OR nickname ILIKE $${params.length})`;
+            whereClauses.push(`(c.name ILIKE $${params.length} OR c.nickname ILIKE $${params.length})`);
         }
 
         if (is_blacklisted !== undefined) {
             params.push(is_blacklisted);
-            query += ` AND is_blacklisted = $${params.length}`;
+            whereClauses.push(`c.is_blacklisted = $${params.length}`);
         }
 
-        query += ' ORDER BY name ASC';
+        if (whereClauses.length > 0) {
+            query += ` WHERE ${whereClauses.join(' AND ')}`;
+        }
+
+        query += ' ORDER BY c.name ASC';
         const { rows } = await db.query(query, params);
         return rows;
     }

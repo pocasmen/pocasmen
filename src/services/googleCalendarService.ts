@@ -1,5 +1,6 @@
 //Horas de desenvolvimento activo=28,5
 import { SupabaseClient } from '@supabase/supabase-js';
+import { pool } from '../config/db';
 import { getCalendarClient } from '../utils/googleAuth';
 import { logger } from '../utils/logger';
 import { formatServiceType } from './scheduleService';
@@ -233,14 +234,14 @@ export const googleCalendarService = {
 
             let clientName = 'Cliente Desconhecido';
             if (s.clientId) {
-                const { data: client } = await supabase.from('clients').select('name').eq('id', s.clientId).maybeSingle();
-                if (client?.name) clientName = client.name;
+                const { rows } = await pool.query('SELECT name FROM clients WHERE id = $1', [s.clientId]);
+                if (rows[0]?.name) clientName = rows[0].name;
             }
 
             let equipInfo = 'Modelo Desconhecido';
             if (s.equipmentId) {
-                const { data: equip } = await supabase.from('equipments').select('model').eq('id', s.equipmentId).maybeSingle();
-                if (equip?.model) equipInfo = equip.model;
+                const { rows } = await pool.query('SELECT model FROM equipments WHERE id = $1', [s.equipmentId]);
+                if (rows[0]?.model) equipInfo = rows[0].model;
             }
 
             let colorId = '9';
@@ -248,21 +249,20 @@ export const googleCalendarService = {
             const techIds = (s.schedule_technicians || []).map((t: any) => t.technicianId);
 
             if (techIds.length > 0) {
-                const { data: techs } = await supabase
-                    .from('profiles')
-                    .select('id, first_name, last_name, color, google_calendar_color_id')
-                    .in('id', techIds);
+                const { rows: typedTechs } = await pool.query<DbProfile>(
+                    `SELECT id, first_name, last_name, color, google_calendar_color_id FROM profiles WHERE id = ANY($1)`,
+                    [techIds]
+                );
 
-                if (techs && techs.length > 0) {
-                    const typedTechs = techs as DbProfile[];
-                    const initialsArray = typedTechs.map(t => {
+                if (typedTechs.length > 0) {
+                    const initialsArray = typedTechs.map((t: DbProfile) => {
                         const first = (t.first_name || '').trim().charAt(0).toUpperCase();
                         const last = (t.last_name || '').trim().charAt(0).toUpperCase();
                         return `${first}${last}` || '?';
                     });
                     techInitials = initialsArray.join(' + ');
 
-                    const primaryTech = typedTechs.find(t => t.id === techIds[0]) || typedTechs[0];
+                    const primaryTech = typedTechs.find((t: DbProfile) => t.id === techIds[0]) || typedTechs[0];
 
                     if (primaryTech.google_calendar_color_id) {
                         colorId = primaryTech.google_calendar_color_id;

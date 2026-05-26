@@ -10,6 +10,7 @@ export class ClientController {
         const clients = await this.clientService.getClients({
             search: req.query.search as string | undefined,
             is_blacklisted: req.query.is_blacklisted === 'true' ? true : req.query.is_blacklisted === 'false' ? false : undefined,
+            equipment_category: req.query.equipment_category as string | undefined,
         });
         res.json(clients);
     });

@@ -50,6 +50,8 @@ router.get('/:id/ownership', authenticateToken, authorizeRoles(STAFF), controlle
 router.post('/:id/transfer', authenticateToken, authorizeRoles(STAFF), controller.transferEquipment);
 router.put('/ownership/:periodId', authenticateToken, authorizeRoles(STAFF), controller.updateOwnershipPeriod);
 
+router.get('/categories', authenticateToken, authorizeRoles(STAFF), controller.getCategories);
+
 export default router;
 
 // Named export for use in client.routes.ts (/:id/equipments cross-module route)

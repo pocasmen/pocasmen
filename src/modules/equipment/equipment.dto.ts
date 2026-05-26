@@ -6,6 +6,7 @@ export interface CreateEquipmentDto {
     nickname?: string;
     additionalInfo?: string;
     status?: string;
+    category?: string;
 }
 
 export interface UpdateEquipmentDto extends Partial<CreateEquipmentDto> {}

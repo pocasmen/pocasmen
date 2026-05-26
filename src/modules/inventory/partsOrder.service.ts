@@ -20,13 +20,14 @@ export class PartsOrderService {
                 if (designation) designation = designation.trim().replace(/\s+/g, ' ');
 
                 if (!currentPartId && reference) {
-                    const { rows: existing } = await db.query('SELECT id FROM parts WHERE reference = $1', [reference]);
+                    const cleanedRef = reference.trim();
+                    const { rows: existing } = await db.query('SELECT id FROM parts WHERE reference = $1 OR TRIM(reference) = $1', [cleanedRef]);
                     if (existing.length > 0) {
                         currentPartId = existing[0].id;
                     } else {
                         const { rows } = await db.query(
                             'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
-                            [reference, designation || '', 0, false, 0, 0, 0, '']
+                            [cleanedRef, designation || '', 0, false, 0, 0, 0, '']
                         );
                         currentPartId = rows[0].id;
                     }
@@ -113,13 +114,14 @@ export class PartsOrderService {
                 if (designation) designation = designation.trim().replace(/\s+/g, ' ');
 
                 if (!currentPartId && reference) {
-                    const { rows: existing } = await db.query('SELECT id FROM parts WHERE reference = $1', [reference]);
+                    const cleanedRef = reference.trim();
+                    const { rows: existing } = await db.query('SELECT id FROM parts WHERE reference = $1 OR TRIM(reference) = $1', [cleanedRef]);
                     if (existing.length > 0) {
                         currentPartId = existing[0].id;
                     } else {
                         const { rows } = await db.query(
                             'INSERT INTO parts (reference, designation, stock_quantity, is_composed, min_stock, min_stock_foss, price, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id',
-                            [reference, designation || '', 0, false, 0, 0, 0, '']
+                            [cleanedRef, designation || '', 0, false, 0, 0, 0, '']
                         );
                         currentPartId = rows[0].id;
                     }

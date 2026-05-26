@@ -9,7 +9,18 @@ export class InventoryRepository {
     }
 
     async findByReference(reference: string): Promise<Part | null> {
-        const { rows } = await pool.query('SELECT * FROM parts WHERE reference = $1 AND deleted_at IS NULL', [reference]);
+        const cleanedRef = reference.trim();
+        const { rows } = await pool.query('SELECT * FROM parts WHERE reference = $1 AND deleted_at IS NULL', [cleanedRef]);
+        
+        if (rows.length === 0) {
+            // Fallback: Tenta busca case-insensitive e ignorando espaços extras
+            const { rows: fuzzyRows } = await pool.query(
+                'SELECT * FROM parts WHERE (reference ILIKE $1 OR TRIM(reference) = $1) AND deleted_at IS NULL', 
+                [cleanedRef]
+            );
+            return fuzzyRows[0] ?? null;
+        }
+        
         return rows[0] ?? null;
     }
 
@@ -23,10 +34,11 @@ export class InventoryRepository {
         let dataParams: any[] = [limit, offset];
 
         if (search) {
+            const trimmedSearch = search.trim();
             countQuery = 'SELECT COUNT(*) FROM parts WHERE deleted_at IS NULL AND (reference ILIKE $1 OR designation ILIKE $1)';
-            countParams = [`%${search}%`];
+            countParams = [`%${trimmedSearch}%`];
             dataQuery = 'SELECT * FROM parts WHERE deleted_at IS NULL AND (reference ILIKE $3 OR designation ILIKE $3) ORDER BY designation ASC LIMIT $1 OFFSET $2';
-            dataParams = [limit, offset, `%${search}%`];
+            dataParams = [limit, offset, `%${trimmedSearch}%`];
         }
 
         const [countRes, dataRes] = await Promise.all([

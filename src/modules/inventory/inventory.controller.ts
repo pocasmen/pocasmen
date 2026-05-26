@@ -11,8 +11,8 @@ export class InventoryController {
     getInventory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const page   = Math.max(1, Number(req.query.page) || 1);
         const limit  = Math.min(1000, Math.max(1, Number(req.query.limit) || 100));
-        const search = req.query.search as string | undefined;
-        const view   = req.query.view as string | undefined;
+        const search = (req.query.search as string | undefined)?.trim();
+        const view   = (req.query.view as string | undefined)?.trim();
         const result = await this.inventoryService.getInventory(page, limit, search, view);
         res.json(result);
     });

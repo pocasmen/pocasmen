@@ -26,9 +26,12 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
     setImmediate(async () => {
         try {
             broadcastTicketUpdate(supabase, ticket.id);
-            const { data: clientData } = await supabase.from('clients').select('name').eq('id', Number(client_id)).single();
-            const { data: equipData } = await supabase.from('equipments').select('brand, model, serialNumber, nickname').eq('id', Number(equipmentId)).single();
+            const clientRes = await pool.query('SELECT name FROM clients WHERE id = $1', [Number(client_id)]);
+            const equipRes = await pool.query('SELECT brand, model, "serialNumber", nickname FROM equipments WHERE id = $1', [Number(equipmentId)]);
             
+            const clientData = clientRes.rows[0];
+            const equipData = equipRes.rows[0];
+
             let equipmentText = '?';
             if (equipData) {
                 const parts = [];

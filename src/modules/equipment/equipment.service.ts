@@ -6,7 +6,7 @@ import { CreateEquipmentDto, UpdateEquipmentDto } from './equipment.dto';
 export class EquipmentService {
     constructor(private repo: EquipmentRepository) {}
 
-    async getEquipments(filters: { search?: string }) {
+    async getEquipments(filters: { search?: string, category?: string }) {
         return this.repo.findAll(pool, filters);
     }
 
@@ -71,5 +71,9 @@ export class EquipmentService {
         return withTransactionAs(userId, async (db) => {
             await this.repo.updateOwnershipPeriod(periodId, data, db);
         });
+    }
+
+    async getDistinctCategories() {
+        return this.repo.getDistinctCategories();
     }
 }

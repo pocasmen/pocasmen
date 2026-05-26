@@ -86,8 +86,12 @@ export class InventoryService {
     }
 
     async getPartByReference(reference: string) {
-        const part = await this.repo.findByReference(reference);
-        if (!part) throw new NotFoundError('Peça não encontrada pela referência.');
+        const cleanedRef = reference?.trim();
+        const part = await this.repo.findByReference(cleanedRef);
+        if (!part) {
+            console.error(`[INVENTORY] Part not found by reference: "${cleanedRef}" (original: "${reference}")`);
+            throw new NotFoundError('Peça não encontrada pela referência.');
+        }
         return part;
     }
 
@@ -184,6 +188,7 @@ export class InventoryService {
             const results = { updated: 0, notFound: 0 };
             for (const item of items) {
                 if (!item.reference) continue;
+                const cleanedRef = item.reference.trim();
                 
                 // Remove all dots or spaces (thousand separators), then replace comma with dot
                 // e.g., "1.234,56" -> "1234.56"
@@ -196,8 +201,8 @@ export class InventoryService {
                 if (isNaN(priceValue)) priceValue = 0;
 
                 const { rowCount } = await db.query(
-                    'UPDATE parts SET price = $1 WHERE reference = $2',
-                    [priceValue, item.reference]
+                    'UPDATE parts SET price = $1 WHERE reference = $2 OR TRIM(reference) = $2',
+                    [priceValue, cleanedRef]
                 );
                 
                 if (rowCount && rowCount > 0) {

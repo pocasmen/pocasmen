@@ -6,8 +6,9 @@ export class ReportRepository {
     async findAll(db: QueryRunner, filters: {
         search?: string; startDate?: string; endDate?: string;
         serviceTypes?: string[]; page?: number; limit?: number;
+        signedFilter?: 'signed' | 'unsigned';
     }) {
-        const { search, startDate, endDate, serviceTypes, page = 1, limit = 100 } = filters;
+        const { search, startDate, endDate, serviceTypes, page = 1, limit = 100, signedFilter } = filters;
         const offset = (page - 1) * limit;
 
         const whereClauses = ['r.deleted_at IS NULL'];
@@ -18,6 +19,11 @@ export class ReportRepository {
         if (serviceTypes?.length) {
             params.push(serviceTypes);
             whereClauses.push(`r."serviceType"::jsonb ?| $${params.length}::text[]`);
+        }
+        if (signedFilter === 'signed') {
+            whereClauses.push(`(r.signature IS NOT NULL AND r.signature != '')`);
+        } else if (signedFilter === 'unsigned') {
+            whereClauses.push(`(r.signature IS NULL OR r.signature = '')`);
         }
         if (search) {
             params.push(`%${search}%`);

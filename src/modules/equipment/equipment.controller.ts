@@ -12,6 +12,7 @@ export class EquipmentController {
     getEquipments = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const equipments = await this.equipmentService.getEquipments({
             search: req.query.search as string | undefined,
+            category: req.query.category as string | undefined,
         });
         res.json(equipments);
     });
@@ -67,5 +68,10 @@ export class EquipmentController {
     updateOwnershipPeriod = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         await this.equipmentService.updateOwnershipPeriod(+req.params.periodId, req.body, req.user!.id);
         res.sendStatus(204);
+    });
+
+    getCategories = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const categories = await this.equipmentService.getDistinctCategories();
+        res.json(categories);
     });
 }

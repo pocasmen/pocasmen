@@ -12,8 +12,9 @@ export class ProfileRepository {
         return rows;
     }
 
-    async findExternalUsers(db: QueryRunner): Promise<any[]> {
-        const { rows } = await db.query(`
+    async findExternalUsers(db: QueryRunner, filters: { search?: string, category?: string } = {}): Promise<any[]> {
+        const { search, category } = filters;
+        let query = `
             SELECT
                 p.*,
                 CONCAT(p.first_name, ' ', p.last_name) as name,
@@ -30,8 +31,6 @@ export class ProfileRepository {
                      WHERE cu.user_id = p.id),
                     '[]'
                 ) as client_users,
-                -- We check if the user has a confirmed email AND doesn't have the must_set_password flag
-                -- as a more accurate proxy for "has a password defined".
                 EXISTS (
                     SELECT 1 FROM auth.users au 
                     WHERE au.id = p.id 
@@ -40,8 +39,33 @@ export class ProfileRepository {
                 ) as has_password
             FROM profiles p
             WHERE p.role = 'client'
-            ORDER BY p.first_name ASC
-        `);
+        `;
+        const params: any[] = [];
+        let paramCount = 1;
+
+        if (search) {
+            query += ` AND (p.first_name ILIKE $${paramCount} OR p.last_name ILIKE $${paramCount} OR p.email ILIKE $${paramCount} OR EXISTS (
+                SELECT 1 FROM client_users cu 
+                JOIN clients c ON cu.client_id = c.id 
+                WHERE cu.user_id = p.id AND c.name ILIKE $${paramCount}
+            ))`;
+            params.push(`%${search}%`);
+            paramCount++;
+        }
+
+        if (category) {
+            query += ` AND EXISTS (
+                SELECT 1 FROM client_users cu
+                JOIN equipments e ON e."clientId" = cu.client_id
+                WHERE cu.user_id = p.id AND e.category = $${paramCount}
+            )`;
+            params.push(category);
+            paramCount++;
+        }
+        
+        query += ` ORDER BY p.first_name ASC`;
+
+        const { rows } = await db.query(query, params);
         return rows;
     }
 
