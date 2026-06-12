@@ -15,7 +15,9 @@ export class TaskService {
         const task = await this.repo.findById(id, pool);
         if (!task) throw new NotFoundError('Task not found');
 
-        if (role !== UserRole.SUPER_ADMIN && task.user_id !== userId && task.created_by !== userId && task.is_private) {
+        const isAdmin = role === UserRole.SUPER_ADMIN || role === UserRole.ADMIN;
+
+        if (!isAdmin && task.user_id !== userId && task.created_by !== userId && task.is_private) {
             throw new NotFoundError('Task not found');
         }
         return task;
@@ -29,8 +31,13 @@ export class TaskService {
         const task = await this.repo.findById(taskId, pool);
         if (!task) throw new NotFoundError('Task not found');
 
-        if (role !== UserRole.SUPER_ADMIN && task.user_id !== userId && task.created_by !== userId) {
-            throw new NotFoundError('Task not found');
+        const isAdmin = role === UserRole.SUPER_ADMIN || role === UserRole.ADMIN;
+
+        if (!isAdmin && task.user_id !== userId && task.created_by !== userId) {
+            if (task.is_private) {
+                throw new NotFoundError('Task not found');
+            }
+            throw new ForbiddenError('Você não tem permissão para editar esta tarefa.');
         }
 
         return withTransactionAs(userId, (db) => taskService.updateFullTask(db, taskId, data, userId));
@@ -40,8 +47,13 @@ export class TaskService {
         const task = await this.repo.findById(taskId, pool);
         if (!task) throw new NotFoundError('Task not found');
 
-        if (role !== UserRole.SUPER_ADMIN && task.user_id !== userId) {
-            throw new NotFoundError('Task not found');
+        const isAdmin = role === UserRole.SUPER_ADMIN || role === UserRole.ADMIN;
+
+        if (!isAdmin && task.user_id !== userId && task.created_by !== userId) {
+            if (task.is_private) {
+                throw new NotFoundError('Task not found');
+            }
+            throw new ForbiddenError('Você não tem permissão para eliminar esta tarefa.');
         }
 
         return withTransactionAs(userId, (db) =>

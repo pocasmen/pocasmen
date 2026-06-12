@@ -23,7 +23,7 @@ export class PartsOrderRepository {
         part_id: number;
         designation?: string;
         quantity_ordered: number;
-        stock_type: 'general' | 'contract';
+        stock_type: string;
     }): Promise<PartsOrderItem> {
         const { rows } = await db.query(`
             INSERT INTO parts_order_items (order_id, part_id, designation, quantity_ordered, stock_type)

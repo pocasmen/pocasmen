@@ -32,11 +32,15 @@ import { SystemController } from './modules/system/system.controller';
 // Services
 import { initializeTelegramBot } from './modules/telegram/telegram.routes';
 import { scheduleTicketCheck, runDailyReminders } from './services/cronService';
+import { initScheduleListener } from './events/listeners/schedule.listener';
 
 import { logger } from './utils/logger';
 import pinoHttp from 'pino-http';
 import { apiLimiter } from './middlewares/rateLimiter.middleware';
 import { withObservability } from './utils/observability';
+
+// Initialize Event Listeners
+initScheduleListener();
 
 const app = express();
 app.set('trust proxy', 1);

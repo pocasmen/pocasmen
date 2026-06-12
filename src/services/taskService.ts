@@ -1,6 +1,7 @@
 import { PoolClient } from 'pg';
 import { InternalTask, InternalTaskTimeBlock } from '../types/supabase';
 import { logger } from '../utils/logger';
+import { NotFoundError } from '../utils/ApiError';
 
 /**
  * Syncs time blocks for an internal task and calculates total estimated hours.
@@ -111,7 +112,7 @@ export async function updateFullTask(db: PoolClient, taskId: number, data: any, 
         ]
     );
 
-    if (updatedRows.length === 0) throw new Error('Task not found');
+    if (updatedRows.length === 0) throw new NotFoundError('Task not found');
     const task = updatedRows[0];
 
     if (timeBlocks) {

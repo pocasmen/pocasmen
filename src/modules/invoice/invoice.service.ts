@@ -2,6 +2,7 @@ import { InvoiceRepository } from './invoice.repository';
 import { pool } from '../../config/db';
 import { parseMicroAtomoInvoice } from '../../utils/pdfParser';
 import { supabase } from '../../config/supabase';
+import { InternalServerError } from '../../utils/ApiError';
 
 export class InvoiceService {
   constructor(private repo: InvoiceRepository) {}
@@ -14,8 +15,9 @@ export class InvoiceService {
         .from('invoices')
         .upload(fileName, file.buffer, { contentType: 'application/pdf' });
 
-      if (uploadError) throw new Error(`Supabase error: ${uploadError.message}`);
-      const { data: { publicUrl } } = supabase.storage.from('invoices').getPublicUrl(uploadData.path);
+      if (uploadError) throw new InternalServerError(`Supabase error: ${uploadError.message}`);
+      const { data: publicUrlData } = supabase.storage.from('invoices').getPublicUrl(uploadData.path);
+      const publicUrl = publicUrlData.publicUrl;
       console.log('>>> [STEP 1] SUCCESS. URL:', publicUrl);
 
       console.log('>>> [STEP 2] Parsing PDF...');

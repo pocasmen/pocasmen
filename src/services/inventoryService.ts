@@ -5,6 +5,7 @@ import { StockType } from '../types';
 import { logger } from '../utils/logger';
 import { Database } from '../types/db.types';
 import { Part, PartUpdate, PartComponent } from '../types/supabase';
+import { BadRequestError, NotFoundError } from '../utils/ApiError';
 
 export const calculateNewQuantity = (current: number, change: number): number => {
     return Math.max(0, current + change);
@@ -299,7 +300,7 @@ export async function createComposedPart(db: PoolClient, data: any): Promise<any
     const { reference, designation, components, price, notes } = data;
 
     const { rows: existingRows } = await db.query<Part>('SELECT id FROM parts WHERE reference = $1 AND deleted_at IS NULL', [reference]);
-    if (existingRows.length > 0) throw new Error('Já existe uma peça com esta referência.');
+    if (existingRows.length > 0) throw new BadRequestError('Já existe uma peça com esta referência.');
 
     const { rows } = await db.query<Part>(
         `INSERT INTO parts (reference, designation, is_composed, stock_quantity, reserved_quantity, ordered_quantity, stock_quantity_foss, reserved_quantity_foss, ordered_quantity_foss, price, notes, track_stock) 
@@ -332,7 +333,7 @@ export async function updateComposedPart(db: PoolClient, partId: number, data: a
         [reference, designation, price || 0, notes || '', data.track_stock !== false, partId]
     );
     const parentPart = rows[0];
-    if (!parentPart) throw new Error('Part not found');
+    if (!parentPart) throw new NotFoundError('Part not found');
 
     await db.query('DELETE FROM part_components WHERE parent_part_id = $1', [partId]);
 

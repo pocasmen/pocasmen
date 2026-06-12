@@ -7,6 +7,7 @@ import { StockType, BillingStatus } from '../types';
 import { Report, Part, Schedule, ReportPart, BillingTask } from '../types/supabase';
 import { notifyUsers } from './notificationService';
 import { pool } from '../config/db';
+import { NotFoundError } from '../utils/ApiError';
 
 /**
  * Generates a report number in the format YYYYXXXX
@@ -53,7 +54,7 @@ async function syncReportTechnicians(db: PoolClient, reportId: number, technicia
 
 async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: any[], isUpdate: boolean = false, oldParts: any[] = [], userId: string = '') {
     // 1. Summarize NEW parts
-    const finalMap = new Map<string, { partId: number; quantity: number; stockType: StockType; designation: string }>();
+    const finalMap = new Map<string, { partId: number; quantity: number; stockType: StockType; designation: string; isApplied: boolean }>();
     if (Array.isArray(parts)) {
         for (const p of parts) {
             let pId = p.id;
@@ -73,16 +74,17 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
             // Handle different property names from frontend
             const st = (p.stockType || p.stock_type || StockType.GENERAL) as StockType;
             const designation = p.designation || '';
+            const isApplied = p.isApplied !== false;
             
             // If it's a virtual part, we might NOT want to merge them if they have different designations.
             // Even if we merge, we need the designation in the key to distinguish variations.
-            const key = `${pId}_${st}_${designation}`;
+            const key = `${pId}_${st}_${designation}_${isApplied}`;
 
             const existing = finalMap.get(key);
             if (existing) {
                 existing.quantity += qty;
             } else {
-                finalMap.set(key, { partId: pId, quantity: qty, stockType: st, designation });
+                finalMap.set(key, { partId: pId, quantity: qty, stockType: st, designation, isApplied });
             }
         }
     }
@@ -118,8 +120,8 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
     await db.query('DELETE FROM report_parts WHERE "reportId" = $1', [reportId]);
     for (const part of finalMap.values()) {
         await db.query(
-            'INSERT INTO report_parts ("reportId", "partId", "quantity", "stock_type", "designation") VALUES ($1, $2, $3, $4, $5)',
-            [reportId, part.partId, part.quantity, part.stockType, part.designation]
+            'INSERT INTO report_parts ("reportId", "partId", "quantity", "stock_type", "designation", "is_applied") VALUES ($1, $2, $3, $4, $5, $6)',
+            [reportId, part.partId, part.quantity, part.stockType, part.designation, part.isApplied]
         );
     }
 }
@@ -353,7 +355,7 @@ export async function updateFullReport(db: PoolClient, reportId: number, data: a
  */
 export async function deleteFullReport(db: PoolClient, reportId: number, userId: string, restoreParts: boolean) {
     const { rows: reportRows } = await db.query<Report>('SELECT id, "scheduleId" FROM reports WHERE id = $1', [reportId]);
-    if (reportRows.length === 0) throw new Error('Relatório não encontrado');
+    if (reportRows.length === 0) throw new NotFoundError('Relatório não encontrado');
     const report = reportRows[0];
 
     if (restoreParts) {

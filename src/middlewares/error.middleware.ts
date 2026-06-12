@@ -10,7 +10,15 @@ export const errorHandler = (
     next: NextFunction
 ) => {
     const log = (req as any).log || logger;
-    log.error(err, `[ERROR] ${req.method} ${req.url}`);
+    
+    // Log level depends on status code
+    const statusCode = err instanceof ApiError ? err.statusCode : 500;
+    
+    if (statusCode < 500) {
+        log.info({ err, statusCode }, `[${statusCode}] ${req.method} ${req.url}`);
+    } else {
+        log.error(err, `[ERROR] ${req.method} ${req.url}`);
+    }
 
     if (err instanceof ApiError) {
         return res.status(err.statusCode).json({

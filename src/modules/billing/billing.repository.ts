@@ -7,8 +7,13 @@ export class BillingRepository {
         const whereClauses = ['r.deleted_at IS NULL'];
         const params: any[] = [];
 
-        if (startDate) { params.push(startDate); whereClauses.push(`r."serviceDate" >= $${params.length}`); }
-        if (endDate)   { params.push(endDate);   whereClauses.push(`r."serviceDate" <= $${params.length}`); }
+        const dateClauses: string[] = [];
+        if (startDate) { params.push(startDate); dateClauses.push(`r."serviceDate" >= $${params.length}`); }
+        if (endDate)   { params.push(endDate);   dateClauses.push(`r."serviceDate" <= $${params.length}`); }
+
+        if (dateClauses.length > 0) {
+            whereClauses.push(`(${dateClauses.join(' AND ')} OR bt.status = 'needs_review')`);
+        }
 
         const whereSql = `WHERE ${whereClauses.join(' AND ')}`;
         const { rows } = await db.query(`

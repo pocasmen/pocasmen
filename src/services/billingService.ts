@@ -113,8 +113,11 @@ export const getBillingTasksRaw = async (db: PoolClient, startDate?: string, end
 
     const values: any[] = [];
     if (startDate && endDate) {
-        query += ` AND r."serviceDate" >= $1 AND r."serviceDate" <= $2`;
+        query += ` AND ((r."serviceDate" >= $1 AND r."serviceDate" <= $2) OR bt.status = 'needs_review')`;
         values.push(startDate, endDate);
+    } else {
+        // Se não houver filtro de data, opcionalmente podemos querer garantir que 
+        // certos estados aparecem sempre, mas o comportamento actual já devolve tudo se values estiver vazio.
     }
 
     query += ` ORDER BY bt.created_at DESC`;

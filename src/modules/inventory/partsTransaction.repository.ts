@@ -32,7 +32,10 @@ export class PartsTransactionRepository {
     async getHistoryByPartId(db: QueryRunner, partId: number): Promise<any[]> {
         const { rows } = await db.query(`
             SELECT pt.*, p.first_name, p.last_name,
-                   SUM(pt.quantity) OVER (PARTITION BY pt.part_id, pt.stock_type ORDER BY pt.created_at, pt.id) as running_stock
+                   SUM(pt.quantity) OVER (
+                       PARTITION BY pt.part_id, pt.stock_type 
+                       ORDER BY pt.created_at ASC, pt.id ASC
+                   ) as running_stock
             FROM parts_transactions pt
             LEFT JOIN profiles p ON pt.user_id = p.id
             WHERE pt.part_id = $1
@@ -49,7 +52,10 @@ export class PartsTransactionRepository {
 
         const { rows } = await db.query(`
             SELECT pt.*, p.first_name, p.last_name, part.designation, part.reference,
-                   SUM(pt.quantity) OVER (PARTITION BY pt.part_id, pt.stock_type ORDER BY pt.created_at, pt.id) as running_stock
+                   SUM(pt.quantity) OVER (
+                       PARTITION BY pt.part_id, pt.stock_type 
+                       ORDER BY pt.created_at ASC, pt.id ASC
+                   ) as running_stock
             FROM parts_transactions pt
             LEFT JOIN profiles p ON pt.user_id = p.id
             JOIN parts part ON pt.part_id = part.id

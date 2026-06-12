@@ -1,5 +1,5 @@
 import { pool, withTransactionAs } from '../../config/db';
-import { BadRequestError, NotFoundError, ApiError } from '../../utils/ApiError';
+import { BadRequestError, NotFoundError, InternalServerError, ApiError } from '../../utils/ApiError';
 import { StockType } from '../../constants/enums';
 import { Part } from '../../types/supabase';
 import * as inventoryService from '../../services/inventoryService';
@@ -41,7 +41,7 @@ export class InventoryService {
                     upsert: true 
                 });
 
-                if (uploadError) throw new Error(uploadError.message);
+                if (uploadError) throw new InternalServerError(uploadError.message);
 
                 // Update DB path
                 await pool.query('UPDATE parts SET image_path = $1 WHERE id = $2', [filePath, part.id]);
@@ -89,7 +89,7 @@ export class InventoryService {
         const cleanedRef = reference?.trim();
         const part = await this.repo.findByReference(cleanedRef);
         if (!part) {
-            console.error(`[INVENTORY] Part not found by reference: "${cleanedRef}" (original: "${reference}")`);
+            console.warn(`[INVENTORY] Part not found by reference: "${cleanedRef}" (original: "${reference}")`);
             throw new NotFoundError('Peça não encontrada pela referência.');
         }
         return part;

@@ -17,7 +17,7 @@ jest.mock('@supabase/supabase-js', () => {
     return {
         createClient: jest.fn(() => ({
             auth: {
-                getUser: jest.fn(() => Promise.resolve({ data: { user: { id: 'admin_id', user_metadata: { role: 'admin' } } }, error: null } as any)),
+                getUser: jest.fn(() => Promise.resolve({ data: { user: { id: '00000000-0000-0000-0000-000000000001', user_metadata: { role: 'admin' } } }, error: null } as any)),
                 signInWithPassword: jest.fn(() => Promise.resolve({} as any)),
             },
             from: jest.fn(() => ({
@@ -58,7 +58,7 @@ describe('Schedule Robustness & Combinations', () => {
 
         // Mock default user (Admin)
         (supabase.auth.getUser as any).mockImplementation(() => Promise.resolve({
-            data: { user: { id: 'admin_id', user_metadata: { role: 'admin' } } },
+            data: { user: { id: '00000000-0000-0000-0000-000000000001', user_metadata: { role: 'admin' } } },
             error: null
         }));
 

@@ -2,7 +2,7 @@ import { pool, withTransactionAs } from '../../config/db';
 import { PartsOrderRepository } from './partsOrder.repository';
 import * as inventoryService from '../../services/inventoryService';
 import { StockType } from '../../constants/enums';
-import { NotFoundError } from '../../utils/ApiError';
+import { NotFoundError, BadRequestError } from '../../utils/ApiError';
 
 export class PartsOrderService {
     constructor(private repo: PartsOrderRepository) {}
@@ -40,10 +40,11 @@ export class PartsOrderService {
                     part_id: currentPartId,
                     designation: designation || '',
                     quantity_ordered: quantity,
-                    stock_type: stockType === 'contract' ? 'contract' : 'general'
+                    stock_type: stockType // Use the original stockType from item
                 });
                 
                 // Increment ordered_quantity on the part
+                // Only StockType.FOSS goes to FOSS columns. Everything else (general, contract, msd) goes to standard columns.
                 const stockTypeEnum = (stockType === StockType.FOSS) 
                     ? StockType.FOSS 
                     : StockType.GENERAL;
@@ -134,7 +135,7 @@ export class PartsOrderService {
                     part_id: currentPartId,
                     designation: designation || '',
                     quantity_ordered: quantity,
-                    stock_type: stockType === 'contract' ? 'contract' : 'general'
+                    stock_type: stockType // Use the original stockType
                 });
 
                 // Increment ordered_quantity on the part
@@ -174,11 +175,12 @@ export class PartsOrderService {
             if (!item) throw new NotFoundError('Item de encomenda não encontrado');
             
             if (item.quantity_received > 0) {
-                throw new Error('Não é possível apagar um item que já tenha peças recebidas');
+                throw new BadRequestError('Não é possível apagar um item que já tenha peças recebidas');
             }
 
             // Restore ordered count on the physical part
-            const stockEnum = (item.stock_type === 'general' || item.stock_type === 'contract' || item.stock_type === 'msd') ? StockType.GENERAL : StockType.FOSS;
+            // Foss -> FOSS column. Everything else -> standard columns.
+            const stockEnum = (item.stock_type === StockType.FOSS) ? StockType.FOSS : StockType.GENERAL;
             await inventoryService.updatePartOrderedQuantity(db, item.part_id, -item.quantity_ordered, stockEnum);
             
             // Delete the item
@@ -196,12 +198,12 @@ export class PartsOrderService {
             
             const someReceived = order.items.some((i: any) => i.quantity_received > 0);
             if (someReceived) {
-                throw new Error('Não é possível apagar uma encomenda que já tenha peças recebidas');
+                throw new BadRequestError('Não é possível apagar uma encomenda que já tenha peças recebidas');
             }
 
             // Delete all items correctly abating stock
             for (const item of order.items) {
-                const stockEnum = (item.stock_type === 'general' || item.stock_type === 'contract' || item.stock_type === 'msd') ? StockType.GENERAL : StockType.FOSS;
+                const stockEnum = (item.stock_type === StockType.FOSS) ? StockType.FOSS : StockType.GENERAL;
                 await inventoryService.updatePartOrderedQuantity(db, item.part_id, -item.quantity_ordered, stockEnum);
                 await this.repo.deleteOrderItem(db, orderId, item.id);
             }

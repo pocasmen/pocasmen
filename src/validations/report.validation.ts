@@ -33,7 +33,8 @@ export const createReportSchema = z.object({
         parts: z.array(z.object({
             id: z.number(),
             quantity: z.number().positive(),
-            stockType: z.nativeEnum(StockType).optional()
+            stockType: z.nativeEnum(StockType).optional(),
+            isApplied: z.boolean().optional()
         })).optional(),
         includesTravel: z.boolean().optional()
     })
@@ -61,7 +62,8 @@ export const updateReportSchema = z.object({
         parts: z.array(z.object({
             id: z.number(),
             quantity: z.number().positive(),
-            stockType: z.nativeEnum(StockType).optional()
+            stockType: z.nativeEnum(StockType).optional(),
+            isApplied: z.boolean().optional()
         })).optional(),
         includesTravel: z.boolean().optional()
     })

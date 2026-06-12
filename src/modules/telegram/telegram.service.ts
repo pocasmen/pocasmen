@@ -8,6 +8,7 @@ import { broadcastCalendarUpdate } from '../../services/realtimeService';
 import { SERVICE_TYPE_MAP, getServiceTypeKeys } from '../../services/scheduleService';
 import { logger } from '../../utils/logger';
 import { ScheduleStatus } from '../../constants/enums';
+import { NotFoundError } from '../../utils/ApiError';
 
 export class TelegramService {
     public botUsername: string = '';
@@ -92,7 +93,7 @@ export class TelegramService {
                         );
 
                         if (rowCount === 0) {
-                            throw new Error(`Agendamento ${scheduleId} não encontrado.`);
+                            throw new NotFoundError(`Agendamento ${scheduleId} não encontrado.`);
                         }
 
                         logger.info({ scheduleId, newState, technicianId }, '[TELEGRAM] Schedule status updated');

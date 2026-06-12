@@ -8,6 +8,7 @@ import { logger } from '../utils/logger';
 import { broadcastTicketUpdate } from './realtimeService';
 import { notifyUsers } from './notificationService';
 import { pool } from '../config/db';
+import { BadRequestError, NotFoundError } from '../utils/ApiError';
 
 /**
  * Creates a ticket and sends notifications
@@ -82,7 +83,7 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
  */
 export async function replyToFullTicket(db: PoolClient, ticketId: number, userId: string, message: string) {
     const { rows: profileRows } = await db.query('SELECT id FROM profiles WHERE id = $1', [userId]);
-    if (profileRows.length === 0) throw new Error('Profile not found');
+    if (profileRows.length === 0) throw new NotFoundError('Profile not found');
 
     const { rows: updatedRows } = await db.query<Ticket>(
         'UPDATE tickets SET "updatedAt" = $1, status = CASE WHEN status = $2 THEN $3 ELSE status END WHERE id = $4 RETURNING *',
@@ -150,7 +151,7 @@ export async function linkTicketToSchedule(db: PoolClient, ticketId: number, sch
         [scheduleId, TicketStatus.SCHEDULED, new Date().toISOString(), ticketId]
     );
 
-    if (ticketRows.length === 0) throw new Error('Ticket not found');
+    if (ticketRows.length === 0) throw new NotFoundError('Ticket not found');
 
     // 2. Update Schedule
     await db.query(
@@ -192,7 +193,7 @@ export async function linkTicketToSchedule(db: PoolClient, ticketId: number, sch
  */
 export async function closeTicketDirectly(db: PoolClient, ticketId: number, userId: string, message: string) {
     if (!message || message.trim().length === 0) {
-        throw new Error('A response message is mandatory to close the ticket.');
+        throw new BadRequestError('A response message is mandatory to close the ticket.');
     }
 
     // 1. Update Ticket Status
@@ -201,7 +202,7 @@ export async function closeTicketDirectly(db: PoolClient, ticketId: number, user
         [TicketStatus.CLOSED, new Date().toISOString(), ticketId]
     );
 
-    if (updatedRows.length === 0) throw new Error('Ticket not found');
+    if (updatedRows.length === 0) throw new NotFoundError('Ticket not found');
 
     // 2. Add Final Response
     await db.query(

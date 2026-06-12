@@ -12,6 +12,7 @@ import { broadcastTicketUpdate } from './realtimeService';
 import { notifyUsers } from './notificationService';
 import { notifyTicketClosed } from './ticketService';
 import { pool } from '../config/db';
+import { BadRequestError, NotFoundError } from '../utils/ApiError';
 
 export const SERVICE_TYPE_MAP: Record<string, string> = {
     'manutencao': 'Manutenção',
@@ -499,7 +500,6 @@ export async function createFullSchedule(db: PoolClient, data: any, userId: stri
 
     if (ticketId) {
         await db.query<Ticket>('UPDATE tickets SET "scheduleId" = $1, status = $2 WHERE id = $3', [scheduleId, TicketStatus.SCHEDULED, ticketId]);
-        broadcastTicketUpdate(supabase, ticketId);
     }
 
     return insertedSchedule;
@@ -516,11 +516,11 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
     } = data;
 
     const { rows: originalRows } = await db.query<Schedule>('SELECT title, "startDate", "endDate", "clientId", "equipmentId", "serviceType", "acknowledgementState", "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
-    if (originalRows.length === 0) throw new Error('Schedule not found');
+    if (originalRows.length === 0) throw new NotFoundError('Schedule not found');
     const originalSchedule = originalRows[0];
     const wasAlreadyCompleted = originalSchedule.isCompleted;
 
-    if (wasAlreadyCompleted) throw new Error('Não é possível editar um agendamento já concluído.');
+    if (wasAlreadyCompleted) throw new BadRequestError('Não é possível editar um agendamento já concluído.');
 
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
@@ -561,9 +561,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
 
     // Determine new acknowledgement state
     let newAcknowledgementState = originalSchedule.acknowledgementState;
-    if (isCompleted) {
-        newAcknowledgementState = ScheduleStatus.COMPLETED;
-    } else if (originalSchedule.acknowledgementState === ScheduleStatus.PENDING_SCHEDULING && startDate) {
+    if (originalSchedule.acknowledgementState === ScheduleStatus.PENDING_SCHEDULING && startDate) {
         newAcknowledgementState = ScheduleStatus.PENDING;
     } else if (hasSignificantChanges) {
         // Reset to pending if significant changes occurred, so technicians must confirm again
@@ -587,7 +585,7 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
             internalNotes,
             JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])),
             ticketId,
-            newAcknowledgementState || ScheduleStatus.PENDING,
+            newAcknowledgementState,
             includesTravel !== undefined ? includesTravel : false,
             classification || 'geral',
             data.priority || originalSchedule.priority || null,
@@ -607,7 +605,6 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, isCompleted ? TicketStatus.CLOSED : TicketStatus.SCHEDULED, startDate, ticketId]);
-        broadcastTicketUpdate(supabase, ticketId);
         
         if (isCompleted) {
             setImmediate(() => notifyTicketClosed(ticketId));
@@ -624,17 +621,38 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
     const {
         startDate, endDate, clientId, equipmentId, technicianIds,
         ticketId, internalNotes, serviceType, parts, classification,
-        timeBlocks, includesTravel
+        timeBlocks, includesTravel, priority
     } = data;
 
-    const { rows: origRows } = await db.query<{ isCompleted: boolean }>('SELECT "isCompleted" FROM schedules WHERE id = $1', [scheduleId]);
-    const wasAlreadyCompleted = origRows.length > 0 && origRows[0].isCompleted;
+    const { rows: origRows } = await db.query<{ isCompleted: boolean, priority: string, acknowledgementState: string }>('SELECT "isCompleted", "priority", "acknowledgementState" FROM schedules WHERE id = $1', [scheduleId]);
+    if (origRows.length === 0) throw new NotFoundError('Schedule not found');
+    const originalSchedule = origRows[0];
+    const wasAlreadyCompleted = originalSchedule.isCompleted;
 
     const generatedTitle = await generateScheduleTitle(supabase, clientId, equipmentId, serviceType);
 
     const { rows } = await db.query<Schedule>(
-        `UPDATE schedules SET title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, "isCompleted" = true, "additionalInfo" = $6, "serviceType" = $7, "includes_travel" = $8, "classification" = $9, "updated_by" = $10 WHERE id = $11 RETURNING *`,
-        [generatedTitle, startDate, endDate, clientId, equipmentId, internalNotes, serviceType, includesTravel || false, classification || 'geral', userId, scheduleId]
+        `UPDATE schedules SET 
+            title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, 
+            "isCompleted" = true, "additionalInfo" = $6, "serviceType" = $7, "includes_travel" = $8, 
+            "classification" = $9, "priority" = $10, "ticketId" = $11,
+            "updated_by" = $12 
+        WHERE id = $13 RETURNING *`,
+        [
+            generatedTitle, 
+            startDate, 
+            endDate, 
+            clientId, 
+            equipmentId, 
+            internalNotes, 
+            JSON.stringify(Array.isArray(serviceType) ? serviceType : (serviceType ? [serviceType] : [])), 
+            includesTravel || false, 
+            classification || 'geral', 
+            priority || originalSchedule.priority || null,
+            ticketId || null,
+            userId, 
+            scheduleId
+        ]
     );
     const updated = rows[0];
 
@@ -647,7 +665,6 @@ export async function completeFullSchedule(db: PoolClient, scheduleId: number, d
 
     if (ticketId) {
         await db.query('UPDATE tickets SET "scheduleId" = $1, status = $2, scheduled_at = $3 WHERE id = $4', [scheduleId, TicketStatus.CLOSED, startDate, ticketId]);
-        broadcastTicketUpdate(supabase, ticketId);
         setImmediate(() => notifyTicketClosed(ticketId));
     }
 

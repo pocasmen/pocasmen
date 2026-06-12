@@ -323,6 +323,53 @@ export const googleCalendarService = {
     },
 
     /**
+     * Centralized sync method that handles environment checks, settings, and error logging.
+     * Designed to be called from Event Listeners to keep them lean.
+     */
+    async syncScheduleWithSettings(supabase: SupabaseClient<Database>, scheduleId: number) {
+        try {
+            const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
+            if (!googleCalendarId) return;
+
+            const { data, error } = await supabase
+                .from('settings')
+                .select('value')
+                .eq('key', 'google_calendar_sync_enabled')
+                .single();
+
+            const isSyncEnabled = !error && data?.value === 'true';
+            if (!isSyncEnabled) return;
+
+            await this.syncSchedule(supabase, googleCalendarId, scheduleId);
+        } catch (err) {
+            logger.error(err, `[GOOGLE CALENDAR] Centralized sync failed for schedule ${scheduleId}`);
+        }
+    },
+
+    /**
+     * Centralized cleanup method that handles environment checks, settings, and error logging.
+     */
+    async cleanupScheduleEvents(supabase: SupabaseClient<Database>, scheduleId: number, eventIds?: string[]) {
+        try {
+            const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
+            if (!googleCalendarId) return;
+
+            const { data, error } = await supabase
+                .from('settings')
+                .select('value')
+                .eq('key', 'google_calendar_sync_enabled')
+                .single();
+
+            const isSyncEnabled = !error && data?.value === 'true';
+            if (!isSyncEnabled) return;
+
+            await this.deleteScheduleEvents(supabase, googleCalendarId, scheduleId, eventIds);
+        } catch (err) {
+            logger.error(err, `[GOOGLE CALENDAR] Centralized cleanup failed for schedule ${scheduleId}`);
+        }
+    },
+
+    /**
      * Synchronizes all unsynced schedules to Google Calendar
      */
     async syncAllUnsynced(supabase: SupabaseClient<Database>, calendarId: string) {

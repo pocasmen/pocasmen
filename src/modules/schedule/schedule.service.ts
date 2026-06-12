@@ -1,16 +1,15 @@
 import { pool, withTransactionAs } from '../../config/db';
 import { supabase } from '../../config/supabase';
-import { NotFoundError } from '../../utils/ApiError';
+import { NotFoundError, InternalServerError } from '../../utils/ApiError';
 import { logger } from '../../utils/logger';
 import { mapScheduleDatabaseToResponse, mapTaskToScheduleResponse } from '../../utils/mappers';
 import * as scheduleService from '../../services/scheduleService';
 import * as inventoryService from '../../services/inventoryService';
-import { broadcastCalendarUpdate } from '../../services/realtimeService';
-import { googleCalendarService } from '../../services/googleCalendarService';
-import { sendTelegramNotification, escapeHTML } from '../../services/telegramService';
 import { TicketStatus } from '../../types';
 import { Schedule, SchedulePart, ScheduleTechnician, Profile } from '../../types/supabase';
 import { ScheduleRepository } from './schedule.repository';
+import { eventEmitter } from '../../events/emitter';
+import { SCHEDULE_EVENTS } from '../../events/events.constants';
 
 export class ScheduleService {
     constructor(private repo: ScheduleRepository) {}
@@ -75,26 +74,20 @@ export class ScheduleService {
     }
 
     async createSchedule(data: any, userId: string) {
-        const { technicianIds, startDate, endDate } = data;
+        const { technicianIds, startDate, endDate, ticketId } = data;
 
         const inserted = await withTransactionAs(userId, (db) =>
             scheduleService.createFullSchedule(db, data, userId)
         );
 
-        const scheduleId = inserted.id;
-        if (technicianIds?.length > 0) {
-            await scheduleService.sendScheduleNotificationToTechnicians(supabase, scheduleId, technicianIds);
-        }
-        await scheduleService.sendScheduleNotificationToClients(supabase, scheduleId);
-
-        broadcastCalendarUpdate(supabase, scheduleId);
-
-        const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
-        const isSyncEnabled = await scheduleService.isGoogleSyncEnabled(supabase);
-        if (googleCalendarId && isSyncEnabled && startDate && endDate) {
-            googleCalendarService.syncSchedule(supabase, googleCalendarId, scheduleId)
-                .catch(err => logger.error(err, '[SYNC ERROR] Google Calendar sync failed'));
-        }
+        eventEmitter.emit(SCHEDULE_EVENTS.CREATED, {
+            scheduleId: inserted.id,
+            technicianIds: technicianIds || [],
+            startDate,
+            endDate,
+            ticketId,
+            userId
+        });
 
         return { ...inserted, serviceType: scheduleService.getServiceTypeKey(inserted.serviceType) };
     }
@@ -106,20 +99,17 @@ export class ScheduleService {
             scheduleService.updateFullSchedule(db, scheduleId, data, userId)
         );
 
-        const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
-        if (googleCalendarId && await scheduleService.isGoogleSyncEnabled(supabase)) {
-            await googleCalendarService.deleteScheduleEvents(supabase, googleCalendarId, scheduleId, result.googleEventIdsToCleanup).catch(err => logger.error(err));
-            if (startDate && endDate) await googleCalendarService.syncSchedule(supabase, googleCalendarId, scheduleId).catch(err => logger.error(err));
-        }
+        eventEmitter.emit(SCHEDULE_EVENTS.UPDATED, {
+            scheduleId,
+            technicianIds: technicianIds || [],
+            startDate,
+            endDate,
+            isCompleted: !!isCompleted,
+            hasSignificantChanges: result.hasSignificantChanges,
+            googleEventIdsToCleanup: result.googleEventIdsToCleanup,
+            userId
+        });
 
-        if (technicianIds?.length > 0 && !isCompleted && result.hasSignificantChanges) {
-            await scheduleService.sendScheduleNotificationToTechnicians(supabase, scheduleId, technicianIds, true);
-        }
-        if (result.hasSignificantChanges && !isCompleted) {
-            await scheduleService.sendScheduleNotificationToClients(supabase, scheduleId, true);
-        }
-
-        broadcastCalendarUpdate(supabase, scheduleId);
         return { ...result.updatedSchedule, serviceType: scheduleService.getServiceTypeKey(result.updatedSchedule.serviceType) };
     }
 
@@ -130,18 +120,19 @@ export class ScheduleService {
             scheduleService.completeFullSchedule(db, scheduleId, data, userId)
         );
 
-        const googleCalendarId = process.env.GOOGLE_CALENDAR_ID;
-        if (googleCalendarId && await scheduleService.isGoogleSyncEnabled(supabase)) {
-            await googleCalendarService.deleteScheduleEvents(supabase, googleCalendarId, scheduleId, result.googleEventIdsToCleanup).catch(err => logger.error(err));
-            if (startDate && endDate) await googleCalendarService.syncSchedule(supabase, googleCalendarId, scheduleId).catch(err => logger.error(err));
-        }
+        eventEmitter.emit(SCHEDULE_EVENTS.COMPLETED, {
+            scheduleId,
+            startDate,
+            endDate,
+            googleEventIdsToCleanup: result.googleEventIdsToCleanup,
+            userId
+        });
 
-        broadcastCalendarUpdate(supabase, scheduleId);
         return { ...result.updated, serviceType: scheduleService.getServiceTypeKey(result.updated.serviceType) };
     }
 
     async deleteSchedule(scheduleId: number, userId: string) {
-        await withTransactionAs(userId, async (db) => {
+        const { techIds, schedule, googleEventIds } = await withTransactionAs(userId, async (db) => {
             const { rows: scheduleRows } = await db.query<Schedule & { client_name: string | null }>(
                 'SELECT s.title, s."startDate", s."endDate", c.name as client_name FROM schedules s LEFT JOIN clients c ON s."clientId" = c.id WHERE s.id = $1',
                 [scheduleId]
@@ -152,9 +143,8 @@ export class ScheduleService {
             const { rows: techIdsRows } = await db.query<ScheduleTechnician>('SELECT "technicianId" FROM schedule_technicians WHERE "scheduleId" = $1', [scheduleId]);
             const techIds = techIdsRows.map(r => r.technicianId);
 
-            if (process.env.GOOGLE_CALENDAR_ID && await scheduleService.isGoogleSyncEnabled(supabase)) {
-                await googleCalendarService.deleteScheduleEvents(supabase, process.env.GOOGLE_CALENDAR_ID, scheduleId).catch(err => logger.error(err));
-            }
+            const { rows: googleEventRows } = await db.query('SELECT google_event_id FROM schedule_time_blocks WHERE schedule_id = $1 AND google_event_id IS NOT NULL', [scheduleId]);
+            const googleEventIds = googleEventRows.map(r => r.google_event_id).filter(Boolean);
 
             await db.query('DELETE FROM schedule_technicians WHERE "scheduleId" = $1', [scheduleId]);
             const { rows: oldParts } = await db.query<SchedulePart>('SELECT "partId" FROM schedule_parts WHERE "scheduleId" = $1', [scheduleId]);
@@ -165,19 +155,20 @@ export class ScheduleService {
             await db.query('UPDATE tickets SET "scheduleId" = NULL, status = $1, "scheduled_at" = NULL WHERE "scheduleId" = $2', [TicketStatus.OPEN, scheduleId]);
             await db.query('DELETE FROM schedules WHERE id = $1', [scheduleId]);
 
-            try {
-                const message = `❌ <b>Agendamento Cancelado</b>\n\n<b>Título:</b> ${escapeHTML(schedule.title || '')}\n<b>Cliente:</b> ${escapeHTML(schedule.client_name || 'Desconhecido')}\n\n<i>Este agendamento foi removido do sistema.</i>`;
-                const { rows: profiles } = await db.query<Profile>('SELECT telegramchatid FROM profiles WHERE id = ANY($1) OR role IN (\'admin\', \'super_admin\')', [techIds]);
-                for (const p of profiles) if (p.telegramchatid) await sendTelegramNotification(message, p.telegramchatid);
-            } catch (notifErr) { logger.error(notifErr); }
+            return { techIds, schedule, googleEventIds };
         });
 
-        broadcastCalendarUpdate(supabase, scheduleId);
+        eventEmitter.emit(SCHEDULE_EVENTS.DELETED, {
+            scheduleId,
+            technicianIds: techIds,
+            schedule,
+            googleEventIds
+        });
     }
 
     async fixScheduleTitles() {
         const { data: schedulesRaw, error } = await supabase.from('schedules').select('*').eq('title', 'Agendamento');
-        if (error) throw new Error('Failed to fetch schedules to fix: ' + error.message);
+        if (error) throw new InternalServerError('Failed to fetch schedules to fix: ' + error.message);
         if (!schedulesRaw || schedulesRaw.length === 0) return { message: 'No schedules found with title "Agendamento".', totalFound: 0, fixed: 0 };
 
         let fixedCount = 0;

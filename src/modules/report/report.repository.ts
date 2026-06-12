@@ -43,7 +43,7 @@ export class ReportRepository {
                 COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
-                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',COALESCE(NULLIF(rp.designation, ''), pr.designation),'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'image_path',pr.image_path,'track_stock',pr.track_stock))
+                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',COALESCE(NULLIF(rp.designation, ''), pr.designation),'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'image_path',pr.image_path,'track_stock',pr.track_stock,'isApplied',rp.is_applied))
                     FROM report_parts rp JOIN parts pr ON rp."partId"=pr.id WHERE rp."reportId"=r.id),'[]') as parts
             FROM reports r 
             LEFT JOIN clients c ON r."clientId" = c.id 
@@ -68,7 +68,7 @@ export class ReportRepository {
                 COALESCE(bt.status, r.billing_status) as billing_status,
                 COALESCE((SELECT json_agg(json_build_object('id',p.id,'name',CONCAT(p.first_name,' ',p.last_name),'color',p.color,'signature',rt.signature))
                     FROM report_technicians rt JOIN profiles p ON rt."technicianId"=p.id WHERE rt."reportId"=r.id),'[]') as technicians,
-                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',COALESCE(NULLIF(rp.designation, ''), pr.designation),'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'stock_quantity',pr.stock_quantity,'reserved_quantity',pr.reserved_quantity,'stock_quantity_foss',pr.stock_quantity_foss,'reserved_quantity_foss',pr.reserved_quantity_foss,'image_path',pr.image_path,'track_stock',pr.track_stock))
+                COALESCE((SELECT json_agg(json_build_object('id',pr.id,'reference',pr.reference,'designation',COALESCE(NULLIF(rp.designation, ''), pr.designation),'quantity',rp.quantity,'stockType',COALESCE(rp.stock_type,'general'),'stock_quantity',pr.stock_quantity,'reserved_quantity',pr.reserved_quantity,'stock_quantity_foss',pr.stock_quantity_foss,'reserved_quantity_foss',pr.reserved_quantity_foss,'image_path',pr.image_path,'track_stock',pr.track_stock,'isApplied',rp.is_applied))
                     FROM report_parts rp JOIN parts pr ON rp."partId"=pr.id WHERE rp."reportId"=r.id),'[]') as parts
             FROM reports r
             LEFT JOIN clients c ON r."clientId"=c.id
