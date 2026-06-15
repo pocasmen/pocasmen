@@ -4,9 +4,14 @@ import { catchAsync } from '../../utils/catchAsync';
 import { BadRequestError } from '../../utils/ApiError';
 import { InventoryService } from './inventory.service';
 import { PartsOrderService } from './partsOrder.service';
+import { PartsSaleService } from './partsSale.service';
 
 export class InventoryController {
-    constructor(private inventoryService: InventoryService, private partsOrderService: PartsOrderService) {}
+    constructor(
+        private inventoryService: InventoryService, 
+        private partsOrderService: PartsOrderService,
+        private partsSaleService: PartsSaleService
+    ) {}
 
     getInventory = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const page   = Math.max(1, Number(req.query.page) || 1);
@@ -148,4 +153,26 @@ export class InventoryController {
         await this.partsOrderService.deleteOrderItem(+req.params.id, +req.params.itemId, req.user!.id);
         res.status(204).send();
     });
+
+    // Sales
+    getSales = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsSaleService.getSales(req.query);
+        res.json(result);
+    });
+
+    getSaleById = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsSaleService.getSaleById(+req.params.id);
+        res.json(result);
+    });
+
+    createSale = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsSaleService.createSale(req.body, req.user!.id);
+        res.status(201).json(result);
+    });
+
+    deleteSale = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        await this.partsSaleService.deleteSale(+req.params.id, req.user!.id);
+        res.status(204).send();
+    });
 }
+

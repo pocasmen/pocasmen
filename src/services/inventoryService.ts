@@ -202,14 +202,15 @@ export async function abatePartInventory(
         const mappedStockType = (stockType === StockType.FOSS) ? 'contract' : 'general';
         const safeUserId = userId && userId.trim() ? userId : null; // '' is not a valid UUID
         await db.query(`
-            INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, reference_id)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, notes, reference_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
         `, [
             partId,
             safeUserId,
             -quantity, // Abate is negative
             mappedStockType,
             'SERVICE_REPORT',
+            `Abate via Relatório #${reportId || '?'}`,
             reportId ? String(reportId) : null
         ]);
 
@@ -358,13 +359,21 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any,
 
     // Se fromOrder, gera transação PURCHASE_ORDER
     const type = fromOrder ? 'PURCHASE_ORDER' : (providedType || 'MANUAL_ADJUST');
+    
+    let finalNotes = notes;
+    if (!finalNotes) {
+        if (fromOrder) finalNotes = `Entrada via Encomenda #${reference_id || '?'}`;
+        else if (providedType === 'MANUAL_ADJUST') finalNotes = 'Ajuste manual de stock';
+        else finalNotes = 'Ajuste de inventário';
+    }
+
     const mappedStockType = (targetStock === StockType.FOSS) ? 'contract' : 'general';
     const safeUserId = userId && userId.trim() ? userId : null;
 
     await db.query(`
         INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, notes, reference_id)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
-    `, [partId, safeUserId, quantity, mappedStockType, type, notes, reference_id || null]);
+    `, [partId, safeUserId, quantity, mappedStockType, type, finalNotes, reference_id || null]);
 
     const { rows } = await db.query<Part>('SELECT * FROM parts WHERE id = $1', [partId]);
     return enrichPart(rows[0]);
@@ -382,7 +391,7 @@ export async function registerDirectSale(db: PoolClient, data: any, userId: stri
     await db.query(`
         INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, notes, reference_id)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
-    `, [part_id, safeUserId, -Math.abs(quantity), mappedStockType, 'DIRECT_SALE', notes, reference_id]);
+    `, [part_id, safeUserId, -quantity, mappedStockType, 'DIRECT_SALE', notes, reference_id]);
 
     const { rows } = await db.query<Part>('SELECT * FROM parts WHERE id = $1', [part_id]);
     return enrichPart(rows[0]);

@@ -10,6 +10,8 @@ import { InventoryService } from './inventory.service';
 import { InventoryController } from './inventory.controller';
 import { PartsOrderRepository } from './partsOrder.repository';
 import { PartsOrderService } from './partsOrder.service';
+import { PartsSaleRepository } from './partsSale.repository';
+import { PartsSaleService } from './partsSale.service';
 
 import { PartsTransactionRepository } from './partsTransaction.repository';
 
@@ -19,11 +21,13 @@ const router = Router();
 const repo = new InventoryRepository();
 const transRepo = new PartsTransactionRepository();
 const orderRepo = new PartsOrderRepository();
+const saleRepo = new PartsSaleRepository();
 
 const service = new InventoryService(repo, transRepo);
 const orderService = new PartsOrderService(orderRepo);
+const saleService = new PartsSaleService(saleRepo);
 
-const controller = new InventoryController(service, orderService);
+const controller = new InventoryController(service, orderService, saleService);
 
 const STAFF = [UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN];
 
@@ -52,6 +56,12 @@ router.post('/orders/:id/receive', authenticateToken, authorizeRoles(STAFF), val
 router.post('/orders/:id/items', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.addItemsToOrder);
 router.delete('/orders/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.deleteOrder);
 router.delete('/orders/:id/items/:itemId', authenticateToken, authorizeRoles(STAFF), controller.deleteOrderItem);
+
+// Vendas
+router.get('/sales', authenticateToken, authorizeRoles(STAFF), controller.getSales);
+router.get('/sales/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.getSaleById);
+router.post('/sales', authenticateToken, authorizeRoles(STAFF), controller.createSale);
+router.delete('/sales/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.deleteSale);
 
 // Generic ID routes (Place after all static paths like /orders to avoid conflict)
 router.get('/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.getPartById);

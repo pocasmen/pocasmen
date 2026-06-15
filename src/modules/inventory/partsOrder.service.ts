@@ -40,7 +40,8 @@ export class PartsOrderService {
                     part_id: currentPartId,
                     designation: designation || '',
                     quantity_ordered: quantity,
-                    stock_type: stockType // Use the original stockType from item
+                    stock_type: stockType, // Use the original stockType from item
+                    note: item.note // Added field
                 });
                 
                 // Increment ordered_quantity on the part
@@ -135,7 +136,8 @@ export class PartsOrderService {
                     part_id: currentPartId,
                     designation: designation || '',
                     quantity_ordered: quantity,
-                    stock_type: stockType // Use the original stockType
+                    stock_type: stockType, // Use the original stockType
+                    note: item.note // Added field
                 });
 
                 // Increment ordered_quantity on the part

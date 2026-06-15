@@ -24,12 +24,13 @@ export class PartsOrderRepository {
         designation?: string;
         quantity_ordered: number;
         stock_type: string;
+        note?: string;
     }): Promise<PartsOrderItem> {
         const { rows } = await db.query(`
-            INSERT INTO parts_order_items (order_id, part_id, designation, quantity_ordered, stock_type)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO parts_order_items (order_id, part_id, designation, quantity_ordered, stock_type, note)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING *
-        `, [data.order_id, data.part_id, data.designation, data.quantity_ordered, data.stock_type]);
+        `, [data.order_id, data.part_id, data.designation, data.quantity_ordered, data.stock_type, data.note || null]);
         return rows[0];
     }
 
