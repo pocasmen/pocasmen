@@ -61,6 +61,8 @@ router.delete('/orders/:id/items/:itemId', authenticateToken, authorizeRoles(STA
 router.get('/sales', authenticateToken, authorizeRoles(STAFF), controller.getSales);
 router.get('/sales/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.getSaleById);
 router.post('/sales', authenticateToken, authorizeRoles(STAFF), controller.createSale);
+router.post('/sales/:id/items', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.addItemsToSale);
+router.delete('/sales/:id/items/:itemId', authenticateToken, authorizeRoles(STAFF), controller.deleteSaleItem);
 router.delete('/sales/:id', authenticateToken, authorizeRoles(STAFF), validate(commonValidation.idParamSchema), controller.deleteSale);
 
 // Generic ID routes (Place after all static paths like /orders to avoid conflict)

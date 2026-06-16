@@ -73,7 +73,7 @@ export const registerTransactionSchema = z.object({
     body: z.object({
         part_id: z.number().int().positive(),
         quantity: z.number().int(),
-        stock_type: z.enum(['general', 'contract']),
+        stock_type: z.enum(['general', 'foss']),
         type: z.enum(['AD_HOC', 'PURCHASE_ORDER', 'SERVICE_REPORT', 'DIRECT_SALE', 'MANUAL_ADJUST']),
         reference_id: z.string().optional(),
         notes: z.string().optional()
@@ -84,7 +84,7 @@ export const directSaleSchema = z.object({
     body: z.object({
         part_id: z.number().int().positive(),
         quantity: z.number().int().positive('Quantidade deve ser positiva para abate'),
-        stock_type: z.enum(['general', 'contract']),
+        stock_type: z.enum(['general', 'foss']),
         notes: z.string().optional(),
         reference_id: z.string().optional()
     })

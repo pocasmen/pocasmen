@@ -170,6 +170,16 @@ export class InventoryController {
         res.status(201).json(result);
     });
 
+    addItemsToSale = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsSaleService.addItemsToSale(+req.params.id, req.body.items, req.user!.id);
+        res.json(result);
+    });
+
+    deleteSaleItem = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        await this.partsSaleService.deleteSaleItem(+req.params.id, +req.params.itemId, req.user!.id);
+        res.status(204).send();
+    });
+
     deleteSale = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         await this.partsSaleService.deleteSale(+req.params.id, req.user!.id);
         res.status(204).send();

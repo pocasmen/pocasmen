@@ -199,7 +199,7 @@ export async function abatePartInventory(
         }, `[DEBUG_INV] Abating Part Inventory via Ledger`);
 
         // Registo na Ledger (Trigger trata de abater stock físico e ordered)
-        const mappedStockType = (stockType === StockType.FOSS) ? 'contract' : 'general';
+        const mappedStockType = (stockType === StockType.FOSS || stockType === StockType.CONTRACT) ? 'foss' : 'general';
         const safeUserId = userId && userId.trim() ? userId : null; // '' is not a valid UUID
         await db.query(`
             INSERT INTO parts_transactions (part_id, user_id, quantity, stock_type, type, notes, reference_id)
@@ -367,7 +367,7 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any,
         else finalNotes = 'Ajuste de inventário';
     }
 
-    const mappedStockType = (targetStock === StockType.FOSS) ? 'contract' : 'general';
+    const mappedStockType = (targetStock === StockType.FOSS || targetStock === StockType.CONTRACT) ? 'foss' : 'general';
     const safeUserId = userId && userId.trim() ? userId : null;
 
     await db.query(`
@@ -385,7 +385,7 @@ export async function updatePartStock(db: PoolClient, partId: number, data: any,
 export async function registerDirectSale(db: PoolClient, data: any, userId: string): Promise<Part> {
     const { part_id, quantity, stock_type, notes, reference_id } = data;
     
-    const mappedStockType = (stock_type === StockType.FOSS) ? 'contract' : 'general';
+    const mappedStockType = (stock_type === StockType.FOSS || stock_type === StockType.CONTRACT) ? 'foss' : 'general';
     const safeUserId = userId && userId.trim() ? userId : null;
 
     await db.query(`

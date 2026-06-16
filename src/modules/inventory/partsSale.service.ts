@@ -70,6 +70,60 @@ export class PartsSaleService {
         return sale;
     }
 
+    async addItemsToSale(saleId: number, items: any[], userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const sale = await this.repo.getSaleById(db, saleId);
+            if (!sale) throw new NotFoundError('Venda/Saída não encontrada');
+            
+            const saleLabel = this.getSaleTypeLabel(sale.sale_type);
+
+            for (const item of items) {
+                const { partId, designation, quantity } = item;
+                
+                await this.repo.addSaleItem(db, {
+                    sale_id: saleId,
+                    part_id: partId,
+                    designation: designation || '',
+                    quantity
+                });
+                
+                // Register movement in ledger (DIRECT_SALE)
+                await inventoryService.registerDirectSale(db, {
+                    part_id: partId,
+                    quantity: quantity,
+                    stock_type: sale.stock_type,
+                    notes: `Saída via ${saleLabel} #${sale.document_number}`,
+                    reference_id: String(sale.id)
+                }, userId);
+            }
+            
+            return this.repo.getSaleById(db, saleId);
+        });
+    }
+
+    async deleteSaleItem(saleId: number, itemId: number, userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const sale = await this.repo.getSaleById(db, saleId);
+            if (!sale) throw new NotFoundError('Venda/Saída não encontrada');
+            const item = sale.items.find((i: any) => i.id === itemId);
+            if (!item) throw new NotFoundError('Item de saída não encontrado');
+            
+            const saleLabel = this.getSaleTypeLabel(sale.sale_type);
+
+            // Restore stock for this item
+            await inventoryService.registerDirectSale(db, {
+                part_id: item.part_id,
+                quantity: -item.quantity,
+                stock_type: sale.stock_type,
+                notes: `Reposição de item por eliminação de ${saleLabel} #${sale.document_number}`,
+                reference_id: String(sale.id)
+            }, userId);
+
+            // Delete the item
+            await db.query(`DELETE FROM parts_sale_items WHERE id = $1`, [itemId]);
+        });
+    }
+
     async deleteSale(id: number, userId: string) {
         return withTransactionAs(userId, async (db) => {
             const sale = await this.repo.getSaleById(db, id);
