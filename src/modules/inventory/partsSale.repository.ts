@@ -33,7 +33,11 @@ export class PartsSaleRepository {
     async getSales(db: QueryRunner, filters: { sale_type?: string } = {}): Promise<any[]> {
         let query = `
             SELECT ps.*, pr.first_name, pr.last_name,
-                   (SELECT count(*) FROM parts_sale_items WHERE sale_id = ps.id) as item_count
+                   (SELECT count(*) FROM parts_sale_items WHERE sale_id = ps.id) as item_count,
+                   (SELECT array_agg(p.reference) 
+                    FROM parts_sale_items psi 
+                    JOIN parts p ON psi.part_id = p.id 
+                    WHERE psi.sale_id = ps.id) as item_references
             FROM parts_sales ps
             LEFT JOIN profiles pr ON ps.user_id = pr.id
             WHERE 1=1

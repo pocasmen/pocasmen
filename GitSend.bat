@@ -6,7 +6,7 @@ echo ========================================
 echo.
 
 REM Configuracao (altere com os seus dados)
-set REPO_PATH=C:\Gemini\Project1\server
+set REPO_PATH=C:\AntiGravity\Project1\server
 set GIT_USER=pocasmen
 set GIT_EMAIL=pb.malheiro@gmail.com
 set BRANCH_NAME=AntiGravity

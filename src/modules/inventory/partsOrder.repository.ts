@@ -37,7 +37,11 @@ export class PartsOrderRepository {
     async getOrders(db: QueryRunner, filters: { status?: string } = {}): Promise<any[]> {
         let query = `
             SELECT po.*, pr.first_name, pr.last_name,
-                   (SELECT count(*) FROM parts_order_items WHERE order_id = po.id) as item_count
+                   (SELECT count(*) FROM parts_order_items WHERE order_id = po.id) as item_count,
+                   (SELECT string_agg(COALESCE(p.reference, '') || ' ' || COALESCE(poi.designation, ''), ' ') 
+                    FROM parts_order_items poi 
+                    LEFT JOIN parts p ON poi.part_id = p.id 
+                    WHERE poi.order_id = po.id) as search_text
             FROM parts_orders po
             LEFT JOIN profiles pr ON po.user_id = pr.id
             WHERE 1=1
