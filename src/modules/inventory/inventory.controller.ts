@@ -139,6 +139,11 @@ export class InventoryController {
         res.json(result);
     });
 
+    revertReception = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.partsOrderService.revertReception(+req.params.id, req.user!.id);
+        res.json(result);
+    });
+
     addItemsToOrder = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const result = await this.partsOrderService.addItemsToOrder(+req.params.id, req.body.items, req.user!.id);
         res.json(result);

@@ -103,6 +103,46 @@ export class PartsOrderService {
         });
     }
 
+    async revertReception(orderId: number, userId: string) {
+        return withTransactionAs(userId, async (db) => {
+            const order = await this.repo.getOrderById(db, orderId);
+            if (!order) throw new NotFoundError('Encomenda não encontrada');
+            
+            let revertedAny = false;
+
+            for (const item of order.items) {
+                if (item.quantity_received > 0) {
+                    const qtyToRevert = item.quantity_received;
+                    
+                    // 1. Reset received quantity in parts_order_items
+                    await this.repo.updateOrderItemReceived(db, item.id, -qtyToRevert);
+                    
+                    // 2. Abate from physical stock
+                    await inventoryService.updatePartStock(db, item.part_id, {
+                        quantity: -qtyToRevert,
+                        fromOrder: false,
+                        targetStock: (item.stock_type === StockType.FOSS) ? StockType.FOSS : StockType.GENERAL,
+                        notes: `Reversão Receção Encomenda #${order.document_number}`,
+                        type: 'MANUAL_ADJUST',
+                        reference_id: String(orderId)
+                    }, userId);
+                    
+                    // 3. Restore ordered quantity
+                    const stockEnum = (item.stock_type === StockType.FOSS) ? StockType.FOSS : StockType.GENERAL;
+                    await inventoryService.updatePartOrderedQuantity(db, item.part_id, qtyToRevert, stockEnum);
+
+                    revertedAny = true;
+                }
+            }
+
+            if (revertedAny) {
+                await this.repo.updateOrderStatus(db, orderId, 'PENDING');
+            }
+
+            return this.repo.getOrderById(db, orderId);
+        });
+    }
+
     async addItemsToOrder(orderId: number, items: any[], userId: string) {
         return withTransactionAs(userId, async (db) => {
             const order = await this.repo.getOrderById(db, orderId);
