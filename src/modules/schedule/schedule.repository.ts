@@ -65,7 +65,7 @@ export class ScheduleRepository {
                     '[]'
                 ) as technicians,
                 COALESCE(
-                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock))
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock, 'stock_quantity', pa.stock_quantity, 'reserved_quantity', pa.reserved_quantity, 'stock_quantity_foss', pa.stock_quantity_foss, 'reserved_quantity_foss', pa.reserved_quantity_foss))
                      FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
                     '[]'
                 ) as parts,
@@ -100,7 +100,7 @@ export class ScheduleRepository {
                     '[]'
                 ) as technicians,
                 COALESCE(
-                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock))
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock, 'stock_quantity', pa.stock_quantity, 'reserved_quantity', pa.reserved_quantity, 'stock_quantity_foss', pa.stock_quantity_foss, 'reserved_quantity_foss', pa.reserved_quantity_foss))
                      FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
                     '[]'
                 ) as parts,
@@ -215,7 +215,7 @@ export class ScheduleRepository {
                     '[]'
                 ) as "timeBlocks",
                 COALESCE(
-                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock))
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock, 'stock_quantity', pa.stock_quantity, 'reserved_quantity', pa.reserved_quantity, 'stock_quantity_foss', pa.stock_quantity_foss, 'reserved_quantity_foss', pa.reserved_quantity_foss))
                      FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
                     '[]'
                 ) as parts
@@ -248,7 +248,7 @@ export class ScheduleRepository {
                     '[]'
                 ) as "timeBlocks",
                 COALESCE(
-                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock))
+                    (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock, 'stock_quantity', pa.stock_quantity, 'reserved_quantity', pa.reserved_quantity, 'stock_quantity_foss', pa.stock_quantity_foss, 'reserved_quantity_foss', pa.reserved_quantity_foss))
                      FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
                     '[]'
                 ) as parts
@@ -287,7 +287,7 @@ export class ScheduleRepository {
                         false
                     ) as "isSigned",
                     COALESCE(
-                        (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock))
+                        (SELECT json_agg(json_build_object('id', pa.id, 'reference', pa.reference, 'designation', COALESCE(NULLIF(sp.designation, ''), pa.designation), 'quantity', sp.quantity, 'stockType', sp.stock_type, 'image_path', pa.image_path, 'track_stock', pa.track_stock, 'stock_quantity', pa.stock_quantity, 'reserved_quantity', pa.reserved_quantity, 'stock_quantity_foss', pa.stock_quantity_foss, 'reserved_quantity_foss', pa.reserved_quantity_foss))
                          FROM schedule_parts sp JOIN parts pa ON sp."partId" = pa.id WHERE sp."scheduleId" = s.id),
                         '[]'
                     ) as parts

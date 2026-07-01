@@ -132,7 +132,9 @@ export class InventoryRepository {
                 SELECT pc.parent_part_id, pc.child_part_id, pc.quantity, ch.level + 1
                 FROM part_components pc INNER JOIN component_hierarchy ch ON pc.parent_part_id = ch.child_part_id WHERE ch.level < 10
             )
-            SELECT ch.child_part_id as "partId", ch.quantity, ch.level, ch.parent_part_id, p.reference, p.designation
+            SELECT ch.child_part_id as "partId", ch.quantity, ch.level, ch.parent_part_id,
+                   p.reference, p.designation,
+                   (p.stock_quantity - p.reserved_quantity) as "currentStock"
             FROM component_hierarchy ch LEFT JOIN parts p ON ch.child_part_id = p.id ORDER BY level, child_part_id
         `, [parentId]);
         return rows;
