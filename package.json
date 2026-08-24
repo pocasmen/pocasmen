@@ -6,7 +6,7 @@
   "scripts": {
     "test": "jest",
     "test:email": "ts-node scripts/testEmail.ts",
-    "dev": "ts-node --max-http-header-size=65536 src/index.ts",
+    "dev": "node --max-http-header-size=65536 -r ts-node/register src/index.ts",
     "build": "npx rimraf dist && tsc",
     "start": "node --max-http-header-size=65536 dist/index.js",
     "sync:calendar": "ts-node scripts/sync_all.ts",

@@ -21,6 +21,12 @@ export class EquipmentService {
                 if (existing) throw new BadRequestError('Já existe um equipamento com este número de série.');
             }
             const created = await this.repo.create(data, db);
+            if (created.clientId) {
+                await db.query(
+                    'INSERT INTO equipment_ownership (equipment_id, client_id, start_date) VALUES ($1, $2, CURRENT_DATE)',
+                    [created.id, created.clientId]
+                );
+            }
             return this.repo.findById(created.id, db);
         });
     }

@@ -110,21 +110,7 @@ export class EquipmentRepository {
     }
 
     async getHistory(id: number, db: QueryRunner, requestingClientId?: number) {
-        // Filtro de propriedade: se houver um client_id a pedir, só vê o que aconteceu nos seus períodos de posse
-        const ownershipFilter = requestingClientId ? `
-            AND EXISTS (
-                SELECT 1 FROM equipment_ownership eo 
-                WHERE eo.equipment_id = $1 
-                AND eo.client_id = $2
-                AND $3 >= eo.start_date
-                AND (eo.end_date IS NULL OR $3 <= eo.end_date)
-            )
-        ` : '';
-
-        const params = (dateField: string) => requestingClientId ? [id, requestingClientId, dateField] : [id];
-
-        // Nota: A lógica de parâmetros SQL dinâmica aqui é complexa devido aos diferentes campos de data.
-        // Vamos usar sub-queries ou filtragem manual se for mais legível, mas para manter performance:
+        // Se houver requestingClientId (portal de cliente), filtra pelos períodos de posse do equipamento
         
         const ticketsQuery = `
             SELECT * FROM tickets 
@@ -135,13 +121,16 @@ export class EquipmentRepository {
 
         const schedulesQuery = `
             SELECT s.id, s.title, s."startDate", s."isCompleted",
-                json_agg(CONCAT(p.first_name, ' ', p.last_name)) as technicians
+                COALESCE(
+                    (SELECT json_agg(CONCAT(p.first_name, ' ', p.last_name))
+                     FROM schedule_technicians st
+                     JOIN profiles p ON st."technicianId" = p.id
+                     WHERE st."scheduleId" = s.id),
+                    '[]'::json
+                ) as technicians
             FROM schedules s
-            LEFT JOIN schedule_technicians st ON s.id = st."scheduleId"
-            LEFT JOIN profiles p ON st."technicianId" = p.id
             WHERE s."equipmentId" = $1
             ${requestingClientId ? `AND EXISTS (SELECT 1 FROM equipment_ownership eo WHERE eo.equipment_id = $1 AND eo.client_id = $2 AND s."startDate" >= eo.start_date AND (eo.end_date IS NULL OR s."startDate" <= eo.end_date))` : ''}
-            GROUP BY s.id
             ORDER BY s."startDate" DESC
         `;
 
@@ -180,11 +169,27 @@ export class EquipmentRepository {
     }
 
     async transferOwnership(id: number, newClientId: number, transferDate: string, db: QueryRunner) {
-        // 1. Fechar o período atual
-        await db.query(
-            'UPDATE equipment_ownership SET end_date = $1 WHERE equipment_id = $2 AND end_date IS NULL',
-            [transferDate, id]
+        // 0. Se não existia registo de posse na tabela para este equipamento, criar o registo anterior
+        const { rows: currentOwnership } = await db.query(
+            'SELECT id FROM equipment_ownership WHERE equipment_id = $1',
+            [id]
         );
+
+        if (currentOwnership.length === 0) {
+            const { rows: eqRows } = await db.query('SELECT "clientId" FROM equipments WHERE id = $1', [id]);
+            if (eqRows.length > 0 && eqRows[0].clientId && eqRows[0].clientId !== newClientId) {
+                await db.query(
+                    'INSERT INTO equipment_ownership (equipment_id, client_id, start_date, end_date) VALUES ($1, $2, $3, $3)',
+                    [id, eqRows[0].clientId, transferDate]
+                );
+            }
+        } else {
+            // 1. Fechar o período atual
+            await db.query(
+                'UPDATE equipment_ownership SET end_date = $1 WHERE equipment_id = $2 AND end_date IS NULL',
+                [transferDate, id]
+            );
+        }
 
         // 2. Abrir o novo período
         await db.query(

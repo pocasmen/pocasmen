@@ -17,7 +17,7 @@ export const errorHandler = (
     if (statusCode < 500) {
         log.info({ err, statusCode }, `[${statusCode}] ${req.method} ${req.url}`);
     } else {
-        log.error(err, `[ERROR] ${req.method} ${req.url}`);
+        log.error({ err, message: err.message, stack: err.stack }, `[ERROR] ${req.method} ${req.url}: ${err.message}`);
     }
 
     if (err instanceof ApiError) {
