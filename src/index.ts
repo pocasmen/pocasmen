@@ -46,14 +46,37 @@ const app = express();
 app.set('trust proxy', 1);
 const port = process.env.PORT || 5001;
 
-// CORS restrito ao frontend (segurança)
-// Strip any trailing slash: browsers send origins without it, and the CORS
-// comparison is exact — a single '/' difference triggers a block.
-const rawFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-const frontendOrigin = rawFrontendUrl.replace(/\/+$/, '');
+// CORS restrito ao frontend e origens autorizadas
+const defaultAllowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'https://microatomo.vercel.app'
+];
 
-const corsOptions = {
-  origin: frontendOrigin,
+const envAllowedOrigins = (process.env.FRONTEND_URL || '')
+  .split(',')
+  .map(url => url.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...envAllowedOrigins]));
+
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    // Permite pedidos sem header de origem (mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+
+    const cleanOrigin = origin.replace(/\/+$/, '');
+    
+    // Verifica lista de permitidos ou subdomínios Vercel do projeto
+    const isAllowed = allowedOrigins.includes(cleanOrigin) || 
+      /^https:\/\/.*\.vercel\.app$/.test(cleanOrigin);
+
+    if (isAllowed) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Origem CORS não permitida: ${origin}`));
+  },
   credentials: true,
   optionsSuccessStatus: 200
 };
