@@ -29,6 +29,8 @@ router.put('/:id',
     validate(technicianValidation.updateTechnicianSchema),
     controller.updateTechnician
 );
+router.post('/:id/reactivate', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), controller.reactivateUser);
+router.delete('/:id/permanent', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), controller.hardDeleteUser);
 router.delete('/:id', authenticateToken, authorizeRoles([UserRole.ADMIN, UserRole.SUPER_ADMIN]), controller.deleteTechnician);
 
 export default router;

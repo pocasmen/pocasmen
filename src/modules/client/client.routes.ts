@@ -46,6 +46,28 @@ router.get(
 
 /**
  * @swagger
+ * /api/clients/{id}:
+ *   get:
+ *     summary: Retrieve a single client by ID
+ *     tags: [Clients]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: A single client
+ *       404:
+ *         description: Client not found
+ */
+router.get(
+    '/:id',
+    authenticateToken,
+    authorizeRoles([UserRole.ADMIN, UserRole.TECHNICIAN, UserRole.OFFICE_STAFF, UserRole.SUPER_ADMIN]),
+    validate(commonValidation.idParamSchema),
+    controller.getClient
+);
+
+/**
+ * @swagger
  * /api/clients:
  *   post:
  *     summary: Create a new client

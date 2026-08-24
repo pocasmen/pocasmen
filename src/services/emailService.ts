@@ -155,7 +155,9 @@ export const sendEmailWithTemplate = async (
 
         // 4. Replace {{variable}} placeholders
         for (const [key, value] of Object.entries(variables)) {
-            body = body.replace(new RegExp(`{{${key}}}`, 'g'), value);
+            const regex = new RegExp(`{{${key}}}`, 'g');
+            body = body.replace(regex, value);
+            subject = subject.replace(regex, value);
         }
 
         if (!body) {

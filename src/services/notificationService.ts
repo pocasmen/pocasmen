@@ -13,8 +13,8 @@ export interface NotificationPayload {
  * Notifica uma lista de utilizadores baseado nas suas preferências individuais.
  */
 export async function notifyUsers(
-    userIds: string[], 
-    eventKey: string, 
+    userIds: string[],
+    eventKey: string,
     payload: NotificationPayload
 ) {
     if (!userIds.length) return;
@@ -22,8 +22,20 @@ export async function notifyUsers(
 
     try {
         // 1. Verificar configuração global de notificações de clientes
-        const { rows: settingsRows } = await pool.query('SELECT value FROM settings WHERE key = $1', ['client_notifications_enabled']);
-        const clientNotificationsEnabled = settingsRows.length > 0 ? settingsRows[0].value === 'true' : true; // Default true se não existir
+        const { rows: settingsRows } = await pool.query(
+            'SELECT key, value FROM settings WHERE key = ANY($1)',
+            [['client_notifications_enabled', `global_notify_${eventKey}`]]
+        );
+
+        const settingsMap = new Map(settingsRows.map(r => [r.key, r.value]));
+
+        const clientNotificationsEnabled = settingsMap.get('client_notifications_enabled') !== 'false'; // Default true
+        const eventTypeEnabled = settingsMap.get(`global_notify_${eventKey}`) !== 'false'; // Default true
+
+        if (!eventTypeEnabled) {
+            logger.debug({ eventKey }, 'Notification type is globally disabled');
+            return;
+        }
 
         // 2. Obter perfis, preferências e roles
         const { rows: profiles } = await pool.query(
@@ -42,14 +54,14 @@ export async function notifyUsers(
 
             // Enviar Email via Template
             if (prefs[eventKey].email && profile.email) {
-                sendEmailWithTemplate(profile.email, payload.templateKey, payload.variables).catch(err => 
+                sendEmailWithTemplate(profile.email, payload.templateKey, payload.variables).catch(err =>
                     logger.error({ err, userId: profile.id, template: payload.templateKey }, 'Error sending templated email notification')
                 );
             }
 
             // Enviar Telegram
             if (prefs[eventKey].telegram && profile.telegramchatid) {
-                sendTelegramNotification(payload.telegramText, profile.telegramchatid).catch(err => 
+                sendTelegramNotification(payload.telegramText, profile.telegramchatid).catch(err =>
                     logger.error({ err, userId: profile.id }, 'Error sending telegram notification')
                 );
             }

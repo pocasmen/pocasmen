@@ -45,4 +45,20 @@ export class TechnicianController {
         );
         res.sendStatus(204);
     });
+
+    hardDeleteUser = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.technicianService.hardDeleteUser(
+            req.params.id,
+            req.user?.user_metadata?.role
+        );
+        res.json(result);
+    });
+
+    reactivateUser = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const result = await this.technicianService.reactivateUser(
+            req.params.id,
+            req.user?.user_metadata?.role
+        );
+        res.json(result);
+    });
 }

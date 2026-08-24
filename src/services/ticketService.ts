@@ -57,7 +57,7 @@ export async function createFullTicket(db: PoolClient, data: any, creatorId: str
             if (recipients.length > 0) {
                 const userIds = recipients.map(r => r.user_id);
                 const firstName = recipients.find(r => r.user_id === creatorId)?.first_name || 'Cliente';
-                const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+                const clientUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/portal`;
 
                 await notifyUsers(userIds, 'ticket_opened', {
                     templateKey: 'ticket_opened',
@@ -109,7 +109,7 @@ export async function replyToFullTicket(db: PoolClient, ticketId: number, userId
             try {
                 // Procurar utilizadores do tipo 'client' associados a este ticket (via client_users)
                 const { rows: recipients } = await pool.query(`
-                    SELECT cu.user_id, t.title
+                    SELECT cu.user_id, t.title, p.first_name
                     FROM tickets t
                     JOIN client_users cu ON cu.client_id = t.client_id
                     JOIN profiles p ON p.id = cu.user_id
@@ -118,12 +118,14 @@ export async function replyToFullTicket(db: PoolClient, ticketId: number, userId
 
                 if (recipients.length > 0) {
                     const ticketTitle = recipients[0].title;
+                    const firstName = recipients[0].first_name || 'Cliente';
                     const userIds = recipients.map(r => r.user_id);
-                    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+                    const clientUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/portal`;
 
                     await notifyUsers(userIds, 'ticket_reply', {
                         templateKey: 'ticket_reply',
                         variables: {
+                            first_name: firstName,
                             ticketId: String(ticketId),
                             ticketTitle: ticketTitle,
                             message: message,
@@ -218,7 +220,7 @@ export async function closeTicketDirectly(db: PoolClient, ticketId: number, user
             
             // Send standard reply notification first
             const { rows: recipients } = await pool.query(`
-                SELECT cu.user_id, t.title
+                SELECT cu.user_id, t.title, p.first_name
                 FROM tickets t
                 JOIN client_users cu ON cu.client_id = t.client_id
                 JOIN profiles p ON p.id = cu.user_id
@@ -227,12 +229,14 @@ export async function closeTicketDirectly(db: PoolClient, ticketId: number, user
 
             if (recipients.length > 0) {
                 const userIds = recipients.map(r => r.user_id);
-                const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+                const firstName = recipients[0].first_name || 'Cliente';
+                const clientUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/portal`;
 
                 // Notification for the final reply
                 await notifyUsers(userIds, 'ticket_reply', {
                     templateKey: 'ticket_reply',
                     variables: {
+                        first_name: firstName,
                         ticketId: String(ticketId),
                         ticketTitle: ticket.title || 'Sem Título',
                         message: message,
@@ -245,7 +249,7 @@ export async function closeTicketDirectly(db: PoolClient, ticketId: number, user
                 await notifyUsers(userIds, 'ticket_closed', {
                     templateKey: 'ticket_closed',
                     variables: {
-                        first_name: 'Cliente',
+                        first_name: firstName,
                         ticketId: String(ticketId),
                         ticketTitle: ticket.title || 'Sem Título',
                         clientUrl: clientUrl
@@ -284,7 +288,7 @@ export async function notifyTicketClosed(ticketId: number) {
 
         if (recipients.length > 0) {
             const userIds = recipients.map(r => r.user_id);
-            const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+            const clientUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/portal`;
 
             await notifyUsers(userIds, 'ticket_closed', {
                 templateKey: 'ticket_closed',

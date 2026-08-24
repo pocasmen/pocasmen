@@ -19,7 +19,7 @@ export class TelegramController {
     handleWebhook = catchAsync(async (req: Request, res: Response) => {
         // 1. Verificação de Origem: Secret Token
         const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET;
-        if (secretToken && req.headers['x-telegram-bot-api-secret-token'] !== secretToken) {
+        if (!secretToken || req.headers['x-telegram-bot-api-secret-token'] !== secretToken) {
             return res.sendStatus(403);
         }
 

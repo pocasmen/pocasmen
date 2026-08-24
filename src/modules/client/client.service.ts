@@ -10,6 +10,12 @@ export class ClientService {
         return this.repo.findAll(pool, filters);
     }
 
+    async getClientById(id: number) {
+        const client = await this.repo.findById(id, pool);
+        if (!client) throw new NotFoundError('Cliente não encontrado.');
+        return client;
+    }
+
     async createClient(data: CreateClientDto, userId: string) {
         return withTransactionAs(userId, (db) => this.repo.create(data, db));
     }

@@ -124,14 +124,15 @@ export class ScheduleRepository {
         let queryParams = [];
         let paramIndex = 1;
 
+        whereConditions.push('t.show_on_calendar = true');
+
         if (!includeCompleted) {
             whereConditions.push('t.completed = false');
         }
 
         if (startDate && endDate) {
             whereConditions.push(`
-                ((EXISTS (SELECT 1 FROM internal_task_time_blocks tb WHERE tb.task_id = t.id AND tb.start_time >= $${paramIndex} AND tb.start_time <= $${paramIndex + 1}))
-                OR (t.created_at >= $${paramIndex} AND t.created_at <= $${paramIndex + 1}))
+                EXISTS (SELECT 1 FROM internal_task_time_blocks tb WHERE tb.task_id = t.id AND tb.start_time >= $${paramIndex} AND tb.start_time <= $${paramIndex + 1})
             `);
             queryParams.push(startDate, endDate);
             paramIndex += 2;
@@ -319,6 +320,35 @@ export class ScheduleRepository {
             pending: parseInt(rows[0].pending, 10),
             completed: parseInt(rows[0].completed, 10),
             withReport: parseInt(rows[0].withReport, 10),
+        };
+    }
+
+    async getBacklogStats() {
+        const result = await this.pool.query(`
+            SELECT
+                -- Backlog actual
+                COUNT(*) FILTER (WHERE "isCompleted" = false AND ("acknowledgementState" = 'pending_scheduling' OR "startDate" IS NULL))::integer AS total,
+                COUNT(*) FILTER (WHERE "isCompleted" = false AND ("acknowledgementState" = 'pending_scheduling' OR "startDate" IS NULL) AND entered_backlog_at >= NOW() - INTERVAL '7 days')::integer AS created_last_7_days,
+                COUNT(*) FILTER (WHERE "isCompleted" = false AND ("acknowledgementState" = 'pending_scheduling' OR "startDate" IS NULL) AND entered_backlog_at >= NOW() - INTERVAL '14 days' AND entered_backlog_at < NOW() - INTERVAL '7 days')::integer AS created_previous_7_days,
+                MIN(entered_backlog_at) FILTER (WHERE "isCompleted" = false AND ("acknowledgementState" = 'pending_scheduling' OR "startDate" IS NULL)) AS oldest_created_at,
+                -- Saídas reais do backlog (exited_backlog_at é preenchido apenas quando sai do backlog)
+                COUNT(*) FILTER (WHERE exited_backlog_at >= NOW() - INTERVAL '7 days')::integer AS exited_last_7_days,
+                COUNT(*) FILTER (WHERE exited_backlog_at >= NOW() - INTERVAL '14 days' AND exited_backlog_at < NOW() - INTERVAL '7 days')::integer AS exited_previous_7_days,
+                -- Tempo médio em backlog (em horas), apenas registos que já saíram
+                AVG(EXTRACT(EPOCH FROM (exited_backlog_at - entered_backlog_at)) / 3600.0) FILTER (WHERE exited_backlog_at IS NOT NULL AND entered_backlog_at IS NOT NULL)::numeric(10,1) AS avg_hours_in_backlog
+            FROM schedules
+        `);
+
+        const b = result.rows[0];
+
+        return {
+            total: parseInt(b.total, 10) || 0,
+            createdLast7Days: parseInt(b.created_last_7_days, 10) || 0,
+            createdPrevious7Days: parseInt(b.created_previous_7_days, 10) || 0,
+            oldestCreatedAt: b.oldest_created_at || null,
+            exitedLast7Days: parseInt(b.exited_last_7_days, 10) || 0,
+            exitedPrevious7Days: parseInt(b.exited_previous_7_days, 10) || 0,
+            avgHoursInBacklog: b.avg_hours_in_backlog ? parseFloat(b.avg_hours_in_backlog) : null,
         };
     }
 }

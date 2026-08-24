@@ -31,15 +31,39 @@ export class DashboardService {
         const { start, end } = this.parseDateRange(query.startDate, query.endDate);
         logger.info(`[DASHBOARD] Fetching stats for range: ${start.toISOString()} to ${end.toISOString()}`);
 
-        const [ticketStats, sStats, tStats] = await Promise.all([
+        const [ticketStats, sStats, tStats, backlogStats] = await Promise.all([
             ticketRepo.getStats(pool),
             scheduleRepo.getStats({ startDate: start.toISOString(), endDate: end.toISOString() }),
             this.taskRepo.getStats(start, end, pool),
+            scheduleRepo.getBacklogStats(),
         ]);
 
         logger.debug({ ticketStats }, '[DASHBOARD] Ticket Stats');
         logger.debug({ sStats }, '[DASHBOARD] Schedule Stats');
         logger.debug({ tStats }, '[DASHBOARD] Task Stats');
+        logger.debug({ backlogStats }, '[DASHBOARD] Backlog Stats');
+
+        let trendPercent: number | null = null;
+        let trendDirection: 'up' | 'down' | 'stable' = 'stable';
+        
+        if (backlogStats.createdPrevious7Days > 0) {
+            trendPercent = ((backlogStats.createdLast7Days - backlogStats.createdPrevious7Days) / backlogStats.createdPrevious7Days) * 100;
+            trendPercent = Math.round(trendPercent * 10) / 10;
+            
+            if (trendPercent > 5) trendDirection = 'up';
+            else if (trendPercent < -5) trendDirection = 'down';
+        } else if (backlogStats.createdLast7Days > 0) {
+            trendPercent = 100;
+            trendDirection = 'up';
+        }
+
+        let oldestAgeDays: number | null = null;
+        if (backlogStats.oldestCreatedAt) {
+            const oldest = new Date(backlogStats.oldestCreatedAt);
+            const now = new Date();
+            const diffTime = Math.abs(now.getTime() - oldest.getTime());
+            oldestAgeDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        }
 
         return {
             tickets: ticketStats,
@@ -57,6 +81,12 @@ export class DashboardService {
                 overdue: sStats.pendingReportsOverdue,
             },
             tasks: tStats,
+            backlog: {
+                ...backlogStats,
+                trendPercent,
+                trendDirection,
+                oldestAgeDays,
+            },
         };
     }
 

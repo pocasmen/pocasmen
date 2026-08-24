@@ -304,7 +304,7 @@ export async function sendScheduleNotificationToClients(supabase: SupabaseClient
     try {
         const { data: s, error } = await supabase
             .from('schedules')
-            .select('id, title, startDate, endDate, serviceType, clientId, clients(name), equipments(brand, model, serialNumber)')
+            .select('id, title, startDate, endDate, serviceType, clientId, clients(name), equipments(brand, model, serialNumber, nickname)')
             .eq('id', scheduleId)
             .single();
 
@@ -315,14 +315,19 @@ export async function sendScheduleNotificationToClients(supabase: SupabaseClient
         const serviceTypeLabel = formatServiceType(schedule.serviceType);
         
         const eq = Array.isArray(schedule.equipments) ? schedule.equipments[0] : schedule.equipments;
-        const equipmentInfo = eq ? `${eq.brand || ''} ${eq.model || ''}${eq.serialNumber ? ` (S/N: ${eq.serialNumber})` : ''}`.trim() : 'Não especificado';
+        const equipParts = eq ? [
+            eq.brand && eq.model ? `${eq.brand} ${eq.model}` : null,
+            eq.serialNumber ? `S/N: ${eq.serialNumber}` : null,
+            eq.nickname ? `(${eq.nickname})` : null
+        ].filter(Boolean) : [];
+        const equipmentInfo = equipParts.length > 0 ? equipParts.join(' — ') : 'Não especificado';
 
         const startDate = schedule.startDate ? new Date(schedule.startDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
         const endDate = schedule.endDate ? new Date(schedule.endDate).toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon' }) : 'A definir';
 
         // Obter utilizadores do tipo 'client' associados
         const { rows: recipients } = await pool.query(`
-            SELECT cu.user_id 
+            SELECT cu.user_id, p.first_name
             FROM client_users cu
             JOIN profiles p ON p.id = cu.user_id
             WHERE cu.client_id = $1 AND p.role = 'client'
@@ -330,12 +335,13 @@ export async function sendScheduleNotificationToClients(supabase: SupabaseClient
 
         if (recipients.length > 0) {
             const userIds = recipients.map(r => r.user_id);
-            const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+            const clientUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/portal`;
             const notificationTitle = isUpdate ? '🔄 Agendamento Atualizado' : '📅 Novo Agendamento';
 
             await notifyUsers(userIds, 'new_schedule', {
                 templateKey: 'new_schedule',
                 variables: {
+                    first_name: recipients[0].first_name || 'Cliente',
                     scheduleId: String(scheduleId),
                     scheduleTitle: schedule.title,
                     serviceType: serviceTypeLabel,
@@ -470,9 +476,9 @@ export async function createFullSchedule(db: PoolClient, data: any, userId: stri
             title, "startDate", "endDate", "clientId", "equipmentId", 
             "isCompleted", "additionalInfo", "serviceType", "ticketId",
             "acknowledgementState", "includes_travel", "classification", "priority",
-            "created_by", "updated_by"
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) 
-        RETURNING id, title, "startDate", "endDate", "isCompleted", "hasReport", "additionalInfo", "serviceType", "ticketId", "clientId", "equipmentId", "acknowledgementState", "includes_travel", "classification", "priority", "created_by", "updated_by"`,
+            "created_by", "updated_by", entered_backlog_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) 
+        RETURNING id, title, "startDate", "endDate", "isCompleted", "hasReport", "additionalInfo", "serviceType", "ticketId", "clientId", "equipmentId", "acknowledgementState", "includes_travel", "classification", "priority", "created_by", "updated_by", entered_backlog_at, exited_backlog_at`,
         [
             generatedTitle,
             startDate || null,
@@ -488,7 +494,8 @@ export async function createFullSchedule(db: PoolClient, data: any, userId: stri
             classification || 'geral',
             priority || null,
             userId,
-            userId
+            userId,
+            (!startDate) ? new Date() : null   // entered_backlog_at
         ]
     );
     const insertedSchedule = rows[0];
@@ -568,12 +575,24 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
         newAcknowledgementState = ScheduleStatus.PENDING;
     }
 
+    // Determine if this schedule is exiting the backlog (was without startDate or in pending_scheduling, and now receives startDate)
+    const wasInBacklog = originalSchedule.acknowledgementState === ScheduleStatus.PENDING_SCHEDULING || !originalSchedule.startDate;
+    const isExitingBacklog = wasInBacklog && !!startDate;
+
     const { rows: updatedRows } = await db.query<Schedule>(
         `UPDATE schedules SET 
             title = $1, "startDate" = $2, "endDate" = $3, "clientId" = $4, "equipmentId" = $5, 
             "isCompleted" = $6, "additionalInfo" = $7, "serviceType" = $8, "ticketId" = $9,
             "acknowledgementState" = $10, "includes_travel" = $11, "classification" = $12, "priority" = $13,
-            "updated_by" = $14
+            "updated_by" = $14,
+            entered_backlog_at = CASE 
+                WHEN $16 AND entered_backlog_at IS NULL THEN COALESCE(created_at, NOW()) 
+                ELSE entered_backlog_at 
+            END,
+            exited_backlog_at = CASE 
+                WHEN $16 AND exited_backlog_at IS NULL THEN NOW() 
+                ELSE exited_backlog_at 
+            END
         WHERE id = $15 RETURNING *`,
         [
             generatedTitle,
@@ -590,7 +609,8 @@ export async function updateFullSchedule(db: PoolClient, scheduleId: number, dat
             classification || 'geral',
             data.priority || originalSchedule.priority || null,
             userId,
-            scheduleId
+            scheduleId,
+            isExitingBacklog    // $16
         ]
     );
     const updatedSchedule = updatedRows[0];

@@ -38,7 +38,7 @@ export class ProfileRepository {
                     AND (au.raw_user_meta_data->>'must_set_password' IS NULL OR au.raw_user_meta_data->>'must_set_password' = 'false')
                 ) as has_password
             FROM profiles p
-            WHERE p.role = 'client'
+            WHERE p.role IN ('client', 'inactive_client')
         `;
         const params: any[] = [];
         let paramCount = 1;

@@ -15,6 +15,11 @@ export class ClientController {
         res.json(clients);
     });
 
+    getClient = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
+        const client = await this.clientService.getClientById(+req.params.id);
+        res.json(client);
+    });
+
     createClient = catchAsync(async (req: AuthenticatedRequest, res: Response) => {
         const client = await this.clientService.createClient(req.body, req.user!.id);
         res.status(201).json(client);

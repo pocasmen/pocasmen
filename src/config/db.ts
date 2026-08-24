@@ -11,7 +11,7 @@ dotenv.config();
 const rawConnectionString = process.env.DATABASE_URL || '';
 // Ensure sslmode=verify-full is used if any sslmode is present, to silence the pg-connection-string warning
 // while maintaining current behavior (as recommended by the warning itself).
-const connectionString = rawConnectionString.includes('sslmode=') 
+const connectionString = rawConnectionString.includes('sslmode=')
     ? rawConnectionString.replace(/sslmode=[^&]+/, 'sslmode=verify-full')
     : rawConnectionString;
 
@@ -28,7 +28,7 @@ const pool = new Pool({
     port: parsedConfig.port ? parseInt(parsedConfig.port, 10) : undefined,
     ssl: {
         rejectUnauthorized: false, // Necessário para Supabase em ambientes como Render/Vercel
-        ca: process.env.DB_CA_CERT, 
+        ca: process.env.DB_CA_CERT,
     },
     max: 20,
     idleTimeoutMillis: 30000,

@@ -1,6 +1,7 @@
 import { pool, withTransactionAs } from '../../config/db';
 import { Equipment as DbEquipment, Ticket as DbTicket } from '../../types/supabase';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../utils/ApiError';
+import { TicketStatus } from '../../constants/enums';
 import { ClientRepository } from '../client/client.repository';
 import { TicketRepository } from '../ticket/ticket.repository';
 import { ScheduleRepository } from '../schedule/schedule.repository';
@@ -112,11 +113,15 @@ export class ClientPortalService {
 
     async replyToMyTicket(ticketId: number, message: string, userId: string) {
         return await withTransactionAs(userId, async (db) => {
-            const { rows: ticketRows } = await db.query<DbTicket>('SELECT client_id FROM tickets WHERE id = $1', [ticketId]);
+            const { rows: ticketRows } = await db.query<DbTicket>('SELECT client_id, status FROM tickets WHERE id = $1', [ticketId]);
             const ticket = ticketRows[0];
             if (!ticket) throw new ForbiddenError('Forbidden.');
 
             await this.getValidatedClientId(userId, ticket.client_id);
+
+            if (ticket.status === TicketStatus.CLOSED) {
+                throw new BadRequestError('Não é possível responder a um ticket fechado.');
+            }
 
             return await ticketService.replyToFullTicket(db, ticketId, userId, message);
         });

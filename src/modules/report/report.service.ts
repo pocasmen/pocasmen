@@ -81,6 +81,17 @@ export class ReportService {
 
     async createReport(data: any, userId: string) {
         const reportId = await withTransactionAs(userId, (db) => reportService.createFullReport(db, data, userId));
+        
+        // Notificar clientes APÓS a transação estar comitada, para que
+        // pool.query na função de notificação encontre o relatório
+        setImmediate(async () => {
+            try {
+                await reportService.sendReportNotificationToClients(reportId);
+            } catch (err) {
+                logger.error({ err, reportId }, 'Failed to trigger report notification');
+            }
+        });
+
         broadcastCalendarUpdate(supabase);
         return reportId;
     }

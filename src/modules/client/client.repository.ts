@@ -71,10 +71,29 @@ export class ClientRepository {
 
     async findUsersByClientId(clientId: number, db: QueryRunner) {
         const { rows } = await db.query(
-            `SELECT p.id, p.first_name, p.last_name, p.email
+            `SELECT p.id, p.first_name, p.last_name, p.email, p.client_role,
+                (p.signature IS NOT NULL AND p.signature <> '') as has_signature,
+                (p.first_name IS NOT NULL AND p.first_name <> '' AND
+                 p.last_name IS NOT NULL AND p.last_name <> '' AND
+                 p.client_role IS NOT NULL AND p.client_role <> '' AND
+                 EXISTS (SELECT 1 FROM client_users cu_chk WHERE cu_chk.user_id = p.id)
+                ) as is_profile_complete,
+                EXISTS (
+                    SELECT 1 FROM auth.users au 
+                    WHERE au.id = p.id 
+                    AND au.email_confirmed_at IS NOT NULL
+                    AND (au.raw_user_meta_data->>'must_set_password' IS NULL OR au.raw_user_meta_data->>'must_set_password' = 'false')
+                ) as has_password,
+                COALESCE(
+                    (SELECT json_agg(json_build_object('client_id', cu_sub.client_id, 'name', c_sub.name))
+                     FROM client_users cu_sub
+                     JOIN clients c_sub ON cu_sub.client_id = c_sub.id
+                     WHERE cu_sub.user_id = p.id),
+                    '[]'
+                ) as client_users
              FROM profiles p
              JOIN client_users cu ON cu.user_id = p.id
-             WHERE cu.client_id = $1
+             WHERE cu.client_id = $1 AND p.role = 'client'
              ORDER BY p.first_name ASC`,
             [clientId]
         );

@@ -75,7 +75,7 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
             const st = (p.stockType || p.stock_type || StockType.GENERAL) as StockType;
             const designation = p.designation || '';
             const isApplied = p.isApplied !== false;
-            
+
             // If it's a virtual part, we might NOT want to merge them if they have different designations.
             // Even if we merge, we need the designation in the key to distinguish variations.
             const key = `${pId}_${st}_${designation}_${isApplied}`;
@@ -108,7 +108,7 @@ async function syncReportPartsAndAbate(db: PoolClient, reportId: number, parts: 
             const parts = key.split('_');
             const pId = parseInt(parts[0], 10);
             const st = parts[1];
-            
+
             // Note: delta > 0 means more parts used (decrement stock)
             // delta < 0 means parts removed (increment stock)
             await inventoryService.abatePartInventory(db, pId, delta, st as StockType, true, userId, reportId);
@@ -214,14 +214,8 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
 
     await billingService.createBillingTask(db, reportId, isBillingPending === true);
 
-    // Notificar clientes
-    setImmediate(async () => {
-        try {
-            await sendReportNotificationToClients(reportId);
-        } catch (err) {
-            logger.error({ err, reportId }, 'Failed to trigger report notification');
-        }
-    });
+    // A notificação de clientes deve ser feita APÓS a transação fechar (no controller/service principal),
+    // caso contrário a query de notificação pode não encontrar o relatório (race condition de COMMIT).
 
     return reportId;
 }
@@ -232,18 +226,22 @@ export async function createFullReport(db: PoolClient, data: any, creatorId: str
 export async function sendReportNotificationToClients(reportId: number) {
     try {
         const { rows } = await pool.query(`
-            SELECT r.id, r.report_number, r."clientId", c.name as client_name, e.brand, e.model
+            SELECT r.id, r.report_number, r."clientId" AS "clientId", c.name as client_name,
+                   e.brand, e.model, e."serialNumber", e.nickname
             FROM reports r
             JOIN clients c ON r."clientId" = c.id
-            JOIN equipments e ON r."equipmentId" = e.id
+            LEFT JOIN equipments e ON r."equipmentId" = e.id
             WHERE r.id = $1
         `, [reportId]);
 
-        if (rows.length === 0) return;
+        if (rows.length === 0) {
+            logger.warn({ reportId }, 'sendReportNotificationToClients: report not found');
+            return;
+        }
         const report = rows[0];
 
         const { rows: recipients } = await pool.query(`
-            SELECT cu.user_id 
+            SELECT cu.user_id, p.first_name
             FROM client_users cu
             JOIN profiles p ON p.id = cu.user_id
             WHERE cu.client_id = $1 AND p.role = 'client'
@@ -251,18 +249,26 @@ export async function sendReportNotificationToClients(reportId: number) {
 
         if (recipients.length > 0) {
             const userIds = recipients.map(r => r.user_id);
-            const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
-            const equipInfo = `${report.brand} ${report.model}`;
+            const clientUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/portal`;
+            const reportUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/report/print/${reportId}`;
+            const equipParts = [
+                report.brand && report.model ? `${report.brand} ${report.model}` : null,
+                report.serialNumber ? `S/N: ${report.serialNumber}` : null,
+                report.nickname ? `(${report.nickname})` : null
+            ].filter(Boolean);
+            const equipInfo = equipParts.length > 0 ? equipParts.join(' — ') : 'Sem equipamento';
 
             await notifyUsers(userIds, 'new_report', {
                 templateKey: 'new_report',
                 variables: {
+                    first_name: recipients[0].first_name || 'Cliente',
                     reportId: String(reportId),
                     reportNumber: report.report_number,
                     equipInfo: equipInfo,
-                    clientUrl: clientUrl
+                    clientUrl: clientUrl,
+                    reportUrl: reportUrl
                 },
-                telegramText: `📑 *RELATÓRIO TÉCNICO DISPONÍVEL*\n\n*Número:* ${report.report_number}\n*Equipamento:* ${equipInfo}\n\nO relatório da intervenção já pode ser consultado no portal.\n\n[Ver Relatório](${clientUrl}/reports/${reportId})`
+                telegramText: `📑 *RELATÓRIO TÉCNICO DISPONÍVEL*\n\n*Número:* ${report.report_number}\n*Equipamento:* ${equipInfo}\n\nO relatório da intervenção já pode ser consultado no portal.\n\n[Ver Relatório](${reportUrl})`
             });
         }
     } catch (err) {
