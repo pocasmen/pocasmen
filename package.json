@@ -6,9 +6,9 @@
   "scripts": {
     "test": "jest",
     "test:email": "ts-node scripts/testEmail.ts",
-    "dev": "ts-node src/index.ts",
+    "dev": "ts-node --max-http-header-size=65536 src/index.ts",
     "build": "npx rimraf dist && tsc",
-    "start": "node dist/index.js",
+    "start": "node --max-http-header-size=65536 dist/index.js",
     "sync:calendar": "ts-node scripts/sync_all.ts",
     "list:unsynced": "ts-node scripts/list_unsynced.ts",
     "sync:missing": "ts-node scripts/sync_unsynced.ts",
